@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from isaaclab.managers import CurriculumTermCfg as CurrTerm
+from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.terrains import TerrainImporter
 from isaaclab.utils import configclass
@@ -13,6 +14,13 @@ from isaaclab.utils import configclass
 from unitree_rl_lab.tasks.locomotion import mdp
 from unitree_rl_lab.tasks.locomotion.mdp.commands import UniformLevelVelocityCommandCfg
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import CurriculumCfg
+
+# Privileged critic only (policy has no height_scan; scanner gated by curriculum level).
+CRITIC_HEIGHT_SCAN_CFG = ObsTerm(
+    func=mdp.height_scan,
+    params={"sensor_cfg": SceneEntityCfg("height_scanner")},
+    clip=(-1.0, 5.0),
+)
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -48,10 +56,20 @@ def apply_phase_terrain_settings(env_cfg) -> None:
         env_cfg.scene.terrain.max_init_terrain_level = min(2, num_rows - 1)
 
 
+def apply_phase_height_scanner(env_cfg) -> None:
+    """Enable RayCaster + critic ``height_scan`` for level 2+; disable on flat (level 1) to save GPU."""
+    if env_cfg.curriculum_level <= 1:
+        env_cfg.scene.height_scanner = None
+        env_cfg.observations.critic.height_scan = None
+    else:
+        env_cfg.observations.critic.height_scan = CRITIC_HEIGHT_SCAN_CFG
+
+
 def apply_manual_curriculum_level(env_cfg) -> None:
-    """Apply static env settings for the current ``curriculum_level`` (terrain + velocity)."""
+    """Apply static env settings for the current ``curriculum_level`` (terrain + velocity + critic obs)."""
     apply_phase_terrain_settings(env_cfg)
     apply_phase_velocity_ranges(env_cfg)
+    apply_phase_height_scanner(env_cfg)
 
 
 def _column_indices_by_sub_terrain(terrain_generator_cfg: TerrainGeneratorCfg, num_cols: int) -> dict[str, list[int]]:
