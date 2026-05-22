@@ -2,8 +2,12 @@ import isaaclab.terrains as terrain_gen
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 
-from unitree_rl_lab.tasks.locomotion.robots.go2.go2_curriculum import CurriculumCfgGo2, apply_manual_curriculum_level
-from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import RobotEnvCfg, RobotSceneCfg
+from unitree_rl_lab.tasks.locomotion.robots.go2.go2_curriculum import (
+    CRITIC_HEIGHT_SCAN_CFG,
+    CurriculumCfgGo2,
+    apply_manual_curriculum_level,
+)
+from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import ObservationsCfg, RobotEnvCfg, RobotSceneCfg
 
 # Terrain layout for manual curriculum (columns are assigned by proportion).
 GO2_CURRICULUM_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
@@ -51,6 +55,20 @@ GO2_CURRICULUM_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
 
 
 @configclass
+class CriticCfgGo2(ObservationsCfg.CriticCfg):
+    """Go2 critic: base fields plus privileged ``height_scan`` (enabled per curriculum level)."""
+
+    height_scan = CRITIC_HEIGHT_SCAN_CFG
+
+
+@configclass
+class ObservationsCfgGo2(ObservationsCfg):
+    """Go2 observations: policy unchanged; extended critic for privileged training."""
+
+    critic: CriticCfgGo2 = CriticCfgGo2()
+
+
+@configclass
 class RobotSceneCfgGo2(RobotSceneCfg):
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
@@ -69,6 +87,7 @@ class RobotEnvCfgGo2(RobotEnvCfg):
     """Go2 velocity env with manual terrain curriculum."""
     curriculum_level: int = 1
     scene: RobotSceneCfgGo2 = RobotSceneCfgGo2(num_envs=4096, env_spacing=2.5)
+    observations: ObservationsCfgGo2 = ObservationsCfgGo2()
     curriculum: CurriculumCfgGo2 = CurriculumCfgGo2()
 
     def __post_init__(self):

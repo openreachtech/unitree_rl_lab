@@ -15,18 +15,20 @@ from unitree_rl_lab.tasks.locomotion import mdp
 from unitree_rl_lab.tasks.locomotion.mdp.commands import UniformLevelVelocityCommandCfg
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import CurriculumCfg
 
-# Privileged critic only (policy has no height_scan; scanner gated by curriculum level).
-CRITIC_HEIGHT_SCAN_CFG = ObsTerm(
-    func=mdp.height_scan,
-    params={"sensor_cfg": SceneEntityCfg("height_scanner")},
-    clip=(-1.0, 5.0),
-)
-
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
     from isaaclab.terrains import TerrainGeneratorCfg
 
 Ranges = UniformLevelVelocityCommandCfg.Ranges
+
+# Privileged critic (policy does not use height_scan).
+CRITIC_HEIGHT_SCAN_CFG = ObsTerm(
+    func=mdp.height_scan,
+    params={"sensor_cfg": SceneEntityCfg("height_scanner")},
+    clip=(-1.0, 5.0),
+)
+CRITIC_HISTORY_LENGTH_FLAT = 1
+CRITIC_HISTORY_LENGTH_ROUGH = 5
 
 # Per manual curriculum_level: starting command ranges and in-phase expansion caps.
 PHASE_VEL_START: dict[int, Ranges] = {
@@ -61,8 +63,10 @@ def apply_phase_height_scanner(env_cfg) -> None:
     if env_cfg.curriculum_level <= 1:
         env_cfg.scene.height_scanner = None
         env_cfg.observations.critic.height_scan = None
+        env_cfg.observations.critic.history_length = CRITIC_HISTORY_LENGTH_FLAT
     else:
         env_cfg.observations.critic.height_scan = CRITIC_HEIGHT_SCAN_CFG
+        env_cfg.observations.critic.history_length = CRITIC_HISTORY_LENGTH_ROUGH
 
 
 def apply_manual_curriculum_level(env_cfg) -> None:
