@@ -10,3 +10,14 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
     },
 )
+
+gym.register(
+    id="Unitree-Go2-Velocity-v1",
+    entry_point=f"{__name__}.velociy_en_go2.ManagerBasedRLEnvGo2",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_go2:RobotEnvCfgGo2",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_go2:RobotPlayEnvCfgGo2",
+        "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
+    },
+)
