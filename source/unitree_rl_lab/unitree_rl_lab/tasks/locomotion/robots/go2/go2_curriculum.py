@@ -11,11 +11,47 @@ from isaaclab.terrains import TerrainImporter
 from isaaclab.utils import configclass
 
 from unitree_rl_lab.tasks.locomotion import mdp
+from unitree_rl_lab.tasks.locomotion.mdp.commands import UniformLevelVelocityCommandCfg
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import CurriculumCfg
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
     from isaaclab.terrains import TerrainGeneratorCfg
+
+Ranges = UniformLevelVelocityCommandCfg.Ranges
+
+# Per manual curriculum_level: starting command ranges and in-phase expansion caps.
+PHASE_VEL_START: dict[int, Ranges] = {
+    1: Ranges(lin_vel_x=(-0.1, 0.1), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-1.0, 1.0)),
+    2: Ranges(lin_vel_x=(-0.2, 0.2), lin_vel_y=(-0.15, 0.15), ang_vel_z=(-1.0, 1.0)),
+}
+
+PHASE_VEL_LIMIT: dict[int, Ranges] = {
+    1: Ranges(lin_vel_x=(-0.5, 0.5), lin_vel_y=(-0.2, 0.2), ang_vel_z=(-1.0, 1.0)),
+    2: Ranges(lin_vel_x=(-0.8, 0.8), lin_vel_y=(-0.35, 0.35), ang_vel_z=(-1.0, 1.0)),
+}
+
+
+def apply_phase_velocity_ranges(env_cfg) -> None:
+    """Reset ``base_velocity.ranges`` to the start of the current manual curriculum level."""
+    key = 1 if env_cfg.curriculum_level <= 1 else 2
+    env_cfg.commands.base_velocity.ranges = PHASE_VEL_START[key]
+
+
+def apply_phase_terrain_settings(env_cfg) -> None:
+    """Set ``max_init_terrain_level`` for the current manual curriculum level."""
+    level = env_cfg.curriculum_level
+    if level <= 1:
+        env_cfg.scene.terrain.max_init_terrain_level = 0
+    else:
+        num_rows = env_cfg.scene.terrain.terrain_generator.num_rows
+        env_cfg.scene.terrain.max_init_terrain_level = min(2, num_rows - 1)
+
+
+def apply_manual_curriculum_level(env_cfg) -> None:
+    """Apply static env settings for the current ``curriculum_level`` (terrain + velocity)."""
+    apply_phase_terrain_settings(env_cfg)
+    apply_phase_velocity_ranges(env_cfg)
 
 
 def _column_indices_by_sub_terrain(terrain_generator_cfg: TerrainGeneratorCfg, num_cols: int) -> dict[str, list[int]]:
@@ -77,7 +113,25 @@ def terrain_manual_levels(
     return mdp.terrain_levels_vel(env, env_ids, asset_cfg)
 
 
+def lin_vel_cmd_levels_go2(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    reward_term_name: str = "track_lin_vel_xy",
+) -> torch.Tensor:
+    """Expand velocity ranges via ``mdp.lin_vel_cmd_levels``, capped per ``curriculum_level``."""
+    level = int(getattr(env.cfg, "curriculum_level", 1))
+    cmd_cfg = env.command_manager.get_term("base_velocity").cfg
+    saved_limit = cmd_cfg.limit_ranges
+    if level < 3:
+        cmd_cfg.limit_ranges = PHASE_VEL_LIMIT[1 if level <= 1 else 2]
+    try:
+        return mdp.lin_vel_cmd_levels(env, env_ids, reward_term_name)
+    finally:
+        cmd_cfg.limit_ranges = saved_limit
+
+
 @configclass
 class CurriculumCfgGo2(CurriculumCfg):
     def __post_init__(self):
         self.terrain_levels = CurrTerm(func=terrain_manual_levels)
+        self.lin_vel_cmd_levels = CurrTerm(func=lin_vel_cmd_levels_go2)

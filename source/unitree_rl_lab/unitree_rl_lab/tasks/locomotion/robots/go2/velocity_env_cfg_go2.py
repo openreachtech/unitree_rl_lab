@@ -2,7 +2,7 @@ import isaaclab.terrains as terrain_gen
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 
-from unitree_rl_lab.tasks.locomotion.robots.go2.go2_curriculum import CurriculumCfgGo2
+from unitree_rl_lab.tasks.locomotion.robots.go2.go2_curriculum import CurriculumCfgGo2, apply_manual_curriculum_level
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import RobotEnvCfg, RobotSceneCfg
 
 # Terrain layout for manual curriculum (columns are assigned by proportion).
@@ -73,15 +73,7 @@ class RobotEnvCfgGo2(RobotEnvCfg):
 
     def __post_init__(self):
         super().__post_init__()
-        self._apply_manual_curriculum_level()
-
-    def _apply_manual_curriculum_level(self):
-        level = self.curriculum_level
-        if level <= 1:
-            self.scene.terrain.max_init_terrain_level = 0
-        else:
-            num_rows = self.scene.terrain.terrain_generator.num_rows
-            self.scene.terrain.max_init_terrain_level = min(2, num_rows - 1)
+        apply_manual_curriculum_level(self)
 
 
 @configclass
