@@ -10,12 +10,17 @@ FSM:
   Passive:
     transitions: 
       FixStand: LT + A.on_pressed
+    keyboard_transitions:
+      FixStand: "1"
     mode: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
     kd: [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]
   FixStand:
     transitions: 
       Passive: LT + B.on_pressed
       Velocity: start.on_pressed
+    keyboard_transitions:
+      Passive: "0"
+      Velocity: enter
     kp: [60, 80, 80, 60, 80, 80, 60, 80, 80, 60, 80, 80]
     kd: [5, 4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4]
     ts: [0, 1, 2]
@@ -27,5 +32,7 @@ FSM:
   Velocity:
     transitions: 
       Passive: LT + B.on_pressed
+    keyboard_transitions:
+      Passive: "0"
     policy_dir: ../../../logs/rsl_rl/unitree_go2_velocity
     

@@ -37,12 +37,16 @@ int main(int argc, char** argv)
 
     init_fsm_state();
 
+    FSMState::keyboard = std::make_shared<Keyboard>();
+
     // Initialize FSM
     auto fsm = std::make_unique<CtrlFSM>(param::config["FSM"]);
     fsm->start();
 
-    std::cout << "Press [L2 + A] to enter FixStand mode.\n";
-    std::cout << "And then press [Start] to start controlling the robot.\n";
+    std::cout << "Remote: [L2+A] FixStand, [Start] Velocity, [L2+B] Passive\n";
+    std::cout << "Keyboard: [1] FixStand, [Enter] Velocity, [0] Passive\n";
+    std::cout << "          [W/A/S/D/Q/E] velocity in Velocity mode "
+                 "(deploy.yaml: keyboard_velocity_commands)\n";
 
     while (true)
     {
