@@ -1,7 +1,7 @@
 import gymnasium as gym
 
 gym.register(
-    id="Unitree-Go2-Velocity",
+    id="Unitree-Go2-Velocity-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
