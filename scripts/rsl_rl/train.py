@@ -43,6 +43,15 @@ parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy 
 parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
+parser.add_argument(
+    "--deploy-keyboard-commands",
+    action="store_true",
+    default=False,
+    help=(
+        "Write deploy.yaml with keyboard_velocity_commands instead of velocity_commands "
+        "(for deploy controllers without a wireless remote)."
+    ),
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -193,7 +202,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
-    export_deploy_cfg(env.unwrapped, log_dir)
+    observation_renames = None
+    if args_cli.deploy_keyboard_commands:
+        observation_renames = {"velocity_commands": "keyboard_velocity_commands"}
+    export_deploy_cfg(env.unwrapped, log_dir, observation_renames=observation_renames)
     # copy the environment configuration file to the log directory
     shutil.copy(
         inspect.getfile(env_cfg.__class__),

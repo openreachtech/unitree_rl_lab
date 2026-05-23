@@ -19,7 +19,11 @@ def format_value(x):
         return x
 
 
-def export_deploy_cfg(env: ManagerBasedRLEnv, log_dir):
+def export_deploy_cfg(
+    env: ManagerBasedRLEnv,
+    log_dir,
+    observation_renames: dict[str, str] | None = None,
+):
     asset: Articulation = env.scene["robot"]
     joint_sdk_names = env.cfg.scene.robot.joint_sdk_names
     joint_ids_map, _ = resolve_matching_names(asset.data.joint_names, joint_sdk_names, preserve_order=True)
@@ -105,6 +109,15 @@ def export_deploy_cfg(env: ManagerBasedRLEnv, log_dir):
         for _ in ["func", "modifiers", "noise", "flatten_history_dim"]:
             del term_cfg[_]
         cfg["observations"][obs_name] = term_cfg
+
+    if observation_renames:
+        for old_name, new_name in observation_renames.items():
+            if old_name not in cfg["observations"]:
+                raise KeyError(
+                    f"Cannot rename observation '{old_name}' -> '{new_name}': "
+                    f"'{old_name}' not in exported observations {list(cfg['observations'].keys())}"
+                )
+            cfg["observations"][new_name] = cfg["observations"].pop(old_name)
 
     # --- save config file ---
     filename = os.path.join(log_dir, "params", "deploy.yaml")

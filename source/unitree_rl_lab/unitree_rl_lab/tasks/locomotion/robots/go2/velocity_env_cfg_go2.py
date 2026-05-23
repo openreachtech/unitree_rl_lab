@@ -1,5 +1,4 @@
 import isaaclab.terrains as terrain_gen
-from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 
 from unitree_rl_lab.tasks.locomotion.robots.go2.go2_curriculum import (
@@ -70,15 +69,9 @@ class ObservationsCfgGo2(ObservationsCfg):
 
 @configclass
 class RobotSceneCfgGo2(RobotSceneCfg):
-    terrain = TerrainImporterCfg(
-        prim_path="/World/ground",
-        terrain_type="generator",
+    terrain = RobotSceneCfg().terrain.replace(
         terrain_generator=GO2_CURRICULUM_TERRAIN_CFG,
         max_init_terrain_level=0,
-        collision_group=-1,
-        physics_material=RobotSceneCfg.terrain.physics_material,
-        visual_material=RobotSceneCfg.terrain.visual_material,
-        debug_vis=False,
     )
 
 
