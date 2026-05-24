@@ -1,5 +1,5 @@
 #include "FSM/FSMState.h"
-#include "isaaclab/manager/observation_manager.h"
+#include "isaaclab/envs/manager_based_rl_env.h"
 #include <spdlog/spdlog.h>
 #include <memory>
 
