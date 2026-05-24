@@ -3,6 +3,7 @@ from isaaclab.utils import configclass
 
 from unitree_rl_lab.tasks.locomotion.robots.go2.go2_curriculum import (
     CRITIC_HEIGHT_SCAN_CFG,
+    PLAY_VEL_RANGES,
     CurriculumCfgGo2,
     apply_manual_curriculum_level,
 )
@@ -95,4 +96,4 @@ class RobotPlayEnvCfgGo2(RobotEnvCfgGo2):
         self.scene.num_envs = 32
         self.scene.terrain.terrain_generator.num_rows = 2
         self.scene.terrain.terrain_generator.num_cols = 4
-        self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
+        self.commands.base_velocity.ranges = PLAY_VEL_RANGES

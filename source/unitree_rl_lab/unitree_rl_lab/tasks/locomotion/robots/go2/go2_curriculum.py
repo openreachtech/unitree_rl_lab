@@ -37,9 +37,12 @@ PHASE_VEL_START: dict[int, Ranges] = {
 }
 
 PHASE_VEL_LIMIT: dict[int, Ranges] = {
-    1: Ranges(lin_vel_x=(-0.5, 0.5), lin_vel_y=(-0.2, 0.2), ang_vel_z=(-1.0, 1.0)),
+    1: Ranges(lin_vel_x=(-1.0, 1.0), lin_vel_y=(-0.5, 0.5), ang_vel_z=(-1.0, 1.0)),
     2: Ranges(lin_vel_x=(-0.8, 0.8), lin_vel_y=(-0.35, 0.35), ang_vel_z=(-1.0, 1.0)),
 }
+
+# Play / deploy: fixed command ranges (keyboard W/S uses lin_vel_x min/max).
+PLAY_VEL_RANGES = Ranges(lin_vel_x=(-1.0, 1.0), lin_vel_y=(-0.5, 0.5), ang_vel_z=(-1.0, 1.0))
 
 
 def apply_phase_velocity_ranges(env_cfg) -> None:
