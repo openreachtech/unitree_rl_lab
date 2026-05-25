@@ -1,7 +1,50 @@
 #include "FSM/State_RLBase.h"
 #include "unitree_articulation.h"
+#include "isaaclab/envs/manager_based_rl_env.h"
 #include "isaaclab/envs/mdp/observations/observations.h"
 #include "isaaclab/envs/mdp/actions/joint_actions.h"
+
+namespace isaaclab
+{
+// deploy.yaml: use observation key "keyboard_velocity_commands" (not "velocity_commands").
+REGISTER_OBSERVATION(keyboard_velocity_commands)
+{
+    if (!FSMState::keyboard)
+    {
+        FSMState::keyboard = std::make_shared<Keyboard>();
+    }
+
+    std::string key = FSMState::keyboard->key();
+    const auto cfg = env->cfg["commands"]["base_velocity"]["ranges"];
+
+    std::vector<float> cmd = {0.0f, 0.0f, 0.0f};
+    if (key == "w")
+    {
+        cmd = {cfg["lin_vel_x"][1].as<float>(), 0.0f, 0.0f};
+    }
+    else if (key == "s")
+    {
+        cmd = {cfg["lin_vel_x"][0].as<float>(), 0.0f, 0.0f};
+    }
+    else if (key == "a")
+    {
+        cmd = {0.0f, cfg["lin_vel_y"][1].as<float>(), 0.0f};
+    }
+    else if (key == "d")
+    {
+        cmd = {0.0f, cfg["lin_vel_y"][0].as<float>(), 0.0f};
+    }
+    else if (key == "q")
+    {
+        cmd = {0.0f, 0.0f, cfg["ang_vel_z"][1].as<float>()};
+    }
+    else if (key == "e")
+    {
+        cmd = {0.0f, 0.0f, cfg["ang_vel_z"][0].as<float>()};
+    }
+    return cmd;
+}
+} // namespace isaaclab
 
 State_RLBase::State_RLBase(int state_mode, std::string state_string)
 : FSMState(state_mode, state_string) 
