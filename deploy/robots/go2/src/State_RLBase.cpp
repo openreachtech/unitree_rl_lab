@@ -17,7 +17,9 @@ REGISTER_OBSERVATION(keyboard_velocity_commands)
     std::string key = FSMState::keyboard->key();
     const auto cfg = env->cfg["commands"]["base_velocity"]["ranges"];
 
-    std::vector<float> cmd = {0.0f, 0.0f, 0.0f};
+    // Hold the last non-idle command: Keyboard clears _key ~80ms after each event,
+    // but the policy runs at step_dt (~20ms). Without latching, obs is mostly zeros.
+    static std::vector<float> cmd = {0.0f, 0.0f, 0.0f};
     if (key == "w")
     {
         cmd = {cfg["lin_vel_x"][1].as<float>(), 0.0f, 0.0f};
