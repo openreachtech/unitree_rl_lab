@@ -8,6 +8,18 @@ from isaaclab.utils import class_to_dict
 from isaaclab.utils.string import resolve_matching_names
 
 
+def _rename_observation_preserve_order(observations: dict, old_name: str, new_name: str) -> None:
+    """Rename an observation key without moving it to the end of the dict (pop+assign would)."""
+    if old_name not in observations:
+        raise KeyError(
+            f"Cannot rename observation '{old_name}' -> '{new_name}': "
+            f"'{old_name}' not in exported observations {list(observations.keys())}"
+        )
+    items = list(observations.items())
+    observations.clear()
+    observations.update({(new_name if key == old_name else key): value for key, value in items})
+
+
 def format_value(x):
     if isinstance(x, float):
         return float(f"{x:.3g}")
@@ -112,12 +124,7 @@ def export_deploy_cfg(
 
     if observation_renames:
         for old_name, new_name in observation_renames.items():
-            if old_name not in cfg["observations"]:
-                raise KeyError(
-                    f"Cannot rename observation '{old_name}' -> '{new_name}': "
-                    f"'{old_name}' not in exported observations {list(cfg['observations'].keys())}"
-                )
-            cfg["observations"][new_name] = cfg["observations"].pop(old_name)
+            _rename_observation_preserve_order(cfg["observations"], old_name, new_name)
 
     # --- save config file ---
     filename = os.path.join(log_dir, "params", "deploy.yaml")
