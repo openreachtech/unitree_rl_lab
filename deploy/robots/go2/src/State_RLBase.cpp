@@ -4,9 +4,18 @@
 #include "isaaclab/envs/mdp/observations/observations.h"
 #include "isaaclab/envs/mdp/actions/joint_actions.h"
 
+#include <array>
+#include <algorithm>
+
 namespace isaaclab
 {
-// deploy.yaml: use observation key "keyboard_velocity_commands" (not "velocity_commands").
+
+// deploy.yaml:
+//   observations: keyboard_velocity_commands  (not velocity_commands)
+//   commands.base_velocity:
+//     keyboard_vel_scale: 0.5   # optional, default 0.5
+//     keyboard_alpha: 0.15      # optional low-pass; higher = smoother / slower
+
 REGISTER_OBSERVATION(keyboard_velocity_commands)
 {
     if (!FSMState::keyboard)
@@ -14,49 +23,72 @@ REGISTER_OBSERVATION(keyboard_velocity_commands)
         FSMState::keyboard = std::make_shared<Keyboard>();
     }
 
-    std::string key = FSMState::keyboard->key();
+    auto keyboard = FSMState::keyboard;
     const auto cmd_cfg = env->cfg["commands"]["base_velocity"];
     const auto ranges = cmd_cfg["ranges"];
-    // Scale < 1 avoids slamming max m/s into a policy that was mostly trained on smaller commands.
+
     float vel_scale = 0.5f;
-    if (cmd_cfg["keyboard_vel_scale"])
+    if (cmd_cfg["keyboard_vel_scale"].IsDefined())
     {
         vel_scale = cmd_cfg["keyboard_vel_scale"].as<float>();
     }
 
-    // Hold the last non-idle command: Keyboard clears _key ~80ms after each event,
-    // but the policy runs at step_dt (~20ms). Without latching, obs is mostly zeros.
-    static std::vector<float> cmd = {0.0f, 0.0f, 0.0f};
+    float alpha = 0.15f;
+    if (cmd_cfg["keyboard_alpha"].IsDefined())
+    {
+        alpha = cmd_cfg["keyboard_alpha"].as<float>();
+    }
+
     const auto sx = [&](int idx) { return vel_scale * ranges["lin_vel_x"][idx].as<float>(); };
     const auto sy = [&](int idx) { return vel_scale * ranges["lin_vel_y"][idx].as<float>(); };
     const auto sz = [&](int idx) { return vel_scale * ranges["ang_vel_z"][idx].as<float>(); };
 
-    if (key == "w")
+    static std::array<float, 3> cmd = {0.0f, 0.0f, 0.0f};
+    std::array<float, 3> target = {0.0f, 0.0f, 0.0f};
+
+    if (keyboard->consume_velocity_stop())
     {
-        cmd = {sx(1), 0.0f, 0.0f};
+        cmd = {0.0f, 0.0f, 0.0f};
+        return std::vector<float>(cmd.begin(), cmd.end());
     }
-    else if (key == "s")
+
+    if (keyboard->pressed("w"))
     {
-        cmd = {sx(0), 0.0f, 0.0f};
+        target[0] += sx(1);
     }
-    else if (key == "a")
+    if (keyboard->pressed("s"))
     {
-        cmd = {0.0f, sy(1), 0.0f};
+        target[0] += sx(0);
     }
-    else if (key == "d")
+    if (keyboard->pressed("a"))
     {
-        cmd = {0.0f, sy(0), 0.0f};
+        target[1] += sy(1);
     }
-    else if (key == "q")
+    if (keyboard->pressed("d"))
     {
-        cmd = {0.0f, 0.0f, sz(1)};
+        target[1] += sy(0);
     }
-    else if (key == "e")
+    if (keyboard->pressed("q"))
     {
-        cmd = {0.0f, 0.0f, sz(0)};
+        target[2] += sz(1);
     }
-    return cmd;
+    if (keyboard->pressed("e"))
+    {
+        target[2] += sz(0);
+    }
+
+    for (int i = 0; i < 3; ++i)
+    {
+        cmd[i] = (1.0f - alpha) * cmd[i] + alpha * target[i];
+    }
+
+    cmd[0] = std::clamp(cmd[0], sx(0), sx(1));
+    cmd[1] = std::clamp(cmd[1], sy(0), sy(1));
+    cmd[2] = std::clamp(cmd[2], sz(0), sz(1));
+
+    return std::vector<float>(cmd.begin(), cmd.end());
 }
+
 } // namespace isaaclab
 
 State_RLBase::State_RLBase(int state_mode, std::string state_string)

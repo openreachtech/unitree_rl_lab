@@ -45,8 +45,8 @@ int main(int argc, char** argv)
 
     std::cout << "Remote: [L2+A] FixStand, [Start] Velocity, [L2+B] Passive\n";
     std::cout << "Keyboard: [1] FixStand, [Enter] Velocity, [0] Passive\n";
-    std::cout << "          [W/A/S/D/Q/E] velocity in Velocity mode "
-                 "(deploy.yaml: keyboard_velocity_commands)\n";
+    std::cout << "          [W/A/S/D/Q/E] velocity (latched keys, W+A diagonal OK)\n";
+    std::cout << "          [Space] zero velocity cmd; [0] Passive FSM\n";
 
     while (true)
     {
