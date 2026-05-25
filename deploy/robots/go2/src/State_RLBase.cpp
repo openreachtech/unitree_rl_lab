@@ -15,34 +15,45 @@ REGISTER_OBSERVATION(keyboard_velocity_commands)
     }
 
     std::string key = FSMState::keyboard->key();
-    const auto cfg = env->cfg["commands"]["base_velocity"]["ranges"];
+    const auto cmd_cfg = env->cfg["commands"]["base_velocity"];
+    const auto ranges = cmd_cfg["ranges"];
+    // Scale < 1 avoids slamming max m/s into a policy that was mostly trained on smaller commands.
+    float vel_scale = 0.5f;
+    if (cmd_cfg["keyboard_vel_scale"])
+    {
+        vel_scale = cmd_cfg["keyboard_vel_scale"].as<float>();
+    }
 
     // Hold the last non-idle command: Keyboard clears _key ~80ms after each event,
     // but the policy runs at step_dt (~20ms). Without latching, obs is mostly zeros.
     static std::vector<float> cmd = {0.0f, 0.0f, 0.0f};
+    const auto sx = [&](int idx) { return vel_scale * ranges["lin_vel_x"][idx].as<float>(); };
+    const auto sy = [&](int idx) { return vel_scale * ranges["lin_vel_y"][idx].as<float>(); };
+    const auto sz = [&](int idx) { return vel_scale * ranges["ang_vel_z"][idx].as<float>(); };
+
     if (key == "w")
     {
-        cmd = {cfg["lin_vel_x"][1].as<float>(), 0.0f, 0.0f};
+        cmd = {sx(1), 0.0f, 0.0f};
     }
     else if (key == "s")
     {
-        cmd = {cfg["lin_vel_x"][0].as<float>(), 0.0f, 0.0f};
+        cmd = {sx(0), 0.0f, 0.0f};
     }
     else if (key == "a")
     {
-        cmd = {0.0f, cfg["lin_vel_y"][1].as<float>(), 0.0f};
+        cmd = {0.0f, sy(1), 0.0f};
     }
     else if (key == "d")
     {
-        cmd = {0.0f, cfg["lin_vel_y"][0].as<float>(), 0.0f};
+        cmd = {0.0f, sy(0), 0.0f};
     }
     else if (key == "q")
     {
-        cmd = {0.0f, 0.0f, cfg["ang_vel_z"][1].as<float>()};
+        cmd = {0.0f, 0.0f, sz(1)};
     }
     else if (key == "e")
     {
-        cmd = {0.0f, 0.0f, cfg["ang_vel_z"][0].as<float>()};
+        cmd = {0.0f, 0.0f, sz(0)};
     }
     return cmd;
 }
