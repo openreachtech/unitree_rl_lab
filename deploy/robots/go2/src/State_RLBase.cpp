@@ -52,27 +52,27 @@ REGISTER_OBSERVATION(keyboard_velocity_commands)
         return std::vector<float>(cmd.begin(), cmd.end());
     }
 
-    if (keyboard->pressed("w"))
+    if (keyboard->pressed("f"))
     {
         target[0] += sx(1);
     }
-    if (keyboard->pressed("s"))
+    if (keyboard->pressed("b"))
     {
         target[0] += sx(0);
     }
-    if (keyboard->pressed("a"))
+    if (keyboard->pressed("l"))
     {
         target[1] += sy(1);
     }
-    if (keyboard->pressed("d"))
+    if (keyboard->pressed("r"))
     {
         target[1] += sy(0);
     }
-    if (keyboard->pressed("q"))
+    if (keyboard->pressed("y"))
     {
         target[2] += sz(1);
     }
-    if (keyboard->pressed("e"))
+    if (keyboard->pressed("u"))
     {
         target[2] += sz(0);
     }
