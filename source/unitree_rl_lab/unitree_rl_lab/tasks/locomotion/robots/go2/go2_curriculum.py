@@ -32,13 +32,27 @@ CRITIC_HISTORY_LENGTH_ROUGH = 5
 
 # Per manual curriculum_level: starting command ranges and in-phase expansion caps.
 PHASE_VEL_START: dict[int, Ranges] = {
-    1: Ranges(lin_vel_x=(-0.1, 0.1), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-1.0, 1.0)),
-    2: Ranges(lin_vel_x=(-0.2, 0.2), lin_vel_y=(-0.15, 0.15), ang_vel_z=(-1.0, 1.0)),
+    1: Ranges(lin_vel_x=(-0.1, 0.1), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-0.5, 0.5)),
+    2: Ranges(lin_vel_x=(-0.2, 0.2), lin_vel_y=(-0.15, 0.15), ang_vel_z=(-0.5, 0.5)),
+    3: Ranges(lin_vel_x=(-0.15, 0.25), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-0.8, 0.8)),
 }
 
 PHASE_VEL_LIMIT: dict[int, Ranges] = {
-    1: Ranges(lin_vel_x=(-1.0, 1.0), lin_vel_y=(-0.5, 0.5), ang_vel_z=(-1.0, 1.0)),
-    2: Ranges(lin_vel_x=(-0.8, 0.8), lin_vel_y=(-0.35, 0.35), ang_vel_z=(-1.0, 1.0)),
+    1: Ranges(lin_vel_x=(-1.5, 1.5), lin_vel_y=(-0.8, 0.8), ang_vel_z=(-1.2, 1.2)),
+    2: Ranges(lin_vel_x=(-1.2, 1.2), lin_vel_y=(-0.7, 0.7), ang_vel_z=(-1.1, 1.1)),
+    3: Ranges(lin_vel_x=(-0.7, 0.9), lin_vel_y=(-0.25, 0.25), ang_vel_z=(-0.8, 0.8)),
+}
+
+# In-place spin focus command ranges (keyed by curriculum level bucket).
+SPIN_FOCUS_VEL_START: dict[int, Ranges] = {
+    1: Ranges(lin_vel_x=(-0.05, 0.05), lin_vel_y=(-0.05, 0.05), ang_vel_z=(-1.0, 1.0)),
+    2: Ranges(lin_vel_x=(-0.05, 0.05), lin_vel_y=(-0.05, 0.05), ang_vel_z=(-1.0, 1.0)),
+    3: Ranges(lin_vel_x=(-0.05, 0.05), lin_vel_y=(-0.05, 0.05), ang_vel_z=(-0.8, 0.8)),
+}
+SPIN_FOCUS_VEL_LIMIT: dict[int, Ranges] = {
+    1: Ranges(lin_vel_x=(-0.05, 0.05), lin_vel_y=(-0.05, 0.05), ang_vel_z=(-1.5, 1.5)),
+    2: Ranges(lin_vel_x=(-0.05, 0.05), lin_vel_y=(-0.05, 0.05), ang_vel_z=(-1.5, 1.5)),
+    3: Ranges(lin_vel_x=(-0.05, 0.05), lin_vel_y=(-0.05, 0.05), ang_vel_z=(-1.0, 1.0)),
 }
 
 # Play / deploy: fixed command ranges (keyboard W/S uses lin_vel_x min/max).
@@ -46,9 +60,19 @@ PLAY_VEL_RANGES = Ranges(lin_vel_x=(-1.0, 1.0), lin_vel_y=(-0.5, 0.5), ang_vel_z
 
 
 def apply_phase_velocity_ranges(env_cfg) -> None:
-    """Reset ``base_velocity.ranges`` to the start of the current manual curriculum level."""
-    key = 1 if env_cfg.curriculum_level <= 1 else 2
+    """Apply level-based velocity ranges (or spin-focus ranges when enabled)."""
+    if env_cfg.curriculum_level <= 1:
+        key = 1
+    elif env_cfg.curriculum_level == 2:
+        key = 2
+    else:
+        key = 3
+    if getattr(env_cfg, "focus_spin_in_place", False):
+        env_cfg.commands.base_velocity.ranges = SPIN_FOCUS_VEL_START[key]
+        env_cfg.commands.base_velocity.limit_ranges = SPIN_FOCUS_VEL_LIMIT[key]
+        return
     env_cfg.commands.base_velocity.ranges = PHASE_VEL_START[key]
+    env_cfg.commands.base_velocity.limit_ranges = PHASE_VEL_LIMIT[key]
 
 
 def apply_phase_terrain_settings(env_cfg) -> None:
@@ -138,25 +162,8 @@ def terrain_manual_levels(
     return mdp.terrain_levels_vel(env, env_ids, asset_cfg)
 
 
-def lin_vel_cmd_levels_go2(
-    env: ManagerBasedRLEnv,
-    env_ids: Sequence[int],
-    reward_term_name: str = "track_lin_vel_xy",
-) -> torch.Tensor:
-    """Expand velocity ranges via ``mdp.lin_vel_cmd_levels``, capped per ``curriculum_level``."""
-    level = int(getattr(env.cfg, "curriculum_level", 1))
-    cmd_cfg = env.command_manager.get_term("base_velocity").cfg
-    saved_limit = cmd_cfg.limit_ranges
-    if level < 3:
-        cmd_cfg.limit_ranges = PHASE_VEL_LIMIT[1 if level <= 1 else 2]
-    try:
-        return mdp.lin_vel_cmd_levels(env, env_ids, reward_term_name)
-    finally:
-        cmd_cfg.limit_ranges = saved_limit
-
-
 @configclass
 class CurriculumCfgGo2(CurriculumCfg):
     def __post_init__(self):
         self.terrain_levels = CurrTerm(func=terrain_manual_levels)
-        self.lin_vel_cmd_levels = CurrTerm(func=lin_vel_cmd_levels_go2)
+        self.lin_vel_cmd_levels = CurrTerm(func=mdp.lin_vel_cmd_levels)
