@@ -55,24 +55,34 @@ SPIN_FOCUS_VEL_LIMIT: dict[int, Ranges] = {
     3: Ranges(lin_vel_x=(-0.05, 0.05), lin_vel_y=(-0.05, 0.05), ang_vel_z=(-1.0, 1.0)),
 }
 
-# Play / deploy: fixed command ranges (keyboard W/S uses lin_vel_x min/max).
-PLAY_VEL_RANGES = Ranges(lin_vel_x=(-1.0, 1.0), lin_vel_y=(-0.5, 0.5), ang_vel_z=(-1.0, 1.0))
+def curriculum_level_key(curriculum_level: int) -> int:
+    if curriculum_level <= 1:
+        return 1
+    if curriculum_level == 2:
+        return 2
+    return 3
 
 
 def apply_phase_velocity_ranges(env_cfg) -> None:
     """Apply level-based velocity ranges (or spin-focus ranges when enabled)."""
-    if env_cfg.curriculum_level <= 1:
-        key = 1
-    elif env_cfg.curriculum_level == 2:
-        key = 2
-    else:
-        key = 3
+    key = curriculum_level_key(env_cfg.curriculum_level)
     if getattr(env_cfg, "focus_spin_in_place", False):
         env_cfg.commands.base_velocity.ranges = SPIN_FOCUS_VEL_START[key]
         env_cfg.commands.base_velocity.limit_ranges = SPIN_FOCUS_VEL_LIMIT[key]
         return
     env_cfg.commands.base_velocity.ranges = PHASE_VEL_START[key]
     env_cfg.commands.base_velocity.limit_ranges = PHASE_VEL_LIMIT[key]
+
+
+def apply_play_velocity_ranges(env_cfg) -> None:
+    """Play mode: use level-based velocity limits for keyboard/resampling."""
+    key = curriculum_level_key(env_cfg.curriculum_level)
+    if getattr(env_cfg, "focus_spin_in_place", False):
+        play_ranges = SPIN_FOCUS_VEL_LIMIT[key]
+    else:
+        play_ranges = PHASE_VEL_LIMIT[key]
+    env_cfg.commands.base_velocity.ranges = play_ranges
+    env_cfg.commands.base_velocity.limit_ranges = play_ranges
 
 
 def apply_phase_terrain_settings(env_cfg) -> None:
