@@ -27,8 +27,7 @@ CRITIC_HEIGHT_SCAN_CFG = ObsTerm(
     params={"sensor_cfg": SceneEntityCfg("height_scanner")},
     clip=(-1.0, 5.0),
 )
-CRITIC_HISTORY_LENGTH_FLAT = 1
-CRITIC_HISTORY_LENGTH_ROUGH = 5
+CRITIC_HISTORY_LENGTH = 5
 
 # Per manual curriculum_level: starting command ranges and in-phase expansion caps.
 PHASE_VEL_START: dict[int, Ranges] = {
@@ -96,14 +95,9 @@ def apply_phase_terrain_settings(env_cfg) -> None:
 
 
 def apply_phase_height_scanner(env_cfg) -> None:
-    """Enable RayCaster + critic ``height_scan`` for level 2+; disable on flat (level 1) to save GPU."""
-    if env_cfg.curriculum_level <= 1:
-        env_cfg.scene.height_scanner = None
-        env_cfg.observations.critic.height_scan = None
-        env_cfg.observations.critic.history_length = CRITIC_HISTORY_LENGTH_FLAT
-    else:
-        env_cfg.observations.critic.height_scan = CRITIC_HEIGHT_SCAN_CFG
-        env_cfg.observations.critic.history_length = CRITIC_HISTORY_LENGTH_ROUGH
+    """Keep critic obs layout fixed across curriculum levels so checkpoints remain loadable."""
+    env_cfg.observations.critic.height_scan = CRITIC_HEIGHT_SCAN_CFG
+    env_cfg.observations.critic.history_length = CRITIC_HISTORY_LENGTH
 
 
 def apply_manual_curriculum_level(env_cfg) -> None:
