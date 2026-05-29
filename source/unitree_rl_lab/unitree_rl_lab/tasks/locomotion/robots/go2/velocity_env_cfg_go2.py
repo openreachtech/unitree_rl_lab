@@ -105,5 +105,5 @@ class RobotPlayEnvCfgGo2(RobotEnvCfgGo2):
         super().__post_init__()
         self.scene.num_envs = 32
         self.scene.terrain.terrain_generator.num_rows = 2
-        self.scene.terrain.terrain_generator.num_cols = 4
+        self.scene.terrain.terrain_generator.num_cols = 5
         apply_play_velocity_ranges(self)
