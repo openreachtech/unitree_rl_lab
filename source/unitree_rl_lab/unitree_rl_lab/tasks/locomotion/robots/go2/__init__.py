@@ -13,7 +13,7 @@ gym.register(
 
 gym.register(
     id="Unitree-Go2-Velocity-v1",
-    entry_point=f"{__name__}.velociy_en_go2:ManagerBasedRLEnvGo2",
+    entry_point=f"{__name__}.velocity_en_go2:ManagerBasedRLEnvGo2",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_go2:RobotEnvCfgGo2",
