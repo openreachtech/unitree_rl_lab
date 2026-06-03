@@ -10,6 +10,7 @@ from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.terrains import TerrainImporter
 from isaaclab.utils import configclass
+from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 from unitree_rl_lab.tasks.locomotion import mdp
 from unitree_rl_lab.tasks.locomotion.mdp.commands import UniformLevelVelocityCommandCfg
@@ -21,11 +22,17 @@ if TYPE_CHECKING:
 
 Ranges = UniformLevelVelocityCommandCfg.Ranges
 
-# Privileged critic (policy does not use height_scan).
+# Height scan grid matches RobotSceneCfg.height_scanner
 CRITIC_HEIGHT_SCAN_CFG = ObsTerm(
     func=mdp.height_scan,
     params={"sensor_cfg": SceneEntityCfg("height_scanner")},
     clip=(-1.0, 5.0),
+)
+POLICY_HEIGHT_SCAN_CFG = ObsTerm(
+    func=mdp.height_scan,
+    params={"sensor_cfg": SceneEntityCfg("height_scanner")},
+    clip=(-1.0, 5.0),
+    noise=Unoise(n_min=-0.05, n_max=0.05),
 )
 CRITIC_HISTORY_LENGTH = 5
 
