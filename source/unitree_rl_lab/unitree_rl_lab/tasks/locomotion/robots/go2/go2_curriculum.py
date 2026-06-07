@@ -28,6 +28,7 @@ CRITIC_HEIGHT_SCAN_CFG = ObsTerm(
     params={"sensor_cfg": SceneEntityCfg("height_scanner")},
     clip=(-1.0, 5.0),
 )
+# 17×11 grid, resolution 0.1m, size [1.6, 1.0]m
 POLICY_HEIGHT_SCAN_CFG = ObsTerm(
     func=mdp.height_scan,
     params={"sensor_cfg": SceneEntityCfg("height_scanner")},

@@ -3,6 +3,7 @@
 #include "isaaclab/envs/manager_based_rl_env.h"
 #include "isaaclab/envs/mdp/observations/observations.h"
 #include "isaaclab/envs/mdp/actions/joint_actions.h"
+#include "HeightScanUpdater.h"
 
 #include <array>
 #include <algorithm>
@@ -89,10 +90,17 @@ REGISTER_OBSERVATION(keyboard_velocity_commands)
     return std::vector<float>(cmd.begin(), cmd.end());
 }
 
+REGISTER_OBSERVATION(height_scan)
+{
+    (void)env;
+    (void)params;
+    return go2::HeightScanUpdater::instance().get();
+}
+
 } // namespace isaaclab
 
 State_RLBase::State_RLBase(int state_mode, std::string state_string)
-: FSMState(state_mode, state_string) 
+: FSMState(state_mode, state_string)
 {
     auto cfg = param::config["FSM"][state_string];
     auto policy_dir = param::parser_policy_dir(cfg["policy_dir"].as<std::string>());

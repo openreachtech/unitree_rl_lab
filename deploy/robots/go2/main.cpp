@@ -2,6 +2,7 @@
 #include "FSM/State_Passive.h"
 #include "FSM/State_FixStand.h"
 #include "FSM/State_RLBase.h"
+#include "HeightScanUpdater.h"
 
 std::unique_ptr<LowCmd_t> FSMState::lowcmd = nullptr;
 std::shared_ptr<LowState_t> FSMState::lowstate = nullptr;
@@ -22,6 +23,8 @@ void init_fsm_state()
     spdlog::info("Waiting for connection to robot...");
     FSMState::lowstate->wait_for_connection();
     spdlog::info("Connected to robot.");
+    go2::HeightScanUpdater::instance().init(FSMState::lowstate);
+    spdlog::info("HeightScanUpdater initialized");
 }
 
 int main(int argc, char** argv)
@@ -52,7 +55,7 @@ int main(int argc, char** argv)
     {
         sleep(1);
     }
-    
+
     return 0;
 }
 
