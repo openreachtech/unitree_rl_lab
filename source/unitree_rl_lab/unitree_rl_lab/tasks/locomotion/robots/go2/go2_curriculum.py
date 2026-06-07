@@ -22,7 +22,20 @@ if TYPE_CHECKING:
 
 Ranges = UniformLevelVelocityCommandCfg.Ranges
 
-# Height scan grid matches RobotSceneCfg.height_scanner
+# LiDAR mount offset from base (trunk / base_link). Matches deploy height_scan_pipeline.
+GO2_LIDAR_OFFSET_X = 0.275  # m, forward from base center (~0.27–0.28)
+GO2_LIDAR_OFFSET_Y = 0.0
+GO2_LIDAR_OFFSET_Z = 0.075  # m, up from base center (~0.07–0.08)
+
+# RayCaster grid origin: LiDAR position + Isaac Lab downward-ray offset (+20 m on z).
+GO2_HEIGHT_SCANNER_RAY_Z = 20.0
+GO2_HEIGHT_SCANNER_OFFSET = (
+    GO2_LIDAR_OFFSET_X,
+    GO2_LIDAR_OFFSET_Y,
+    GO2_LIDAR_OFFSET_Z + GO2_HEIGHT_SCANNER_RAY_Z,
+)
+
+# Height scan grid matches RobotSceneCfgGo2V2.height_scanner (LiDAR origin, 17×11 @ 0.1 m).
 CRITIC_HEIGHT_SCAN_CFG = ObsTerm(
     func=mdp.height_scan,
     params={"sensor_cfg": SceneEntityCfg("height_scanner")},
