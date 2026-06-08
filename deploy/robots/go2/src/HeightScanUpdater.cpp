@@ -52,6 +52,58 @@ void HeightScanUpdater::init(const std::shared_ptr<LowState_t>& lowstate)
         });
     cloud_sub_->set_timeout_ms(500);
     spdlog::info("HeightScanUpdater subscribed to rt/utlidar/cloud");
+
+    init_publisher();
+}
+
+void HeightScanUpdater::init_publisher()
+{
+    height_scan_pub_.lock();
+
+    auto& msg = height_scan_pub_.msg_;
+    msg.header().frame_id() = "utlidar_lidar";
+    msg.height() = static_cast<uint32_t>(kHeightScanGridNx);
+    msg.width() = static_cast<uint32_t>(kHeightScanGridNy);
+    msg.is_bigendian() = false;
+    msg.is_dense() = true;
+    msg.point_step() = sizeof(float);
+    msg.row_step() = msg.point_step() * msg.width();
+
+    std::vector<sensor_msgs::msg::dds_::PointField_> fields(1);
+    fields[0] = sensor_msgs::msg::dds_::PointField_("z", 0, kPointFieldFloat32, 1);
+    msg.fields() = std::move(fields);
+    msg.data().resize(msg.row_step() * msg.height());
+
+    height_scan_pub_.unlock();
+    publisher_ready_ = true;
+    spdlog::info("HeightScanUpdater publishing {}", kHeightScanTopic);
+}
+
+void HeightScanUpdater::publish_height_scan(
+    const std::vector<float>& scan,
+    const sensor_msgs::msg::dds_::PointCloud2_& cloud)
+{
+    if (!publisher_ready_ || static_cast<int>(scan.size()) != kHeightScanSize)
+    {
+        return;
+    }
+
+    if (!height_scan_pub_.trylock())
+    {
+        return;
+    }
+
+    auto& msg = height_scan_pub_.msg_;
+    msg.header().stamp() = cloud.header().stamp();
+    msg.data().resize(msg.row_step() * msg.height());
+
+    uint8_t* buffer = msg.data().data();
+    for (int i = 0; i < kHeightScanSize; ++i)
+    {
+        std::memcpy(buffer + static_cast<size_t>(i) * msg.point_step(), &scan[i], sizeof(float));
+    }
+
+    height_scan_pub_.unlockAndPublish();
 }
 
 std::vector<float> HeightScanUpdater::get() const
@@ -79,6 +131,7 @@ void HeightScanUpdater::on_cloud(const sensor_msgs::msg::dds_::PointCloud2_& clo
         std::lock_guard<std::mutex> lock(mutex_);
         height_scan_ = scan;
     }
+    publish_height_scan(scan, cloud);
 }
 
 bool HeightScanUpdater::parse_xyz_offsets(

@@ -2,6 +2,7 @@
 
 #include "Types.h"
 
+#include <unitree/dds_wrapper/common/Publisher.h>
 #include <unitree/dds_wrapper/common/Subscription.h>
 #include <unitree/idl/ros2/PointCloud2_.hpp>
 
@@ -24,6 +25,7 @@ inline constexpr float kHeightScanOffset = 0.5f;
 inline constexpr float kHeightScanClipMin = -1.0f;
 inline constexpr float kHeightScanClipMax = 5.0f;
 inline constexpr float kHeightScanEmpty = -1.0f;
+inline constexpr const char* kHeightScanTopic = "rt/height_scan";
 
 inline std::vector<float> make_default_height_scan()
 {
@@ -43,6 +45,10 @@ private:
     HeightScanUpdater() = default;
 
     void on_cloud(const sensor_msgs::msg::dds_::PointCloud2_& cloud);
+    void init_publisher();
+    void publish_height_scan(
+        const std::vector<float>& scan,
+        const sensor_msgs::msg::dds_::PointCloud2_& cloud);
     std::vector<float> compute_height_scan(
         const sensor_msgs::msg::dds_::PointCloud2_& cloud,
         const Eigen::Quaternionf& imu_quat) const;
@@ -64,6 +70,9 @@ private:
 
     std::shared_ptr<LowState_t> lowstate_;
     std::shared_ptr<unitree::robot::SubscriptionBase<sensor_msgs::msg::dds_::PointCloud2_>> cloud_sub_;
+    unitree::robot::RealTimePublisher<sensor_msgs::msg::dds_::PointCloud2_> height_scan_pub_{
+        kHeightScanTopic};
+    bool publisher_ready_ = false;
 
     mutable std::mutex mutex_;
     std::vector<float> height_scan_ = make_default_height_scan();
