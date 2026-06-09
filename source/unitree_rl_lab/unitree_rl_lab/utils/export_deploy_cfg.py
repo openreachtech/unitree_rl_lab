@@ -49,7 +49,9 @@ def export_deploy_cfg(
     damping = np.zeros(len(joint_sdk_names))
     damping[joint_ids_map] = asset.data.default_joint_damping[0].detach().cpu().numpy().tolist()
     cfg["damping"] = damping.tolist()
-    cfg["default_joint_pos"] = asset.data.default_joint_pos[0].detach().cpu().numpy().tolist()
+    default_joint_pos = np.zeros(len(joint_sdk_names))
+    default_joint_pos[joint_ids_map] = asset.data.default_joint_pos[0].detach().cpu().numpy().tolist()
+    cfg["default_joint_pos"] = default_joint_pos.tolist()
 
     # --- commands ---
     cfg["commands"] = {}

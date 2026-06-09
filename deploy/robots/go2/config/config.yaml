@@ -27,7 +27,8 @@ FSM:
     qs: [
       [],
       [0.0, 1.36, -2.65, 0.0, 1.36, -2.65, 0.0, 1.36, -2.65, 0.0, 1.36, -2.65],
-      [0., 0.8, -1.5, 0., 0.8, -1.5, 0., 0.8, -1.5, 0., 0.8, -1.5],
+      # SDK motor order FR, FL, RR, RL (hip, thigh, calf) — matches deploy default_joint_pos / Isaac init
+      [-0.1, 0.8, -1.5, 0.1, 0.8, -1.5, -0.1, 1.0, -1.5, 0.1, 1.0, -1.5],
     ]
   Velocity:
     transitions:
