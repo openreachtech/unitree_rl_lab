@@ -4,9 +4,11 @@
 #include "isaaclab/envs/mdp/observations/observations.h"
 #include "isaaclab/envs/mdp/actions/joint_actions.h"
 #include "HeightScanUpdater.h"
+#include "param.h"
 
 #include <array>
 #include <algorithm>
+#include <spdlog/spdlog.h>
 
 namespace isaaclab
 {
@@ -93,7 +95,43 @@ REGISTER_OBSERVATION(keyboard_velocity_commands)
 REGISTER_OBSERVATION(height_scan)
 {
     (void)env;
-    (void)params;
+
+    bool flat_override = false;
+    float flat_value = go2::kHeightScanFlatDefault;
+
+    if (params["flat_override"].IsDefined() && params["flat_override"].as<bool>())
+    {
+        flat_override = true;
+        if (params["flat_value"].IsDefined())
+        {
+            flat_value = params["flat_value"].as<float>();
+        }
+    }
+
+    const auto fsm_height_scan = param::config["FSM"]["Velocity"]["height_scan"];
+    if (fsm_height_scan.IsDefined() && fsm_height_scan["flat_override"].IsDefined()
+        && fsm_height_scan["flat_override"].as<bool>())
+    {
+        flat_override = true;
+        if (fsm_height_scan["flat_value"].IsDefined())
+        {
+            flat_value = fsm_height_scan["flat_value"].as<float>();
+        }
+    }
+
+    if (flat_override)
+    {
+        static bool logged = false;
+        if (!logged)
+        {
+            spdlog::info(
+                "height_scan: flat_override ON (policy gets constant {:.4f}, DDS pipeline unchanged)",
+                flat_value);
+            logged = true;
+        }
+        return go2::make_flat_height_scan(flat_value);
+    }
+
     return go2::HeightScanUpdater::instance().get();
 }
 

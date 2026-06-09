@@ -32,6 +32,14 @@ inline std::vector<float> make_default_height_scan()
     return std::vector<float>(kHeightScanSize, kHeightScanEmpty);
 }
 
+// Uniform height_scan for flat terrain (Isaac play on plane ≈ 0.0; tune if needed).
+inline constexpr float kHeightScanFlatDefault = 0.0f;
+
+inline std::vector<float> make_flat_height_scan(float value = kHeightScanFlatDefault)
+{
+    return std::vector<float>(kHeightScanSize, value);
+}
+
 class HeightScanUpdater
 {
 public:
