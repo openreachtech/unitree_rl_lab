@@ -113,7 +113,9 @@ def export_deploy_cfg(
             term_cfg.scale = [1.0 for _ in range(obs_dims[1])]
         if term_cfg.clip is not None:
             term_cfg.clip = list(term_cfg.clip)
-        if term_cfg.history_length == 0:
+        if term_cfg.history_length > 0:
+            term_cfg.history_length = int(term_cfg.history_length)
+        else:
             term_cfg.history_length = 1
 
         # clean cfg
