@@ -27,7 +27,6 @@ CRITIC_HEIGHT_SCAN_CFG = ObsTerm(
     params={"sensor_cfg": SceneEntityCfg("height_scanner")},
     clip=(-1.0, 5.0),
 )
-CRITIC_HISTORY_LENGTH = 5
 
 # Per manual curriculum_level: starting command ranges and in-phase expansion caps.
 PHASE_VEL_START: dict[int, Ranges] = {
@@ -94,17 +93,10 @@ def apply_phase_terrain_settings(env_cfg) -> None:
         env_cfg.scene.terrain.max_init_terrain_level = min(2, num_rows - 1)
 
 
-def apply_phase_height_scanner(env_cfg) -> None:
-    """Keep critic obs layout fixed across curriculum levels so checkpoints remain loadable."""
-    env_cfg.observations.critic.height_scan = CRITIC_HEIGHT_SCAN_CFG
-    env_cfg.observations.critic.history_length = CRITIC_HISTORY_LENGTH
-
-
 def apply_manual_curriculum_level(env_cfg) -> None:
-    """Apply static env settings for the current ``curriculum_level`` (terrain + velocity + critic obs)."""
+    """Apply static env settings for the current ``curriculum_level`` (terrain + velocity)."""
     apply_phase_terrain_settings(env_cfg)
     apply_phase_velocity_ranges(env_cfg)
-    apply_phase_height_scanner(env_cfg)
 
 
 def _column_indices_by_sub_terrain(terrain_generator_cfg: TerrainGeneratorCfg, num_cols: int) -> dict[str, list[int]]:

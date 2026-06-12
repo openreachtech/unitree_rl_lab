@@ -53,18 +53,34 @@ GO2_CURRICULUM_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
     },
 )
 
+POLICY_HISTORY_LENGTH = 5
+CRITIC_HISTORY_LENGTH = 5
+
+
+@configclass
+class PolicyCfgGo2(ObservationsCfg.PolicyCfg):
+    """Go2 policy: observation history for temporal context."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.history_length = POLICY_HISTORY_LENGTH
+
 
 @configclass
 class CriticCfgGo2(ObservationsCfg.CriticCfg):
-    """Go2 critic: base fields plus privileged ``height_scan`` (enabled per curriculum level)."""
+    """Go2 critic: privileged ``height_scan`` plus observation history."""
 
     height_scan = CRITIC_HEIGHT_SCAN_CFG
+
+    def __post_init__(self):
+        self.history_length = CRITIC_HISTORY_LENGTH
 
 
 @configclass
 class ObservationsCfgGo2(ObservationsCfg):
-    """Go2 observations: policy unchanged; extended critic for privileged training."""
+    """Go2 observations: policy history; extended critic for privileged training."""
 
+    policy: PolicyCfgGo2 = PolicyCfgGo2()
     critic: CriticCfgGo2 = CriticCfgGo2()
 
 
