@@ -79,7 +79,7 @@ class RobotSceneCfgGo2(RobotSceneCfg):
 @configclass
 class RobotEnvCfgGo2(RobotEnvCfg):
     """Go2 velocity env with manual terrain curriculum."""
-    curriculum_level: int = 1
+    curriculum_level: int = 3
     scene: RobotSceneCfgGo2 = RobotSceneCfgGo2(num_envs=4096, env_spacing=2.5)
     observations: ObservationsCfgGo2 = ObservationsCfgGo2()
     curriculum: CurriculumCfgGo2 = CurriculumCfgGo2()

@@ -197,7 +197,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         # load previously trained model
-        runner.load(resume_path)
+        import torch as _torch; _ckpt = _torch.load(resume_path, map_location="cpu"); _actor_state = {k: v for k, v in _ckpt["model_state_dict"].items() if k.startswith("actor.") or k == "std"}; runner.alg.policy.load_state_dict(_actor_state, strict=False); runner.current_learning_iteration = 0
 
     # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
