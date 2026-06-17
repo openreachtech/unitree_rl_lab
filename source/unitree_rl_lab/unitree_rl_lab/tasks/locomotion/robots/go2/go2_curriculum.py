@@ -32,13 +32,13 @@ CRITIC_HEIGHT_SCAN_CFG = ObsTerm(
 PHASE_VEL_START: dict[int, Ranges] = {
     1: Ranges(lin_vel_x=(-0.1, 0.1), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-0.5, 0.5)),
     2: Ranges(lin_vel_x=(-0.2, 0.2), lin_vel_y=(-0.15, 0.15), ang_vel_z=(-0.5, 0.5)),
-    3: Ranges(lin_vel_x=(0.1, 0.2), lin_vel_y=(-0.05, 0.05), ang_vel_z=(-0.05, 0.05)),
+    3: Ranges(lin_vel_x=(0.05, 0.2), lin_vel_y=(-0.0, 0.0), ang_vel_z=(-0.0, 0.0)),
 }
 
 PHASE_VEL_LIMIT: dict[int, Ranges] = {
     1: Ranges(lin_vel_x=(-1.5, 1.5), lin_vel_y=(-0.8, 0.8), ang_vel_z=(-1.2, 1.2)),
     2: Ranges(lin_vel_x=(-1.2, 1.2), lin_vel_y=(-0.7, 0.7), ang_vel_z=(-1.1, 1.1)),
-    3: Ranges(lin_vel_x=(0.5, 1.2), lin_vel_y=(-0.05, 0.05), ang_vel_z=(-0.05, 0.05)),
+    3: Ranges(lin_vel_x=(1.0, 1.2), lin_vel_y=(-0.0, 0.0), ang_vel_z=(-0.0, 0.0)),
 }
 
 # In-place spin focus command ranges (keyed by curriculum level bucket).
