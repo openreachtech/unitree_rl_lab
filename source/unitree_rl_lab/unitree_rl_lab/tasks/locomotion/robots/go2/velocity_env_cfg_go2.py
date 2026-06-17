@@ -7,7 +7,13 @@ from unitree_rl_lab.tasks.locomotion.robots.go2.go2_curriculum import (
     apply_manual_curriculum_level,
     apply_play_velocity_ranges,
 )
-from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import ObservationsCfg, RewardsCfg, RobotEnvCfg, RobotSceneCfg
+from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import (
+    CommandsCfg,
+    ObservationsCfg,
+    RewardsCfg,
+    RobotEnvCfg,
+    RobotSceneCfg,
+)
 
 # Terrain layout for manual curriculum (columns are assigned by proportion).
 GO2_CURRICULUM_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
@@ -34,16 +40,16 @@ GO2_CURRICULUM_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
             grid_height_range=(0.05, 0.15),
             platform_width=2.0,
         ),
-        "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
-            proportion=0.2,
-            step_height_range=(0.05, 0.23),
-            step_width=0.3,
-            platform_width=2.0,
-            border_width=1.0,
-            holes=False,
-        ),
+        # "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
+        #     proportion=0.2,
+        #     step_height_range=(0.05, 0.23),
+        #     step_width=0.3,
+        #     platform_width=2.0,
+        #     border_width=1.0,
+        #     holes=False,
+        # ),
         "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
-            proportion=0.2,
+            proportion=0.4,
             step_height_range=(0.05, 0.23),
             step_width=0.3,
             platform_width=2.0,
@@ -53,8 +59,8 @@ GO2_CURRICULUM_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
     },
 )
 
-POLICY_HISTORY_LENGTH = 5
-CRITIC_HISTORY_LENGTH = 5
+POLICY_HISTORY_LENGTH = 1
+CRITIC_HISTORY_LENGTH = 3
 
 
 @configclass
@@ -85,6 +91,13 @@ class ObservationsCfgGo2(ObservationsCfg):
 
 
 @configclass
+class CommandsCfgGo2(CommandsCfg):
+    """Go2 v1: reduce standing-only env fraction."""
+
+    base_velocity = CommandsCfg().base_velocity.replace(rel_standing_envs=0.01)
+
+
+@configclass
 class RewardsCfgGo2(RewardsCfg):
     """Go2-specific reward tuning."""
 
@@ -106,6 +119,7 @@ class RobotEnvCfgGo2(RobotEnvCfg):
     focus_spin_in_place: bool = False
 
     scene: RobotSceneCfgGo2 = RobotSceneCfgGo2(num_envs=4096, env_spacing=2.5)
+    commands: CommandsCfgGo2 = CommandsCfgGo2()
     observations: ObservationsCfgGo2 = ObservationsCfgGo2()
     rewards: RewardsCfgGo2 = RewardsCfgGo2()
     curriculum: CurriculumCfgGo2 = CurriculumCfgGo2()
