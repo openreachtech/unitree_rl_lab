@@ -144,7 +144,6 @@ class RewardsCfgGo2(RewardsCfg):
 class RobotSceneCfgGo2(RobotSceneCfg):
     terrain = RobotSceneCfg().terrain.replace(
         terrain_generator=GO2_CURRICULUM_TERRAIN_CFG,
-        max_init_terrain_level=0,
     )
 
 
