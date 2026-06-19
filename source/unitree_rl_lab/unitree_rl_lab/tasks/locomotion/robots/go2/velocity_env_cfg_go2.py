@@ -10,6 +10,7 @@ from unitree_rl_lab.tasks.locomotion.robots.go2.go2_curriculum import (
     apply_manual_curriculum_level,
     apply_play_velocity_ranges,
 )
+from unitree_rl_lab.tasks.locomotion.robots.go2.go2_train_cfg import MANUAL_CURRICULUM_LEVEL
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import (
     CommandsCfg,
     ObservationsCfg,
@@ -150,7 +151,7 @@ class RobotSceneCfgGo2(RobotSceneCfg):
 @configclass
 class RobotEnvCfgGo2(RobotEnvCfg):
     """Go2 velocity env with manual terrain curriculum."""
-    curriculum_level: int = 1
+    curriculum_level: int = MANUAL_CURRICULUM_LEVEL
     focus_spin_in_place: bool = False
 
     scene: RobotSceneCfgGo2 = RobotSceneCfgGo2(num_envs=4096, env_spacing=2.5)
