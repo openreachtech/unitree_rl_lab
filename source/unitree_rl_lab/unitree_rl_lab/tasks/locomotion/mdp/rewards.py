@@ -117,6 +117,44 @@ def feet_height_body(
     return reward
 
 
+def feet_height_body_stairs(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    asset_cfg: SceneEntityCfg,
+    step_height_range: tuple[float, float],
+    tanh_mult: float,
+    stance_foot_height_body: float = -0.32,
+) -> torch.Tensor:
+    """Penalize foot height error with a per-env target tied to terrain stair difficulty.
+    ``step_height_range`` is extra lift above the nominal stance foot height in body frame,
+    not an absolute world/body z coordinate.
+    """
+    step_min, step_max = step_height_range
+    terrain = env.scene.terrain
+    terrain_gen = terrain.cfg.terrain_generator
+    num_rows = terrain_gen.num_rows if terrain_gen is not None else 1
+    difficulty = terrain.terrain_levels.float() / max(num_rows - 1, 1)
+    step_height = step_min + difficulty * (step_max - step_min)
+    target_height = stance_foot_height_body + step_height
+
+    asset: RigidObject = env.scene[asset_cfg.name]
+    cur_footpos_translated = asset.data.body_pos_w[:, asset_cfg.body_ids, :] - asset.data.root_pos_w[:, :].unsqueeze(1)
+    footpos_in_body_frame = torch.zeros(env.num_envs, len(asset_cfg.body_ids), 3, device=env.device)
+    cur_footvel_translated = asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :] - asset.data.root_lin_vel_w[
+        :, :
+    ].unsqueeze(1)
+    footvel_in_body_frame = torch.zeros(env.num_envs, len(asset_cfg.body_ids), 3, device=env.device)
+    for i in range(len(asset_cfg.body_ids)):
+        footpos_in_body_frame[:, i, :] = quat_apply_inverse(asset.data.root_quat_w, cur_footpos_translated[:, i, :])
+        footvel_in_body_frame[:, i, :] = quat_apply_inverse(asset.data.root_quat_w, cur_footvel_translated[:, i, :])
+    foot_z_target_error = torch.square(footpos_in_body_frame[:, :, 2] - target_height.unsqueeze(1))
+    foot_velocity_tanh = torch.tanh(tanh_mult * torch.norm(footvel_in_body_frame[:, :, :2], dim=2))
+    reward = torch.sum(foot_z_target_error * foot_velocity_tanh, dim=1)
+    reward *= torch.linalg.norm(env.command_manager.get_command(command_name), dim=1) > 0.1
+    reward *= torch.clamp(-env.scene["robot"].data.projected_gravity_b[:, 2], 0, 0.7) / 0.7
+    return reward
+
+
 def foot_clearance_reward(
     env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, target_height: float, std: float, tanh_mult: float
 ) -> torch.Tensor:
@@ -126,6 +164,60 @@ def foot_clearance_reward(
     foot_velocity_tanh = torch.tanh(tanh_mult * torch.norm(asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2], dim=2))
     reward = foot_z_target_error * foot_velocity_tanh
     return torch.exp(-torch.sum(reward, dim=1) / std)
+
+
+def _cpg_leg_phases_rad(env: ManagerBasedRLEnv, period: float, offset: list[float]) -> torch.Tensor:
+    """Per-leg open-loop CPG phase in [0, 2π). Swing when phase < π."""
+    global_phase = ((env.episode_length_buf * env.step_dt) % period / period).unsqueeze(1)
+    phases = [(global_phase + offset_) % 1.0 for offset_ in offset]
+    return torch.cat(phases, dim=-1) * (2 * torch.pi)
+
+def wild_foot_clearance_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    sensor_cfg: SceneEntityCfg,
+    period: float,
+    offset: list[float],
+    radius: float = 0.1,
+) -> torch.Tensor:
+    """Reward swinging feet that stay above the local max terrain height under each foot."""
+    robot: Articulation = env.scene[asset_cfg.name]
+    sensor = env.scene[sensor_cfg.name]
+
+    foot_ids = asset_cfg.body_ids
+    # 足のworld位置 [num_envs, num_feet, 3]
+    foot_pos_w = robot.data.body_pos_w[:, foot_ids, :]
+
+    # レイヒット点 [num_envs, num_rays, 3]
+    ray_hits_w = sensor.data.ray_hits_w
+
+    # 各足 vs 各レイ点のxy距離 [num_envs, num_feet, num_rays]
+    diff_xy = foot_pos_w[:, :, None, :2] - ray_hits_w[:, None, :, :2]
+    dist_xy = torch.norm(diff_xy, dim=-1)
+
+    # 半径内マスク
+    in_range = dist_xy <= radius # [num_envs, num_feet, num_rays]
+
+    # 半径内のz値だけ取り出してmax（範囲外は -inf で無視）
+    ray_z = ray_hits_w[:, None, :, 2].expand(-1, len(foot_ids), -1)
+    valid_rays = torch.isfinite(ray_z)
+    in_range = in_range & valid_rays
+    masked_z = torch.where(in_range, ray_z, torch.full_like(ray_z, -1e9))
+    h_max, _ = torch.max(masked_z, dim=-1)
+
+    # 半径内に1点もない場合のフォールバック（全体max）
+    no_hit = ~in_range.any(dim=-1)
+    global_max = torch.where(valid_rays, ray_z, torch.full_like(ray_z, -1e9)).amax(dim=-1)
+    h_max = torch.where(no_hit, global_max, h_max)
+
+    above_max_terrain = foot_pos_w[:, :, 2] >= h_max
+
+    # --- スイング判定 ---
+    phases = _cpg_leg_phases_rad(env, period, offset)
+    is_swing = phases < torch.pi
+
+    reward = (is_swing & above_max_terrain).float()
+    return torch.sum(reward, dim=-1)
 
 
 def feet_too_near(

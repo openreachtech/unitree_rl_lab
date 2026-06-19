@@ -1,6 +1,9 @@
 import isaaclab.terrains as terrain_gen
+from isaaclab.managers import RewardTermCfg as RewTerm
+from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 
+from unitree_rl_lab.tasks.locomotion import mdp
 from unitree_rl_lab.tasks.locomotion.robots.go2.go2_curriculum import (
     CRITIC_HEIGHT_SCAN_CFG,
     CurriculumCfgGo2,
@@ -59,27 +62,30 @@ GO2_CURRICULUM_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
     },
 )
 
-POLICY_HISTORY_LENGTH = 1
+POLICY_HISTORY_LENGTH = 3
 CRITIC_HISTORY_LENGTH = 3
 
 
 @configclass
 class PolicyCfgGo2(ObservationsCfg.PolicyCfg):
-    """Go2 policy: observation history for temporal context."""
+    """Go2 policy: per-term observation history for temporal context."""
+
+    joint_pos_rel = ObservationsCfg.PolicyCfg().joint_pos_rel.replace(history_length=POLICY_HISTORY_LENGTH)
+    joint_vel_rel = ObservationsCfg.PolicyCfg().joint_vel_rel.replace(history_length=POLICY_HISTORY_LENGTH)
+    last_action = ObservationsCfg.PolicyCfg().last_action.replace(history_length=POLICY_HISTORY_LENGTH)
 
     def __post_init__(self):
         super().__post_init__()
-        self.history_length = POLICY_HISTORY_LENGTH
 
 
 @configclass
 class CriticCfgGo2(ObservationsCfg.CriticCfg):
-    """Go2 critic: privileged ``height_scan`` plus observation history."""
+    """Go2 critic: privileged ``height_scan`` plus per-term observation history."""
 
     height_scan = CRITIC_HEIGHT_SCAN_CFG
-
-    def __post_init__(self):
-        self.history_length = CRITIC_HISTORY_LENGTH
+    joint_pos_rel = ObservationsCfg.CriticCfg().joint_pos_rel.replace(history_length=CRITIC_HISTORY_LENGTH)
+    joint_vel_rel = ObservationsCfg.CriticCfg().joint_vel_rel.replace(history_length=CRITIC_HISTORY_LENGTH)
+    last_action = ObservationsCfg.CriticCfg().last_action.replace(history_length=CRITIC_HISTORY_LENGTH)
 
 
 @configclass
@@ -102,6 +108,49 @@ class RewardsCfgGo2(RewardsCfg):
     """Go2-specific reward tuning."""
 
     track_ang_vel_z = RewardsCfg().track_ang_vel_z.replace(weight=1.0)
+
+    foot_clearance = RewTerm(
+        func=mdp.foot_clearance_reward,
+        weight=0.0,
+        params={
+            "std": 0.05,
+            "tanh_mult": 2.0,
+            "target_height": 0.2,
+            "asset_cfg": SceneEntityCfg(
+                "robot", body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"]
+            ),
+        },
+    )
+
+    # foot_lift_body_height = RewTerm(
+    #     func=mdp.feet_height_body_stairs,
+    #     weight=-0.15,
+    #     params={
+    #         "command_name": "base_velocity",
+    #         "asset_cfg": SceneEntityCfg(
+    #             "robot", body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"]
+    #         ),
+    #         # Extra swing lift above nominal stance; ramps 0.05 m -> 0.23 m with terrain level.
+    #         "step_height_range": (0.05, 0.23),
+    #         "tanh_mult": 2.0,
+    #     },
+    # )
+
+    wild_foot_clearance = RewTerm(
+        func=mdp.wild_foot_clearance_reward,
+        weight=0.0,
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot", body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"]
+            ),
+            "sensor_cfg": SceneEntityCfg("height_scanner"),
+            "period": 0.4,
+            "offset": [0.0, 0.5, 0.5, 0.0],  # trot: FR+RL vs FL+RR
+            "radius": 0.1,
+        },
+    )
+
+
 
 
 @configclass

@@ -32,13 +32,13 @@ CRITIC_HEIGHT_SCAN_CFG = ObsTerm(
 PHASE_VEL_START: dict[int, Ranges] = {
     1: Ranges(lin_vel_x=(-0.1, 0.1), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-0.5, 0.5)),
     2: Ranges(lin_vel_x=(-0.2, 0.2), lin_vel_y=(-0.15, 0.15), ang_vel_z=(-0.5, 0.5)),
-    3: Ranges(lin_vel_x=(0.05, 0.2), lin_vel_y=(-0.0, 0.0), ang_vel_z=(-0.0, 0.0)),
+    3: Ranges(lin_vel_x=(-0.05, 0.1), lin_vel_y=(-0.05, 0.05), ang_vel_z=(-0.5, 0.5)),
 }
 
 PHASE_VEL_LIMIT: dict[int, Ranges] = {
     1: Ranges(lin_vel_x=(-1.5, 1.5), lin_vel_y=(-0.8, 0.8), ang_vel_z=(-1.2, 1.2)),
     2: Ranges(lin_vel_x=(-1.2, 1.2), lin_vel_y=(-0.7, 0.7), ang_vel_z=(-1.1, 1.1)),
-    3: Ranges(lin_vel_x=(1.0, 1.2), lin_vel_y=(-0.0, 0.0), ang_vel_z=(-0.0, 0.0)),
+    3: Ranges(lin_vel_x=(-0.8, 1.2), lin_vel_y=(-0.6, 0.6), ang_vel_z=(-1.0, 1.0)),
 }
 
 # In-place spin focus command ranges (keyed by curriculum level bucket).
@@ -92,11 +92,26 @@ def apply_phase_terrain_settings(env_cfg) -> None:
         num_rows = env_cfg.scene.terrain.terrain_generator.num_rows
         env_cfg.scene.terrain.max_init_terrain_level = min(2, num_rows - 1)
 
+def _set_reward_weight(rewards, name: str, weight: float) -> None:
+    if hasattr(rewards, name):
+        getattr(rewards, name).weight = weight
+
+def apply_phase_reward_settings(env_cfg) -> None:
+    """Apply level-specific reward weights (stairs: prioritize forward motion over staying put)."""
+    rewards = env_cfg.rewards
+    if curriculum_level_key(env_cfg.curriculum_level) >= 3:
+        _set_reward_weight(rewards, "wild_foot_clearance", 0.4)
+        _set_reward_weight(rewards, "foot_clearance", 0.2)
+    else:
+        _set_reward_weight(rewards, "wild_foot_clearance", 0.0)
+        _set_reward_weight(rewards, "foot_clearance", 0.0)
+
 
 def apply_manual_curriculum_level(env_cfg) -> None:
     """Apply static env settings for the current ``curriculum_level`` (terrain + velocity)."""
     apply_phase_terrain_settings(env_cfg)
     apply_phase_velocity_ranges(env_cfg)
+    apply_phase_reward_settings(env_cfg)
 
 
 def _column_indices_by_sub_terrain(terrain_generator_cfg: TerrainGeneratorCfg, num_cols: int) -> dict[str, list[int]]:
