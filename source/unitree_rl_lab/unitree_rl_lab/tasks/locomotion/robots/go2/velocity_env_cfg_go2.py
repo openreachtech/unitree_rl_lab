@@ -109,32 +109,19 @@ class RewardsCfgGo2(RewardsCfg):
 
     track_ang_vel_z = RewardsCfg().track_ang_vel_z.replace(weight=1.0)
 
-    foot_clearance = RewTerm(
-        func=mdp.foot_clearance_reward,
+    feet_height_body_stairs = RewTerm(
+        func=mdp.feet_height_body_stairs,
         weight=0.0,
         params={
-            "std": 0.05,
-            "tanh_mult": 2.0,
-            "target_height": 0.2,
+            "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg(
                 "robot", body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"]
             ),
+            # Extra swing lift above nominal stance; ramps 0.05 m -> 0.23 m with terrain level.
+            "step_height_range": (0.05, 0.23),
+            "tanh_mult": 2.0,
         },
     )
-
-    # foot_lift_body_height = RewTerm(
-    #     func=mdp.feet_height_body_stairs,
-    #     weight=-0.15,
-    #     params={
-    #         "command_name": "base_velocity",
-    #         "asset_cfg": SceneEntityCfg(
-    #             "robot", body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"]
-    #         ),
-    #         # Extra swing lift above nominal stance; ramps 0.05 m -> 0.23 m with terrain level.
-    #         "step_height_range": (0.05, 0.23),
-    #         "tanh_mult": 2.0,
-    #     },
-    # )
 
     wild_foot_clearance = RewTerm(
         func=mdp.wild_foot_clearance_reward,

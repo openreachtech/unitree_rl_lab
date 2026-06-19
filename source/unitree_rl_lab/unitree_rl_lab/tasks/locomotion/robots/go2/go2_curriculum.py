@@ -100,11 +100,12 @@ def apply_phase_reward_settings(env_cfg) -> None:
     """Apply level-specific reward weights (stairs: prioritize forward motion over staying put)."""
     rewards = env_cfg.rewards
     if curriculum_level_key(env_cfg.curriculum_level) >= 3:
+        _set_reward_weight(rewards, "feet_height_body_stairs", -0.15)
         _set_reward_weight(rewards, "wild_foot_clearance", 0.4)
-        _set_reward_weight(rewards, "foot_clearance", 0.2)
     else:
+        _set_reward_weight(rewards, "feet_height_body_stairs", 0.0)
         _set_reward_weight(rewards, "wild_foot_clearance", 0.0)
-        _set_reward_weight(rewards, "foot_clearance", 0.0)
+
 
 
 def apply_manual_curriculum_level(env_cfg) -> None:
