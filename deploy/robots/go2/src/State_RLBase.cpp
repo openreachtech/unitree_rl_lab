@@ -13,7 +13,7 @@ namespace isaaclab
 // deploy.yaml:
 //   observations: keyboard_velocity_commands  (not velocity_commands)
 //   commands.base_velocity:
-//     keyboard_vel_scale: 0.5   # optional, default 0.5
+//     keyboard_vel_scale: 0.8   # optional, default 0.8
 //     keyboard_alpha: 0.15      # optional low-pass; higher = smoother / slower
 
 REGISTER_OBSERVATION(keyboard_velocity_commands)
@@ -27,7 +27,7 @@ REGISTER_OBSERVATION(keyboard_velocity_commands)
     const auto cmd_cfg = env->cfg["commands"]["base_velocity"];
     const auto ranges = cmd_cfg["ranges"];
 
-    float vel_scale = 0.5f;
+    float vel_scale = 0.8f;
     if (cmd_cfg["keyboard_vel_scale"].IsDefined())
     {
         vel_scale = cmd_cfg["keyboard_vel_scale"].as<float>();
