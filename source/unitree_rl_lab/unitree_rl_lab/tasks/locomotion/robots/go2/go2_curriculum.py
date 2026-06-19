@@ -90,7 +90,8 @@ def apply_phase_terrain_settings(env_cfg) -> None:
         env_cfg.scene.terrain.max_init_terrain_level = 0
     else:
         num_rows = env_cfg.scene.terrain.terrain_generator.num_rows
-        env_cfg.scene.terrain.max_init_terrain_level = min(2, num_rows - 1)
+        # env_cfg.scene.terrain.max_init_terrain_level = min(2, num_rows - 1)
+        env_cfg.scene.terrain.max_init_terrain_level = 0
 
 def _set_reward_weight(rewards, name: str, weight: float) -> None:
     if hasattr(rewards, name):
