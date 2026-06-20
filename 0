@@ -1,0 +1,89 @@
+[1mdiff --git a/source/unitree_rl_lab/unitree_rl_lab/tasks/locomotion/robots/go2/velocity_env_cfg.py b/source/unitree_rl_lab/unitree_rl_lab/tasks/locomotion/robots/go2/velocity_env_cfg.py[m
+[1mindex 7496d76..bff61d4 100644[m
+[1m--- a/source/unitree_rl_lab/unitree_rl_lab/tasks/locomotion/robots/go2/velocity_env_cfg.py[m
+[1m+++ b/source/unitree_rl_lab/unitree_rl_lab/tasks/locomotion/robots/go2/velocity_env_cfg.py[m
+[36m@@ -21,6 +21,24 @@[m [mfrom isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise[m
+ from unitree_rl_lab.assets.robots.unitree import UNITREE_GO2_CFG as ROBOT_CFG[m
+ from unitree_rl_lab.tasks.locomotion import mdp[m
+ [m
+[32m+[m[32mimport sys[m
+[32m+[m[32mimport os[m
+[32m+[m[32msys.path.append("/home/tetsuka/isaacsim")[m
+[32m+[m[32mfrom .lidar_cfg import get_go2_lidar_cfg[m
+[32m+[m[32mfrom src.lidar_processor import HeightmapProcessor[m
+[32m+[m
+[32m+[m[32mYAML_PATH = "/home/tetsuka/isaacsim/src/heightmap_spec.yaml"[m
+[32m+[m[32mlidar_processor = HeightmapProcessor(config_yaml_path=YAML_PATH, device="cuda:0")[m
+[32m+[m
+[32m+[m[32mdef go2_lidar_heightmap(env, randomize: bool = False):[m
+[32m+[m[32m    """毎ステップ呼び出されるLiDAR観測関数"""[m
+[32m+[m[32m    return lidar_processor.process([m
+[32m+[m[32m        pos_w=env.scene["lidar"].data.ray_hits_w,[m
+[32m+[m[32m        root_pos_w=env.scene["robot"].data.root_pos_w,[m
+[32m+[m[32m        root_quat_w=env.scene["robot"].data.root_quat_w,[m
+[32m+[m[32m        randomize=randomize[m
+[32m+[m[32m    )[m
+[32m+[m
+ COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg([m
+     size=(8.0, 8.0),[m
+     border_width=20.0,[m
+[36m@@ -93,14 +111,16 @@[m [mclass RobotSceneCfg(InteractiveSceneCfg):[m
+     robot: ArticulationCfg = ROBOT_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")[m
+ [m
+     # sensors[m
+[31m-    height_scanner = RayCasterCfg([m
+[31m-        prim_path="{ENV_REGEX_NS}/Robot/base",[m
+[31m-        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),[m
+[31m-        ray_alignment="yaw",[m
+[31m-        pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[1.6, 1.0]),[m
+[31m-        debug_vis=False,[m
+[31m-        mesh_prim_paths=["/World/ground"],[m
+[31m-    )[m
+[32m+[m[32m    # height_scanner = RayCasterCfg([m
+[32m+[m[32m    #     prim_path="{ENV_REGEX_NS}/Robot/base",[m
+[32m+[m[32m    #     offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),[m
+[32m+[m[32m    #     ray_alignment="yaw",[m
+[32m+[m[32m    #     pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[1.6, 1.0]),[m
+[32m+[m[32m    #     debug_vis=False,[m
+[32m+[m[32m    #     mesh_prim_paths=["/World/ground"],[m
+[32m+[m[32m    # )[m
+[32m+[m[41m    [m
+[32m+[m[32m    lidar = get_go2_lidar_cfg(prim_path="{ENV_REGEX_NS}/Robot/base")[m
+     contact_forces = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True)[m
+     # lights[m
+     sky_light = AssetBaseCfg([m
+[36m@@ -230,6 +250,11 @@[m [mclass ObservationsCfg:[m
+             func=mdp.joint_vel_rel, scale=0.05, clip=(-100, 100), noise=Unoise(n_min=-1.5, n_max=1.5)[m
+         )[m
+         last_action = ObsTerm(func=mdp.last_action, clip=(-100, 100))[m
+[32m+[m[41m        [m
+[32m+[m[32m        heightmap = ObsTerm([m
+[32m+[m[32m            func=go2_lidar_heightmap,[m
+[32m+[m[32m            params={"randomize": True} # 学習時はドロップアウト等のノイズを付与[m
+[32m+[m[32m        )[m
+ [m
+         def __post_init__(self):[m
+             # self.history_length = 5[m
+[36m@@ -257,6 +282,12 @@[m [mclass ObservationsCfg:[m
+         #     params={"sensor_cfg": SceneEntityCfg("height_scanner")},[m
+         #     clip=(-1.0, 5.0),[m
+         # )[m
+[32m+[m[41m        [m
+[32m+[m[32m        # ★ Critic（価値関数）側にも同じ情報を渡す（Criticは特権情報としてノイズ無し）[m
+[32m+[m[32m        heightmap = ObsTerm([m
+[32m+[m[32m            func=go2_lidar_heightmap,[m
+[32m+[m[32m            params={"randomize": False}[m
+[32m+[m[32m        )[m
+ [m
+         # def __post_init__(self):[m
+         #     self.history_length = 5[m
+[36m@@ -393,7 +424,8 @@[m [mclass RobotEnvCfg(ManagerBasedRLEnvCfg):[m
+         # update sensor update periods[m
+         # we tick all the sensors based on the smallest update period (physics update period)[m
+         self.scene.contact_forces.update_period = self.sim.dt[m
+[31m-        self.scene.height_scanner.update_period = self.decimation * self.sim.dt[m
+[32m+[m[32m        # self.scene.height_scanner.update_period = self.decimation * self.sim.dt[m
+[32m+[m[32m        self.scene.lidar.update_period = self.decimation * self.sim.dt[m
+ [m
+         # check if terrain levels curriculum is enabled - if so, enable curriculum for terrain generator[m
+         # this generates terrains with increasing difficulty and is useful for training[m
