@@ -47,7 +47,7 @@ GO2_CURRICULUM_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
         "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
             proportion=0.1,
             step_height_range=(0.05, 0.23),
-            step_width=0.3,
+            step_width=0.19,
             platform_width=2.0,
             border_width=1.0,
             holes=False,
@@ -55,7 +55,7 @@ GO2_CURRICULUM_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
         "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
             proportion=0.3,
             step_height_range=(0.05, 0.23),
-            step_width=0.3,
+            step_width=0.19,
             platform_width=2.0,
             border_width=1.0,
             holes=False,
