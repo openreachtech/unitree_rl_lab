@@ -19,12 +19,12 @@ from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import (
     RobotSceneCfg,
 )
 
-# Terrain layout for manual curriculum (columns are assigned by proportion).
+# Terrain mesh layout (column proportions only; spawn mix is in go2_curriculum.py).
 GO2_CURRICULUM_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
     size=(8.0, 8.0),
     border_width=20.0,
-    num_rows=10,
-    num_cols=20,
+    num_cols=20, # terrain_types
+    num_rows=10, # terrain_levels
     horizontal_scale=0.1,
     vertical_scale=0.005,
     slope_threshold=0.75,
@@ -39,13 +39,13 @@ GO2_CURRICULUM_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
             border_width=0.25,
         ),
         "boxes": terrain_gen.MeshRandomGridTerrainCfg(
-            proportion=0.30,
+            proportion=0.20,
             grid_width=0.45,
             grid_height_range=(0.05, 0.15),
             platform_width=2.0,
         ),
         "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
-            proportion=0.1,
+            proportion=0.2,
             step_height_range=(0.05, 0.23),
             step_width=0.19,
             platform_width=2.0,
@@ -153,6 +153,7 @@ class RobotEnvCfgGo2(RobotEnvCfg):
     """Go2 velocity env with manual terrain curriculum."""
     curriculum_level: int = MANUAL_CURRICULUM_LEVEL
     focus_spin_in_place: bool = False
+    play_mode: bool = False
 
     scene: RobotSceneCfgGo2 = RobotSceneCfgGo2(num_envs=4096, env_spacing=2.5)
     commands: CommandsCfgGo2 = CommandsCfgGo2()
@@ -167,9 +168,11 @@ class RobotEnvCfgGo2(RobotEnvCfg):
 
 @configclass
 class RobotPlayEnvCfgGo2(RobotEnvCfgGo2):
+    play_mode: bool = True
+
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 32
-        self.scene.terrain.terrain_generator.num_rows = 2
-        self.scene.terrain.terrain_generator.num_cols = 5
+        self.scene.terrain.terrain_generator.num_rows = 3 # terrain_levels
+        self.scene.terrain.terrain_generator.num_cols = 5 # terrain_types
         apply_play_velocity_ranges(self)

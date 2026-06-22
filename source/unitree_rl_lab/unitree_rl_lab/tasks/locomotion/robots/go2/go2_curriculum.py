@@ -53,6 +53,32 @@ SPIN_FOCUS_VEL_LIMIT: dict[int, Ranges] = {
     3: Ranges(lin_vel_x=(-0.05, 0.05), lin_vel_y=(-0.05, 0.05), ang_vel_z=(-1.0, 1.0)),
 }
 
+# Train: per-level terrain spawn mix (independent of terrain mesh column proportions).
+TERRAIN_SPAWN_WEIGHTS: dict[int, dict[str, float]] = {
+    1: {
+        "flat": 1.0,
+    },
+    2: {
+        "flat": 0.10,
+        "random_rough": 0.40,
+        "boxes": 0.50,
+    },
+    3: {
+        "flat": 0.04,
+        "random_rough": 0.08,
+        "boxes": 0.08,
+        "pyramid_stairs": 0.30,
+        "pyramid_stairs_inv": 0.50,
+    },
+}
+
+# Play: one terrain type per phase (no flat/rough mix on stairs levels).
+PLAY_TERRAIN_SPAWN_WEIGHTS: dict[int, dict[str, float]] = {
+    1: {"flat": 1.0},
+    2: {"random_rough": 0.2, "boxes": 0.8},
+    3: {"pyramid_stairs": 0.2, "pyramid_stairs_inv": 0.8},
+}
+
 def curriculum_level_key(curriculum_level: int) -> int:
     if curriculum_level <= 1:
         return 1
@@ -146,49 +172,36 @@ def _column_indices_by_sub_terrain(terrain_generator_cfg: TerrainGeneratorCfg, n
     return col_map
 
 
-def _sample_column_indices(
-    env_ids: Sequence[int] | slice,
-    num_envs: int,
-    allowed_cols: list[int],
-    device: torch.device,
-) -> torch.Tensor:
-    columns = torch.tensor(allowed_cols, dtype=torch.long, device=device)
-    count = num_envs if isinstance(env_ids, slice) else len(env_ids)
-    pick = torch.randint(0, columns.shape[0], (count,), device=device)
-    return columns[pick]
-
-
 def terrain_manual_levels(
     env: ManagerBasedRLEnv,
-    env_ids: Sequence[int],
+    env_ids: Sequence[int] | slice,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
     terrain: TerrainImporter = env.scene.terrain
     if terrain.terrain_origins is None or terrain.cfg.terrain_generator is None:
         return torch.tensor(0.0, device=env.device)
 
-    level = int(getattr(env.cfg, "curriculum_level", 1))
-    terrain_gen_cfg = terrain.cfg.terrain_generator
-    col_map = _column_indices_by_sub_terrain(terrain_gen_cfg, terrain_gen_cfg.num_cols)
+    phase = curriculum_level_key(int(getattr(env.cfg, "curriculum_level", 1)))
+    spawn_table = PLAY_TERRAIN_SPAWN_WEIGHTS if getattr(env.cfg, "play_mode", False) else TERRAIN_SPAWN_WEIGHTS
+    spawn = spawn_table[phase]
+    terrain_gen = terrain.cfg.terrain_generator
+    col_map = _column_indices_by_sub_terrain(terrain_gen, terrain_gen.num_cols)
 
-    if level <= 1:
-        allowed_cols = col_map["flat"]
-        terrain.terrain_types[env_ids] = _sample_column_indices(env_ids, env.num_envs, allowed_cols, env.device)
-        terrain.terrain_levels[env_ids] = 0
-        terrain.env_origins[env_ids] = terrain.terrain_origins[terrain.terrain_levels[env_ids], terrain.terrain_types[env_ids]]
-        return torch.mean(terrain.terrain_levels.float())
+    names = [n for n in spawn if spawn[n] > 0 and col_map.get(n)]
+    count = env.num_envs if isinstance(env_ids, slice) else len(env_ids)
+    device = env.device
 
-    if level == 2:
-        allowed_cols: list[int] = []
-        for name in ("random_rough", "boxes"):
-            allowed_cols.extend(col_map.get(name, []))
-    else:
-        allowed_cols = []
-        for name in ("pyramid_stairs", "pyramid_stairs_inv"):
-            allowed_cols.extend(col_map.get(name, []))
+    # 1) pick sub-terrain by TERRAIN_SPAWN_WEIGHTS, 2) pick a random column within it
+    type_pick = torch.multinomial(torch.tensor([spawn[n] for n in names], device=device), count, replacement=True)
+    sampled_cols = torch.empty(count, dtype=torch.long, device=device)
+    for t, name in enumerate(names):
+        mask = type_pick == t
+        if not mask.any():
+            continue
+        cols = torch.tensor(col_map[name], device=device)
+        sampled_cols[mask] = cols[torch.randint(len(cols), (int(mask.sum()),), device=device)]
 
-    terrain.terrain_types[env_ids] = _sample_column_indices(env_ids, env.num_envs, allowed_cols, env.device)
-    # Row difficulty uses Isaac Lab default (updates levels + env_origins via update_env_origins).
+    terrain.terrain_types[env_ids] = sampled_cols
     return mdp.terrain_levels_vel(env, env_ids, asset_cfg)
 
 
