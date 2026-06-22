@@ -128,6 +128,24 @@ def foot_clearance_reward(
     return torch.exp(-torch.sum(reward, dim=1) / std)
 
 
+def foot_clearance_torso_relative(
+    env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, target_height: float, std: float, tanh_mult: float
+) -> torch.Tensor:
+    """Reward swinging feet for staying a fixed height below the torso.
+
+    Measures (torso_Z - foot_Z) and penalises deviation from target_height.
+    Unlike foot_clearance_reward this is terrain-agnostic, so it works correctly
+    on inverted-pyramid stairs where world Z of the ground is negative.
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    torso_z = asset.data.root_pos_w[:, 2].unsqueeze(1)  # (N, 1)
+    foot_z = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]  # (N, num_feet)
+    foot_z_target_error = torch.square((torso_z - foot_z) - target_height)
+    foot_velocity_tanh = torch.tanh(tanh_mult * torch.norm(asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2], dim=2))
+    reward = foot_z_target_error * foot_velocity_tanh
+    return torch.exp(-torch.sum(reward, dim=1) / std)
+
+
 def feet_too_near(
     env: ManagerBasedRLEnv, threshold: float = 0.2, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:

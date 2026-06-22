@@ -27,8 +27,17 @@ CRITIC_HEIGHT_SCAN_CFG = ObsTerm(
     params={"sensor_cfg": SceneEntityCfg("height_scanner")},
     clip=(-1.0, 5.0),
 )
-CRITIC_HISTORY_LENGTH_FLAT = 1
+CRITIC_HISTORY_LENGTH_FLAT = 5
 CRITIC_HISTORY_LENGTH_ROUGH = 5
+
+
+def _new_height_scan_term() -> ObsTerm:
+    """Fresh ObsTerm instance per call; avoids sharing mutable state (history_length) across obs groups."""
+    return ObsTerm(
+        func=mdp.height_scan,
+        params={"sensor_cfg": SceneEntityCfg("height_scanner")},
+        clip=(-1.0, 5.0),
+    )
 
 # Per manual curriculum_level: starting command ranges and in-phase expansion caps.
 PHASE_VEL_START: dict[int, Ranges] = {
@@ -39,6 +48,7 @@ PHASE_VEL_START: dict[int, Ranges] = {
 PHASE_VEL_LIMIT: dict[int, Ranges] = {
     1: Ranges(lin_vel_x=(-1.0, 1.0), lin_vel_y=(-0.5, 0.5), ang_vel_z=(-1.0, 1.0)),
     2: Ranges(lin_vel_x=(-0.8, 0.8), lin_vel_y=(-0.35, 0.35), ang_vel_z=(-1.0, 1.0)),
+    3: Ranges(lin_vel_x=(-0.5, 0.5), lin_vel_y=(-0.2, 0.2), ang_vel_z=(-1.0, 1.0)),
 }
 
 # Play / deploy: fixed command ranges (keyboard W/S uses lin_vel_x min/max).
@@ -62,13 +72,14 @@ def apply_phase_terrain_settings(env_cfg) -> None:
 
 
 def apply_phase_height_scanner(env_cfg) -> None:
-    """Enable RayCaster + critic ``height_scan`` for level 2+; disable on flat (level 1) to save GPU."""
+    """Enable RayCaster + height_scan (policy: single-frame, critic: history) for all levels."""
     if env_cfg.curriculum_level <= 1:
-        env_cfg.scene.height_scanner = None
-        env_cfg.observations.critic.height_scan = None
+        env_cfg.observations.policy.height_scan = _new_height_scan_term()
+        env_cfg.observations.critic.height_scan = _new_height_scan_term()
         env_cfg.observations.critic.history_length = CRITIC_HISTORY_LENGTH_FLAT
     else:
-        env_cfg.observations.critic.height_scan = CRITIC_HEIGHT_SCAN_CFG
+        env_cfg.observations.policy.height_scan = _new_height_scan_term()
+        env_cfg.observations.critic.height_scan = _new_height_scan_term()
         env_cfg.observations.critic.history_length = CRITIC_HISTORY_LENGTH_ROUGH
 
 
@@ -147,8 +158,8 @@ def lin_vel_cmd_levels_go2(
     level = int(getattr(env.cfg, "curriculum_level", 1))
     cmd_cfg = env.command_manager.get_term("base_velocity").cfg
     saved_limit = cmd_cfg.limit_ranges
-    if level < 3:
-        cmd_cfg.limit_ranges = PHASE_VEL_LIMIT[1 if level <= 1 else 2]
+    limit_key = 1 if level <= 1 else (2 if level == 2 else 3)
+    cmd_cfg.limit_ranges = PHASE_VEL_LIMIT[limit_key]
     try:
         return mdp.lin_vel_cmd_levels(env, env_ids, reward_term_name)
     finally:

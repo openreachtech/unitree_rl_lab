@@ -1,13 +1,18 @@
+from dataclasses import replace
+
 import isaaclab.terrains as terrain_gen
+from isaaclab.managers import RewardTermCfg as RewTerm
+from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 
+from unitree_rl_lab.tasks.locomotion import mdp
 from unitree_rl_lab.tasks.locomotion.robots.go2.go2_curriculum import (
     CRITIC_HEIGHT_SCAN_CFG,
     PLAY_VEL_RANGES,
     CurriculumCfgGo2,
     apply_manual_curriculum_level,
 )
-from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import ObservationsCfg, RobotEnvCfg, RobotSceneCfg
+from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import ObservationsCfg, RewardsCfg, RobotEnvCfg, RobotSceneCfg
 
 # Terrain layout for manual curriculum (columns are assigned by proportion).
 GO2_CURRICULUM_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
@@ -60,12 +65,30 @@ class CriticCfgGo2(ObservationsCfg.CriticCfg):
 
     height_scan = CRITIC_HEIGHT_SCAN_CFG
 
+@configclass
+class PolicyCfgGo2(ObservationsCfg.PolicyCfg):
+    height_scan = None  # populated by apply_phase_height_scanner per curriculum_level
 
 @configclass
 class ObservationsCfgGo2(ObservationsCfg):
     """Go2 observations: policy unchanged; extended critic for privileged training."""
 
+    policy: PolicyCfgGo2 = PolicyCfgGo2()
     critic: CriticCfgGo2 = CriticCfgGo2()
+
+
+@configclass
+class RewardsCfgGo2(RewardsCfg):
+    foot_clearance_torso_relative = RewTerm(
+        func=mdp.foot_clearance_torso_relative,
+        weight=1.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*_foot"),
+            "target_height": 0.22,
+            "std": 0.05,
+            "tanh_mult": 2.0,
+        },
+    )
 
 
 @configclass
@@ -79,9 +102,10 @@ class RobotSceneCfgGo2(RobotSceneCfg):
 @configclass
 class RobotEnvCfgGo2(RobotEnvCfg):
     """Go2 velocity env with manual terrain curriculum."""
-    curriculum_level: int = 3
+    curriculum_level: int = 1
     scene: RobotSceneCfgGo2 = RobotSceneCfgGo2(num_envs=4096, env_spacing=2.5)
     observations: ObservationsCfgGo2 = ObservationsCfgGo2()
+    rewards: RewardsCfgGo2 = RewardsCfgGo2()
     curriculum: CurriculumCfgGo2 = CurriculumCfgGo2()
 
     def __post_init__(self):
