@@ -96,14 +96,32 @@ def _set_reward_weight(rewards, name: str, weight: float) -> None:
     if hasattr(rewards, name):
         getattr(rewards, name).weight = weight
 
+
+def _set_reward_param(rewards, name: str, param: str, value) -> None:
+    if hasattr(rewards, name):
+        getattr(rewards, name).params[param] = value
+
+
 def apply_phase_reward_settings(env_cfg) -> None:
-    """Apply level-specific reward weights (stairs: prioritize forward motion over staying put)."""
+    """Apply level-specific reward weights for stair vs flat/rough phases."""
     rewards = env_cfg.rewards
     if curriculum_level_key(env_cfg.curriculum_level) >= 3:
-        _set_reward_weight(rewards, "feet_height_body_stairs", -0.15)
+        _set_reward_weight(rewards, "flat_orientation_l2", -1.0)
+        _set_reward_weight(rewards, "base_linear_velocity", -0.5)
+        _set_reward_weight(rewards, "joint_torques", -1e-4)
+        _set_reward_weight(rewards, "action_rate", -0.05)
+        _set_reward_weight(rewards, "feet_air_time", 0.07)
+        _set_reward_param(rewards, "feet_air_time", "threshold", 0.35)
+        # _set_reward_weight(rewards, "feet_height_body_stairs", -0.15)
         _set_reward_weight(rewards, "wild_foot_clearance", 0.4)
     else:
-        _set_reward_weight(rewards, "feet_height_body_stairs", 0.0)
+        _set_reward_weight(rewards, "flat_orientation_l2", -2.5)
+        _set_reward_weight(rewards, "base_linear_velocity", -2.0)
+        _set_reward_weight(rewards, "joint_torques", -2e-4)
+        _set_reward_weight(rewards, "action_rate", -0.1)
+        _set_reward_weight(rewards, "feet_air_time", 0.1)
+        _set_reward_param(rewards, "feet_air_time", "threshold", 0.5)
+        # _set_reward_weight(rewards, "feet_height_body_stairs", 0.0)
         _set_reward_weight(rewards, "wild_foot_clearance", 0.0)
 
 
