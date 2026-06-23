@@ -25,6 +25,7 @@ import torch
 import sys
 import os
 from .lidar_cfg import get_go2_lidar_cfg
+from .heightmap_visualizer import visualize_heightmap
 from unitree_rl_lab.unitree_go2_locomotion_heightmap.lidar_processor import HeightmapProcessor
 import unitree_rl_lab.unitree_go2_locomotion_heightmap.lidar_processor as lp
 
@@ -32,63 +33,17 @@ YAML_PATH = os.path.join(os.path.dirname(os.path.abspath(lp.__file__)), "heightm
 lidar_processor = HeightmapProcessor(config_yaml_path=YAML_PATH, device="cuda:0")
 
 def go2_lidar_heightmap(env, randomize: bool = False):
-    """毎ステップ呼び出されるLiDAR観測関数"""
+    """LiDAR観測関数"""
     heightmap = lidar_processor.process(
         pos_w=env.scene["lidar"].data.ray_hits_w,
         root_pos_w=env.scene["robot"].data.root_pos_w,
         root_quat_w=env.scene["robot"].data.root_quat_w,
         randomize=randomize
     )
-    
-    # --- Debug Visualization ---
-    # デバッグ用に、ロボット1台（num_envs==1）の場合にハイトマップを描画
-    if env.num_envs == 1:
-        if not hasattr(env, "_heightmap_marker"):
-            from isaaclab.markers.visualization_markers import VisualizationMarkers
-            from isaaclab.markers.config import CUBOID_MARKER_CFG
-            cfg = CUBOID_MARKER_CFG.copy()
-            cfg.prim_path = "/Visuals/HeightmapPoints"
-            cfg.markers["cuboid"].size = (0.05, 0.05, 0.05)
-            cfg.markers["cuboid"].visual_material.diffuse_color = (0.0, 1.0, 0.0)
-            env._heightmap_marker = VisualizationMarkers(cfg)
-            
-            # グリッドのローカル座標を事前計算
-            nx, ny = lidar_processor.nx, lidar_processor.ny
-            res = lidar_processor.res
-            ix = torch.arange(nx, device=env.device)
-            iy = torch.arange(ny, device=env.device)
-            grid_x, grid_y = torch.meshgrid(ix, iy, indexing='ij')
-            env._grid_x_local = lidar_processor.x_range[0] + grid_x.flatten() * res
-            env._grid_y_local = lidar_processor.y_range[0] + grid_y.flatten() * res
-            
-        h = heightmap[0]
-        # randomize=False（推論時）によって平地の値が 0.0 (unknown_fillと同じ) になり、描画がスキップされるのを防ぐため、
-        # 未観測マスク（empty_mask）に該当しない「実際に点群がヒットしたセル」を基準に描画判定を行います。
-        if hasattr(lidar_processor, "last_empty_mask") and lidar_processor.last_empty_mask is not None:
-            valid_idx = ~lidar_processor.last_empty_mask[0]
-        else:
-            valid_idx = h != lidar_processor.unknown_fill
-            
-        if valid_idx.any():
-            h_valid = h[valid_idx]
-            x_loc = env._grid_x_local[valid_idx]
-            y_loc = env._grid_y_local[valid_idx]
-            
-            # ヨー角で回転させてワールド座標に変換
-            qw, qx, qy, qz = env.scene["robot"].data.root_quat_w[0]
-            siny_cosp = 2.0 * (qw * qz + qx * qy)
-            cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
-            yaw = torch.atan2(siny_cosp, cosy_cosp)
-            
-            cos_yaw, sin_yaw = torch.cos(yaw), torch.sin(yaw)
-            x_w = env.scene["robot"].data.root_pos_w[0, 0] + x_loc * cos_yaw - y_loc * sin_yaw
-            y_w = env.scene["robot"].data.root_pos_w[0, 1] + x_loc * sin_yaw + y_loc * cos_yaw
-            # terrain_z = base_z - height_val - offset
-            z_w = env.scene["robot"].data.root_pos_w[0, 2] - h_valid - lidar_processor.offset
-            
-            points = torch.stack([x_w, y_w, z_w], dim=-1)
-            env._heightmap_marker.visualize(translations=points)
 
+    # ハイトマップ描画
+    if env.num_envs <= 1:
+        visualize_heightmap(env, heightmap, lidar_processor)
     return heightmap
 
 COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
@@ -106,31 +61,31 @@ COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
         "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
             proportion=0.1, noise_range=(0.01, 0.06), noise_step=0.01, border_width=0.25
         ),
-        # "hf_pyramid_slope": terrain_gen.HfPyramidSlopedTerrainCfg(
-        #     proportion=0.1, slope_range=(0.0, 0.4), platform_width=2.0, border_width=0.25
-        # ),
-        # "hf_pyramid_slope_inv": terrain_gen.HfInvertedPyramidSlopedTerrainCfg(
-        #     proportion=0.1, slope_range=(0.0, 0.4), platform_width=2.0, border_width=0.25
-        # ),
-        # "boxes": terrain_gen.MeshRandomGridTerrainCfg(
-        #     proportion=0.2, grid_width=0.45, grid_height_range=(0.05, 0.2), platform_width=2.0
-        # ),
-        # "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
-        #     proportion=0.2,
-        #     step_height_range=(0.05, 0.23),
-        #     step_width=0.3,
-        #     platform_width=3.0,
-        #     border_width=1.0,
-        #     holes=False,
-        # ),
-        # "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
-        #     proportion=0.2,
-        #     step_height_range=(0.05, 0.23),
-        #     step_width=0.3,
-        #     platform_width=3.0,
-        #     border_width=1.0,
-        #     holes=False,
-        # ),
+        "hf_pyramid_slope": terrain_gen.HfPyramidSlopedTerrainCfg(
+            proportion=0.1, slope_range=(0.0, 0.4), platform_width=2.0, border_width=0.25
+        ),
+        "hf_pyramid_slope_inv": terrain_gen.HfInvertedPyramidSlopedTerrainCfg(
+            proportion=0.1, slope_range=(0.0, 0.4), platform_width=2.0, border_width=0.25
+        ),
+        "boxes": terrain_gen.MeshRandomGridTerrainCfg(
+            proportion=0.2, grid_width=0.45, grid_height_range=(0.05, 0.2), platform_width=2.0
+        ),
+        "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
+            proportion=0.2,
+            step_height_range=(0.05, 0.23),
+            step_width=0.3,
+            platform_width=3.0,
+            border_width=1.0,
+            holes=False,
+        ),
+        "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
+            proportion=0.2,
+            step_height_range=(0.05, 0.23),
+            step_width=0.3,
+            platform_width=3.0,
+            border_width=1.0,
+            holes=False,
+        ),
     },
 )
 
@@ -305,7 +260,7 @@ class ObservationsCfg:
         
         heightmap = ObsTerm(
             func=go2_lidar_heightmap,
-            params={"randomize": True} # 学習時はドロップアウト等のノイズを付与
+            params={"randomize": True}
         )
 
         def __post_init__(self):
@@ -335,7 +290,6 @@ class ObservationsCfg:
         #     clip=(-1.0, 5.0),
         # )
         
-        # ★ Critic（価値関数）側にも同じ情報を渡す（Criticは特権情報としてノイズ無し）
         heightmap = ObsTerm(
             func=go2_lidar_heightmap,
             params={"randomize": False}
@@ -495,6 +449,6 @@ class RobotPlayEnvCfg(RobotEnvCfg):
         super().__post_init__()
         self.scene.num_envs = 32
         self.scene.terrain.terrain_generator.num_rows = 2
-        self.scene.terrain.terrain_generator.num_cols = 1
+        self.scene.terrain.terrain_generator.num_cols = 4
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
         self.observations.policy.heightmap.params["randomize"] = False

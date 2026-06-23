@@ -21,15 +21,19 @@ def get_go2_lidar_cfg(prim_path: str = "{ENV_REGEX_NS}/Robot/base/lidar", config
     with open(config_yaml_path, 'r', encoding='utf-8') as f:
         cfg = yaml.safe_load(f)
         
-    # heightmap_spec.yaml からLiDARの取付位置を動的に読み込む
     extrinsics = cfg['frame']['lidar_extrinsics']
-    # OmegaConf が numpy.float64 に対応していないため、明示的に float にキャスト
     trans = tuple(float(x) for x in extrinsics['translation_m'])
     rpy = extrinsics['rpy_deg']
 
-    qw, qx, qy, qz = get_lidar_quat_wxyz(rpy[0], rpy[1], rpy[2])
+    r_sim = rpy[0] + 180.0 if rpy[0] < 0 else rpy[0] - 180.0
+    p_sim = rpy[1]
+    y_sim = rpy[2]
     
-    # heightmap_spec.yaml からLiDARの物理スペックを動的に読み込む
+    r_sim = float(round(r_sim, 4))
+    y_sim = float(round(y_sim, 4))
+
+    qw, qx, qy, qz = get_lidar_quat_wxyz(r_sim, p_sim, y_sim)
+    
     sensor_cfg = cfg['lidar_sensor']
     channels = int(sensor_cfg['channels'])
     v_fov = tuple(float(x) for x in sensor_cfg['vertical_fov_range_deg'])
