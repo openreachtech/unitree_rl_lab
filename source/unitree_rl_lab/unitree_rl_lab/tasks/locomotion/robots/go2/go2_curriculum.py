@@ -136,8 +136,8 @@ def apply_phase_reward_settings(env_cfg) -> None:
         _set_reward_weight(rewards, "base_linear_velocity", -0.5)
         _set_reward_weight(rewards, "joint_torques", -1e-4)
         _set_reward_weight(rewards, "action_rate", -0.05)
-        _set_reward_weight(rewards, "feet_air_time", 0.07)
-        _set_reward_param(rewards, "feet_air_time", "threshold", 0.35)
+        # _set_reward_weight(rewards, "feet_air_time", 0.07)
+        # _set_reward_param(rewards, "feet_air_time", "threshold", 0.35)
         # _set_reward_weight(rewards, "feet_height_body_stairs", -0.15)
         _set_reward_weight(rewards, "wild_foot_clearance", 0.4)
 
