@@ -40,15 +40,23 @@ def _new_height_scan_term() -> ObsTerm:
     )
 
 # Per manual curriculum_level: starting command ranges and in-phase expansion caps.
+#
+# Level 3 (stairs) is FORWARD-BIASED on purpose: lin_vel_x stays positive and the
+# yaw range is shrunk. The terrain curriculum advances a robot by net displacement
+# from its spawn, but a zero-mean (symmetric +/-) command makes the robot wander in
+# place with ~0 net displacement, so it could never satisfy the move-up threshold on
+# stairs. A forward-biased command turns "track the command well" into "actually make
+# forward progress up the stairs", which is what we need.
 PHASE_VEL_START: dict[int, Ranges] = {
     1: Ranges(lin_vel_x=(-0.1, 0.1), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-1.0, 1.0)),
     2: Ranges(lin_vel_x=(-0.2, 0.2), lin_vel_y=(-0.15, 0.15), ang_vel_z=(-1.0, 1.0)),
+    3: Ranges(lin_vel_x=(0.1, 0.4), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-0.5, 0.5)),
 }
 
 PHASE_VEL_LIMIT: dict[int, Ranges] = {
     1: Ranges(lin_vel_x=(-1.0, 1.0), lin_vel_y=(-0.5, 0.5), ang_vel_z=(-1.0, 1.0)),
     2: Ranges(lin_vel_x=(-0.8, 0.8), lin_vel_y=(-0.35, 0.35), ang_vel_z=(-1.0, 1.0)),
-    3: Ranges(lin_vel_x=(-0.5, 0.5), lin_vel_y=(-0.2, 0.2), ang_vel_z=(-1.0, 1.0)),
+    3: Ranges(lin_vel_x=(0.1, 0.6), lin_vel_y=(-0.15, 0.15), ang_vel_z=(-0.5, 0.5)),
 }
 
 # Play / deploy: fixed command ranges (keyboard W/S uses lin_vel_x min/max).
@@ -57,7 +65,8 @@ PLAY_VEL_RANGES = Ranges(lin_vel_x=(-1.0, 1.0), lin_vel_y=(-0.5, 0.5), ang_vel_z
 
 def apply_phase_velocity_ranges(env_cfg) -> None:
     """Reset ``base_velocity.ranges`` to the start of the current manual curriculum level."""
-    key = 1 if env_cfg.curriculum_level <= 1 else 2
+    level = env_cfg.curriculum_level
+    key = 1 if level <= 1 else (2 if level == 2 else 3)
     env_cfg.commands.base_velocity.ranges = PHASE_VEL_START[key]
 
 
@@ -115,6 +124,44 @@ def _sample_column_indices(
     return columns[pick]
 
 
+def terrain_levels_climb(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Terrain-difficulty ratchet tuned for slow, hard terrain (stairs).
+
+    Replacement for ``mdp.terrain_levels_vel``. The stock function:
+      * move_up  when distance-from-spawn > terrain_size/2  (= 4.0 m)
+      * move_down when distance < commanded_speed * episode_time * 0.5
+
+    On stairs at a throttled command speed, a 4.0 m net displacement inside one
+    episode is essentially unreachable, while the velocity-scaled move_down floor
+    fires almost every reset -> levels collapse to 0 (observed: 0.057).
+
+    This version:
+      * move_up  at a reachable fraction of the tile (35 % = ~2.8 m), so a robot
+        that genuinely climbs a few steps forward is promoted.
+      * move_down only when the robot barely moved (< 0.5 m), i.e. it actually
+        failed. A robot making partial progress stays on its level and keeps
+        practising instead of being demoted. This turns the curriculum into a
+        one-way ratchet that tracks real skill instead of net wandering.
+    """
+    terrain: TerrainImporter = env.scene.terrain
+    if terrain.terrain_origins is None or terrain.cfg.terrain_generator is None:
+        return torch.tensor(0.0, device=env.device)
+
+    asset = env.scene[asset_cfg.name]
+    distance = torch.norm(
+        asset.data.root_pos_w[env_ids, :2] - env.scene.env_origins[env_ids, :2], dim=1
+    )
+    tile_size = terrain.cfg.terrain_generator.size[0]
+    move_up = distance > tile_size * 0.35
+    move_down = (distance < 0.5) & (~move_up)
+    terrain.update_env_origins(env_ids, move_up, move_down)
+    return torch.mean(terrain.terrain_levels.float())
+
+
 def terrain_manual_levels(
     env: ManagerBasedRLEnv,
     env_ids: Sequence[int],
@@ -145,8 +192,8 @@ def terrain_manual_levels(
             allowed_cols.extend(col_map.get(name, []))
 
     terrain.terrain_types[env_ids] = _sample_column_indices(env_ids, env.num_envs, allowed_cols, env.device)
-    # Row difficulty uses Isaac Lab default (updates levels + env_origins via update_env_origins).
-    return mdp.terrain_levels_vel(env, env_ids, asset_cfg)
+    # Row difficulty via the climb-tuned ratchet (updates levels + env_origins).
+    return terrain_levels_climb(env, env_ids, asset_cfg)
 
 
 def lin_vel_cmd_levels_go2(

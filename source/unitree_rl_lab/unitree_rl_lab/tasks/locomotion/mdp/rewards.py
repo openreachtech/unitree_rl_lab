@@ -146,6 +146,76 @@ def foot_clearance_torso_relative(
     return torch.exp(-torch.sum(reward, dim=1) / std)
 
 
+def foot_clearance_terrain_adaptive(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    sensor_cfg: SceneEntityCfg,
+    contact_sensor_cfg: SceneEntityCfg,
+    target_clearance: float,
+    command_name: str = "base_velocity",
+) -> torch.Tensor:
+    """POSITIVE reward for swing feet that clear the local terrain by ``target_clearance``.
+
+    This replaces an ``exp(-penalty)`` formulation whose maximum (1.0) was reached by
+    **not lifting at all**: a stationary, fully-planted robot scored full marks because
+    every foot was masked out as "stance", so the term gave zero gradient toward
+    stepping and actively reinforced standing still (the dominant local optimum that
+    stalled the terrain curriculum). Both the old foot-speed gate and the later
+    swing-only ``exp(-penalty)`` shared this flaw.
+
+    The new term is strictly positive and only pays out for a foot that is
+    simultaneously:
+      * in swing phase (no ground contact), **and**
+      * earning clearance above the terrain directly below it, **and**
+      * while a non-zero base velocity is commanded.
+    The per-foot reward is the achieved clearance normalised to ``target_clearance``
+    and **capped at 1.0**, so it cannot be farmed by kicking a leg absurdly high and a
+    held static leg is worth at most one unit. A planted/standing robot earns 0.
+
+    Terrain height under each foot is read from the height scanner (nearest ray),
+    so it works for both ascending ``pyramid_stairs`` and descending
+    ``pyramid_stairs_inv`` (clearance is measured against whatever is directly below).
+    """
+    from isaaclab.sensors import RayCaster
+
+    asset: RigidObject = env.scene[asset_cfg.name]
+    sensor: RayCaster = env.scene.sensors[sensor_cfg.name]
+    contact_sensor: ContactSensor = env.scene.sensors[contact_sensor_cfg.name]
+
+    foot_pos_w = asset.data.body_pos_w[:, asset_cfg.body_ids, :]   # (N, F, 3)
+    foot_z_w   = foot_pos_w[:, :, 2]                                # (N, F)
+    foot_xy_w  = foot_pos_w[:, :, :2]                               # (N, F, 2)
+
+    ray_hits_w = sensor.data.ray_hits_w                             # (N, R, 3)
+    ray_xy_w   = ray_hits_w[:, :, :2]                               # (N, R, 2)
+    ray_z_w    = ray_hits_w[:, :, 2]                                # (N, R)
+
+    # Nearest height-scan point to each foot: (N, F, R) -> argmin -> (N, F)
+    dist = torch.norm(foot_xy_w.unsqueeze(2) - ray_xy_w.unsqueeze(1), dim=-1)
+    nearest = dist.argmin(dim=-1)                                    # (N, F)
+
+    terrain_z = torch.gather(
+        ray_z_w.unsqueeze(1).expand(-1, foot_z_w.shape[1], -1),
+        dim=2,
+        index=nearest.unsqueeze(-1),
+    ).squeeze(-1)                                                    # (N, F)
+
+    clearance = foot_z_w - terrain_z                                 # (N, F)
+
+    # Positive, capped: fraction of the target clearance the swing foot achieves.
+    achieved = torch.clamp(clearance, min=0.0, max=target_clearance) / target_clearance  # (N, F) in [0, 1]
+
+    # Swing mask: only reward feet that are off the ground (no current contact).
+    in_contact = contact_sensor.data.current_contact_time[:, contact_sensor_cfg.body_ids] > 0.0  # (N, F)
+    swing = (~in_contact).float()                                   # (N, F)
+
+    reward = torch.sum(achieved * swing, dim=1)                     # (N,)
+
+    # Only while motion is commanded: standing envs must not be pushed to step.
+    cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)  # (N,)
+    return reward * (cmd_norm > 0.1)
+
+
 def feet_too_near(
     env: ManagerBasedRLEnv, threshold: float = 0.2, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:
@@ -221,6 +291,36 @@ def feet_gait(
 """
 Other rewards.
 """
+
+
+def forward_command_progress(
+    env: ManagerBasedRLEnv,
+    command_name: str = "base_velocity",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward actual base-frame velocity projected onto the commanded direction.
+
+    ``track_lin_vel_xy_exp`` uses an exponential kernel that saturates near the
+    target speed and gives almost no gradient pushing a stalled robot to *start*
+    moving across hard terrain. This term adds a small linear incentive for net
+    progress toward the commanded heading, which is what the terrain curriculum
+    actually measures (displacement from spawn). It is the positive signal that
+    lets the robot bootstrap onto, and climb across, the stair terrain.
+
+    The reward is clamped to the commanded speed (no bonus for overshooting) and
+    is zero when no motion is commanded (standing envs).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    cmd_xy = env.command_manager.get_command(command_name)[:, :2]      # (N, 2)
+    cmd_norm = torch.norm(cmd_xy, dim=1)                               # (N,)
+    cmd_dir = cmd_xy / cmd_norm.clamp(min=1e-3).unsqueeze(1)           # (N, 2)
+    vel_b = asset.data.root_lin_vel_b[:, :2]                           # (N, 2)
+    progress = torch.sum(vel_b * cmd_dir, dim=1)                       # (N,)
+    # no reward for overshooting the command (per-env Tensor cap) and none for
+    # moving backwards; torch.clamp cannot mix a float min with a Tensor max, so
+    # apply the lower and upper bounds separately.
+    progress = torch.minimum(progress.clamp(min=0.0), cmd_norm)
+    return progress * (cmd_norm > 0.1)
 
 
 def joint_mirror(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, mirror_joints: list[list[str]]) -> torch.Tensor:
