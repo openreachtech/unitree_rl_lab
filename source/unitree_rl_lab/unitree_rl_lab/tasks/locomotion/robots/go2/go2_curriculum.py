@@ -64,11 +64,11 @@ TERRAIN_SPAWN_WEIGHTS: dict[int, dict[str, float]] = {
         "boxes": 0.50,
     },
     3: {
-        "flat": 0.04,
-        "random_rough": 0.08,
-        "boxes": 0.08,
+        "flat": 0.02,
+        "random_rough": 0.03,
+        "boxes": 0.05,
         "pyramid_stairs": 0.30,
-        "pyramid_stairs_inv": 0.50,
+        "pyramid_stairs_inv": 0.60,
     },
 }
 
