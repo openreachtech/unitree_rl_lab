@@ -135,9 +135,11 @@ def apply_phase_reward_settings(env_cfg) -> None:
         _set_reward_weight(rewards, "action_rate", -0.05)
         _set_reward_weight(rewards, "feet_air_time", 0.07)
         _set_reward_param(rewards, "feet_air_time", "threshold", 0.35)
+        _set_reward_weight(rewards, "air_time_variance", -0.2)
         _set_reward_weight(rewards, "feet_height_body_stairs", -0.15)
         _set_reward_weight(rewards, "wild_foot_clearance", 0.4)
-
+        _set_reward_weight(rewards, "foot_clearance_terrain_adaptive", 0.4)
+        _set_reward_weight(rewards, "forward_command_progress", 1.0)
 
 
 def apply_manual_curriculum_level(env_cfg) -> None:
@@ -158,6 +160,41 @@ def _column_indices_by_sub_terrain(terrain_generator_cfg: TerrainGeneratorCfg, n
     for col, idx in enumerate(sub_indices):
         col_map[names[int(idx)]].append(col)
     return col_map
+
+
+def terrain_levels_climb(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int] | slice,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Terrain-difficulty ratchet tuned for slow, hard terrain (stairs).
+    Replacement for ``mdp.terrain_levels_vel``. The stock function:
+      * move_up  when distance-from-spawn > terrain_size/2  (= 4.0 m)
+      * move_down when distance < commanded_speed * episode_time * 0.5
+    On stairs at a throttled command speed, a 4.0 m net displacement inside one
+    episode is essentially unreachable, while the velocity-scaled move_down floor
+    fires almost every reset -> levels collapse to 0 (observed: 0.057).
+    This version:
+      * move_up  at a reachable fraction of the tile (35 % = ~2.8 m), so a robot
+        that genuinely climbs a few steps forward is promoted.
+      * move_down only when the robot barely moved (< 0.5 m), i.e. it actually
+        failed. A robot making partial progress stays on its level and keeps
+        practising instead of being demoted. This turns the curriculum into a
+        one-way ratchet that tracks real skill instead of net wandering.
+    """
+    terrain: TerrainImporter = env.scene.terrain
+    if terrain.terrain_origins is None or terrain.cfg.terrain_generator is None:
+        return torch.tensor(0.0, device=env.device)
+
+    asset = env.scene[asset_cfg.name]
+    distance = torch.norm(
+        asset.data.root_pos_w[env_ids, :2] - env.scene.env_origins[env_ids, :2], dim=1
+    )
+    tile_size = terrain.cfg.terrain_generator.size[0]
+    move_up = distance > tile_size * 0.35
+    move_down = (distance < 0.5) & (~move_up)
+    terrain.update_env_origins(env_ids, move_up, move_down)
+    return torch.mean(terrain.terrain_levels.float())
 
 
 def terrain_manual_levels(
@@ -190,7 +227,7 @@ def terrain_manual_levels(
         sampled_cols[mask] = cols[torch.randint(len(cols), (int(mask.sum()),), device=device)]
 
     terrain.terrain_types[env_ids] = sampled_cols
-    return mdp.terrain_levels_vel(env, env_ids, asset_cfg)
+    return terrain_levels_climb(env, env_ids, asset_cfg)
 
 
 @configclass

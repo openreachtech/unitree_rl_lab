@@ -135,10 +135,30 @@ class RewardsCfgGo2(RewardsCfg):
             "period": 0.4,
             "offset": [0.0, 0.5, 0.5, 0.0],  # trot: FR+RL vs FL+RR
             "radius": 0.1,
+            "target_clearance": 0.05,
         },
     )
 
+    foot_clearance_terrain_adaptive = RewTerm(
+        func=mdp.foot_clearance_terrain_adaptive,
+        weight=0.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*_foot"),
+            "sensor_cfg": SceneEntityCfg("height_scanner"),
+            "contact_sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"),
+            "target_clearance": 0.05,
+            "command_name": "base_velocity",
+        },
+    )
 
+    forward_command_progress = RewTerm(
+        func=mdp.forward_command_progress,
+        weight=0.0,
+        params={
+            "command_name": "base_velocity",
+            "asset_cfg": SceneEntityCfg("robot"),
+        },
+    )
 
 
 @configclass
