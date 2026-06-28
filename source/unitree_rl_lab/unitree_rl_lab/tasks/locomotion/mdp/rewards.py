@@ -117,44 +117,6 @@ def feet_height_body(
     return reward
 
 
-def feet_height_body_stairs(
-    env: ManagerBasedRLEnv,
-    command_name: str,
-    asset_cfg: SceneEntityCfg,
-    step_height_range: tuple[float, float],
-    tanh_mult: float,
-    stance_foot_height_body: float = -0.32,
-) -> torch.Tensor:
-    """Penalize foot height error with a per-env target tied to terrain stair difficulty.
-    ``step_height_range`` is extra lift above the nominal stance foot height in body frame,
-    not an absolute world/body z coordinate.
-    """
-    step_min, step_max = step_height_range
-    terrain = env.scene.terrain
-    terrain_gen = terrain.cfg.terrain_generator
-    num_rows = terrain_gen.num_rows if terrain_gen is not None else 1
-    difficulty = terrain.terrain_levels.float() / max(num_rows - 1, 1)
-    step_height = step_min + difficulty * (step_max - step_min)
-    target_height = stance_foot_height_body + step_height
-
-    asset: RigidObject = env.scene[asset_cfg.name]
-    cur_footpos_translated = asset.data.body_pos_w[:, asset_cfg.body_ids, :] - asset.data.root_pos_w[:, :].unsqueeze(1)
-    footpos_in_body_frame = torch.zeros(env.num_envs, len(asset_cfg.body_ids), 3, device=env.device)
-    cur_footvel_translated = asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :] - asset.data.root_lin_vel_w[
-        :, :
-    ].unsqueeze(1)
-    footvel_in_body_frame = torch.zeros(env.num_envs, len(asset_cfg.body_ids), 3, device=env.device)
-    for i in range(len(asset_cfg.body_ids)):
-        footpos_in_body_frame[:, i, :] = quat_apply_inverse(asset.data.root_quat_w, cur_footpos_translated[:, i, :])
-        footvel_in_body_frame[:, i, :] = quat_apply_inverse(asset.data.root_quat_w, cur_footvel_translated[:, i, :])
-    foot_z_target_error = torch.square(footpos_in_body_frame[:, :, 2] - target_height.unsqueeze(1))
-    foot_velocity_tanh = torch.tanh(tanh_mult * torch.norm(footvel_in_body_frame[:, :, :2], dim=2))
-    reward = torch.sum(foot_z_target_error * foot_velocity_tanh, dim=1)
-    reward *= torch.linalg.norm(env.command_manager.get_command(command_name), dim=1) > 0.1
-    reward *= torch.clamp(-env.scene["robot"].data.projected_gravity_b[:, 2], 0, 0.7) / 0.7
-    return reward
-
-
 def foot_clearance_reward(
     env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, target_height: float, std: float, tanh_mult: float
 ) -> torch.Tensor:
