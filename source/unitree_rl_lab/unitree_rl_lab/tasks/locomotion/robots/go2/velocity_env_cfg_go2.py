@@ -1,70 +1,24 @@
-import isaaclab.terrains as terrain_gen
+from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 
 from unitree_rl_lab.tasks.locomotion import mdp
-from unitree_rl_lab.tasks.locomotion.robots.go2.go2_curriculum import (
-    CRITIC_HEIGHT_SCAN_CFG,
-    CurriculumCfgGo2,
-    apply_manual_curriculum_level,
-    apply_play_velocity_ranges,
-)
-from unitree_rl_lab.tasks.locomotion.robots.go2.go2_train_cfg import MANUAL_CURRICULUM_LEVEL
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import (
     CommandsCfg,
     ObservationsCfg,
     RewardsCfg,
     RobotEnvCfg,
-    RobotSceneCfg,
-)
-
-# Terrain mesh layout (column proportions only; spawn mix is in go2_curriculum.py).
-GO2_CURRICULUM_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
-    size=(8.0, 8.0),
-    border_width=20.0,
-    num_cols=20, # terrain_types
-    num_rows=10, # terrain_levels
-    horizontal_scale=0.1,
-    vertical_scale=0.005,
-    slope_threshold=0.75,
-    difficulty_range=(0.0, 1.0),
-    use_cache=False,
-    sub_terrains={
-        "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.1),
-        "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
-            proportion=0.20,
-            noise_range=(0.01, 0.06),
-            noise_step=0.01,
-            border_width=0.25,
-        ),
-        "boxes": terrain_gen.MeshRandomGridTerrainCfg(
-            proportion=0.20,
-            grid_width=0.45,
-            grid_height_range=(0.05, 0.15),
-            platform_width=2.0,
-        ),
-        "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
-            proportion=0.2,
-            step_height_range=(0.05, 0.23),
-            step_width=0.19,
-            platform_width=2.0,
-            border_width=1.0,
-            holes=False,
-        ),
-        "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
-            proportion=0.3,
-            step_height_range=(0.05, 0.23),
-            step_width=0.19,
-            platform_width=2.0,
-            border_width=1.0,
-            holes=False,
-        ),
-    },
 )
 
 POLICY_HISTORY_LENGTH = 3
 CRITIC_HISTORY_LENGTH = 3
+
+CRITIC_HEIGHT_SCAN_CFG = ObsTerm(
+    func=mdp.height_scan,
+    params={"sensor_cfg": SceneEntityCfg("height_scanner")},
+    clip=(-1.0, 5.0),
+)
 
 
 @configclass
@@ -148,37 +102,9 @@ class RewardsCfgGo2(RewardsCfg):
 
 
 @configclass
-class RobotSceneCfgGo2(RobotSceneCfg):
-    terrain = RobotSceneCfg().terrain.replace(
-        terrain_generator=GO2_CURRICULUM_TERRAIN_CFG,
-    )
-
-
-@configclass
 class RobotEnvCfgGo2(RobotEnvCfg):
-    """Go2 velocity env with manual terrain curriculum."""
-    curriculum_level: int = MANUAL_CURRICULUM_LEVEL
-    focus_spin_in_place: bool = False
-    play_mode: bool = False
+    """Shared Go2 v1 MDP settings."""
 
-    scene: RobotSceneCfgGo2 = RobotSceneCfgGo2(num_envs=4096, env_spacing=2.5)
-    commands: CommandsCfgGo2 = CommandsCfgGo2()
     observations: ObservationsCfgGo2 = ObservationsCfgGo2()
+    commands: CommandsCfgGo2 = CommandsCfgGo2()
     rewards: RewardsCfgGo2 = RewardsCfgGo2()
-    curriculum: CurriculumCfgGo2 = CurriculumCfgGo2()
-
-    def __post_init__(self):
-        super().__post_init__()
-        apply_manual_curriculum_level(self)
-
-
-@configclass
-class RobotPlayEnvCfgGo2(RobotEnvCfgGo2):
-    play_mode: bool = True
-
-    def __post_init__(self):
-        super().__post_init__()
-        self.scene.num_envs = 32
-        self.scene.terrain.terrain_generator.num_rows = 3 # terrain_levels
-        self.scene.terrain.terrain_generator.num_cols = 5 # terrain_types
-        apply_play_velocity_ranges(self)
