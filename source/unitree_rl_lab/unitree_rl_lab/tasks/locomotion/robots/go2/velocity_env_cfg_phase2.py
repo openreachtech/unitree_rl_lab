@@ -40,7 +40,7 @@ PHASE2_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
 class RobotSceneCfgPhase2(RobotSceneCfgPhase1):
     terrain = RobotSceneCfgPhase1().terrain.replace(
         terrain_generator=PHASE2_TERRAIN_CFG,
-        max_init_terrain_level=5,
+        max_init_terrain_level=2,
     )
 
 
