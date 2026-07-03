@@ -61,8 +61,29 @@ def format_scalar(value: float) -> str:
     return f"{value:.3f}"
 
 
-def write_markdown(output_path: Path, data: dict[int, dict[str, float]], columns: list[str]) -> None:
+def write_markdown(output_path: Path, data: dict[int, dict[str, float]], columns: list[str], interval: int) -> None:
     with output_path.open("w") as output_file:
+        sorted_steps = sorted(data)
+        last_step = sorted_steps[-1] if sorted_steps else None
+
+        output_file.write("## Summary\n")
+        output_file.write(f"Interval: {interval}\n")
+        if last_step is not None:
+            output_file.write(f"Last iteration: {last_step}\n")
+            output_file.write("Last log values:\n")
+            for column in columns:
+                # Prefer value at global last step; fallback to the latest step containing this metric.
+                if column in data[last_step]:
+                    last_value = data[last_step][column]
+                    metric_last_step = last_step
+                else:
+                    metric_last_step = max(step for step in sorted_steps if column in data[step])
+                    last_value = data[metric_last_step][column]
+                output_file.write(
+                    f"- {column}: {format_scalar(last_value)} (iteration: {metric_last_step})\n"
+                )
+        output_file.write("\n")
+
         for column_index, column in enumerate(columns):
             if column_index > 0:
                 output_file.write("\n")
@@ -148,7 +169,7 @@ def main() -> None:
             skipped += 1
             continue
 
-        write_markdown(output_path, data, columns)
+        write_markdown(output_path, data, columns, args.interval)
         processed += 1
         print(f"  Rows: {len(data)}")
         print(f"  Metrics: {len(columns)}")
