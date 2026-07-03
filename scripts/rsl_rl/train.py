@@ -52,12 +52,44 @@ parser.add_argument(
         "(for deploy controllers without a wireless remote)."
     ),
 )
+parser.add_argument(
+    "--previous-task",
+    type=str,
+    default=None,
+    choices=tasks,
+    help=(
+        "Load the latest checkpoint from another task before training. "
+        "Requires --resume. Symlinks the previous run into the current task log directory."
+    ),
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 argcomplete.autocomplete(parser)
 args_cli, hydra_args = parser.parse_known_args()
+
+if args_cli.previous_task is not None:
+    if not args_cli.resume:
+        parser.error("--previous-task requires --resume")
+    if args_cli.task is None:
+        parser.error("--previous-task requires --task")
+
+    from checkpoint_utils import resolve_previous_task_checkpoint
+
+    prev_log_root, current_log_root, load_run, checkpoint = resolve_previous_task_checkpoint(
+        args_cli.previous_task,
+        args_cli.task,
+        load_run=args_cli.load_run,
+        checkpoint=args_cli.checkpoint,
+    )
+    if args_cli.load_run is None:
+        args_cli.load_run = load_run
+    if args_cli.checkpoint is None:
+        args_cli.checkpoint = checkpoint
+    print(f"[INFO] Previous task: {args_cli.previous_task} ({prev_log_root})")
+    print(f"[INFO] Current task log root: {current_log_root}")
+    print(f"[INFO] Linked checkpoint: {load_run}/{checkpoint}")
 
 # always enable cameras to record video
 if args_cli.video:
