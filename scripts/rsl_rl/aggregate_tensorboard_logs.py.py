@@ -98,8 +98,8 @@ def output_path_for(event_file: Path, interval: int) -> Path:
     experiment_name = experiment_name_from_path(event_file)
     max_iteration = max_model_iteration(event_file.parent)
     if max_iteration is not None:
-        return event_file.with_name(f"{experiment_name}_model_{max_iteration}.md")
-    return event_file.with_name(f"{experiment_name}.md")
+        return event_file.with_name(f"events_log_summary_{experiment_name}_model_{max_iteration}.md")
+    return event_file.with_name(f"events_log_summary_{experiment_name}.md")
 
 
 def main() -> None:
