@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import re
 from pathlib import Path
 
 
@@ -83,8 +84,21 @@ def experiment_name_from_path(path: Path) -> str:
     return path.parent.name
 
 
+def max_model_iteration(run_dir: Path) -> int | None:
+    """Return the largest iteration number from ``model_*.pt`` files in a run directory."""
+    iterations = []
+    for path in run_dir.glob("model_*.pt"):
+        match = re.match(r"model_(\d+)\.pt", path.name)
+        if match:
+            iterations.append(int(match.group(1)))
+    return max(iterations) if iterations else None
+
+
 def output_path_for(event_file: Path, interval: int) -> Path:
     experiment_name = experiment_name_from_path(event_file)
+    max_iteration = max_model_iteration(event_file.parent)
+    if max_iteration is not None:
+        return event_file.with_name(f"{experiment_name}_model_{max_iteration}.md")
     return event_file.with_name(f"{experiment_name}.md")
 
 
