@@ -21,8 +21,9 @@ PHASE3_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
     difficulty_range=(0.0, 1.0),
     use_cache=False,
     sub_terrains={
+        "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.10),
         "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
-            proportion=0.20,
+            proportion=0.30,
             step_height_range=(0.05, 0.23),
             step_width=0.19,
             platform_width=2.0,
@@ -30,9 +31,9 @@ PHASE3_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
             holes=False,
         ),
         "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
-            proportion=0.80,
+            proportion=0.60,
             step_height_range=(0.05, 0.23),
-            step_width=0.19,
+            step_width=0.25,
             platform_width=2.0,
             border_width=1.0,
             holes=False,
