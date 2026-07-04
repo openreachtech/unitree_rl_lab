@@ -58,7 +58,7 @@ def main() -> None:
 
     script_dir = Path(__file__).resolve().parent
     train_script = script_dir / "train.py"
-    aggregate_script = script_dir / "aggregate_tensorboard_logs.py.py"
+    aggregate_script = script_dir / "aggregate_tensorboard_logs.py"
 
     train_cmd = [
         sys.executable,
@@ -68,6 +68,7 @@ def main() -> None:
         "--num_envs",
         "4096",
         "--headless",
+        "--deploy-keyboard-commands",
         "--max_iterations",
         str(args.max_iterations),
     ]
