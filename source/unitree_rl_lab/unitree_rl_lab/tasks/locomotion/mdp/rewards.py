@@ -255,6 +255,95 @@ def foot_clearance_terrain_adaptive(
     return reward * (cmd_norm > 0.1)
 
 
+def adaptive_foot_clearance_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    sensor_cfg: SceneEntityCfg,
+    period: float,
+    offset: list[float],
+    lookahead_distance: float = 0.15,
+    natural_clearance: float = 0.03,
+    max_clearance: float = 0.20,
+    roughness_ref: float = 0.05,
+) -> torch.Tensor:
+    """Reward swing feet for clearing the terrain ahead, with the clearance
+    *target* itself scaled by how much clearance is actually needed.
+
+    ``wild_foot_clearance_reward`` and ``foot_clearance_terrain_adaptive`` both
+    reward hitting a single fixed ``target_clearance`` everywhere. That value
+    has to be set high enough to clear the tallest stair riser, so the
+    reward-maximizing gait is "lift every foot to stair height," including on
+    flat ground where doing so is unnecessary and looks unnatural. This term
+    replaces the fixed target with a per-foot value derived from two signals:
+
+      1. Obstacle lookahead: the height-scan point nearest to
+         ``lookahead_distance`` ahead of the foot (along the base's current
+         world-frame travel direction) minus the height directly under the
+         foot. This is ~0 on flat ground and grows toward the real riser
+         height as a step approaches.
+      2. Terrain roughness gate: the height range across the whole scanned
+         patch under the robot, normalized by ``roughness_ref``. This zeroes
+         out the lookahead term (rather than trusting a single possibly noisy
+         ray) whenever the immediate surroundings are essentially flat.
+
+    ``target = natural_clearance + roughness_gate * obstacle_height``, so a
+    flat-ground target collapses to an ordinary walking lift
+    (``natural_clearance``) while an approaching stair riser raises it toward
+    ``max_clearance``. Swing detection reuses the same open-loop CPG gate as
+    ``wild_foot_clearance_reward`` to keep gait timing/coordination unchanged.
+    """
+    robot: Articulation = env.scene[asset_cfg.name]
+    sensor = env.scene[sensor_cfg.name]
+
+    foot_ids = asset_cfg.body_ids
+    foot_pos_w = robot.data.body_pos_w[:, foot_ids, :]  # (N, F, 3)
+    foot_xy_w = foot_pos_w[:, :, :2]
+    foot_z_w = foot_pos_w[:, :, 2]
+
+    ray_hits_w = sensor.data.ray_hits_w  # (N, R, 3)
+    ray_xy_w = ray_hits_w[:, :, :2]
+    ray_z_w = ray_hits_w[:, :, 2]
+    valid_rays = torch.isfinite(ray_z_w)  # (N, R)
+
+    def _nearest_height(query_xy: torch.Tensor) -> torch.Tensor:
+        # query_xy: (N, F, 2) -> nearest scanned height per foot: (N, F)
+        dist = torch.norm(query_xy.unsqueeze(2) - ray_xy_w.unsqueeze(1), dim=-1)  # (N, F, R)
+        dist = torch.where(valid_rays.unsqueeze(1), dist, torch.full_like(dist, 1e9))
+        nearest = dist.argmin(dim=-1)  # (N, F)
+        return torch.gather(
+            ray_z_w.unsqueeze(1).expand(-1, query_xy.shape[1], -1), dim=2, index=nearest.unsqueeze(-1)
+        ).squeeze(-1)
+
+    local_h = _nearest_height(foot_xy_w)  # (N, F)
+
+    # Direction of travel: base world-frame xy velocity, zeroed when ~stationary
+    # so the lookahead point collapses onto the foot itself (no obstacle to see).
+    base_vel_xy = robot.data.root_lin_vel_w[:, :2]  # (N, 2)
+    base_speed = torch.norm(base_vel_xy, dim=1)  # (N,)
+    moving = (base_speed > 0.05).float().view(-1, 1, 1)  # (N, 1, 1)
+    unit_dir = (base_vel_xy / base_speed.clamp(min=1e-3).unsqueeze(1)).unsqueeze(1)  # (N, 1, 2)
+    ahead_xy = foot_xy_w + unit_dir * lookahead_distance * moving  # (N, F, 2)
+
+    ahead_h = _nearest_height(ahead_xy)  # (N, F)
+    obstacle_height = torch.clamp(ahead_h - local_h, min=0.0, max=max_clearance - natural_clearance)  # (N, F)
+
+    # Roughness gate: full height range of the scanned patch under the robot.
+    z_for_max = torch.where(valid_rays, ray_z_w, torch.full_like(ray_z_w, -1e9))
+    z_for_min = torch.where(valid_rays, ray_z_w, torch.full_like(ray_z_w, 1e9))
+    roughness = (z_for_max.amax(dim=1) - z_for_min.amin(dim=1)).clamp(min=0.0)  # (N,)
+    roughness_gate = torch.clamp(roughness / roughness_ref, 0.0, 1.0).unsqueeze(1)  # (N, 1)
+
+    target_clearance = natural_clearance + roughness_gate * obstacle_height  # (N, F)
+
+    clearance = foot_z_w - local_h
+    reward = torch.clamp(clearance / target_clearance.clamp(min=1e-3), 0.0, 1.0)
+
+    phases = _cpg_leg_phases_rad(env, period, offset)
+    is_swing = phases < torch.pi
+    reward = reward * is_swing.float()
+    return torch.sum(reward, dim=-1)
+
+
 def feet_too_near(
     env: ManagerBasedRLEnv, threshold: float = 0.2, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:
