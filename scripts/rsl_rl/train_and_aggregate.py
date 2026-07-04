@@ -29,7 +29,7 @@ def parse_args() -> argparse.Namespace:
         "--aggregate-interval",
         type=int,
         default=100,
-        help="Iteration interval for aggregate_tensorboard_logs.py.py (default: 100).",
+        help="Iteration interval for aggregate_tensorboard_logs.py (default: 100).",
     )
     return parser.parse_args()
 
@@ -87,7 +87,7 @@ def main() -> None:
         str(args.aggregate_interval),
         "--overwrite",
     ]
-    run_quiet(aggregate_cmd, "aggregate_tensorboard_logs.py.py")
+    run_quiet(aggregate_cmd, "aggregate_tensorboard_logs.py")
 
     run_dir = Path(latest_run_dir(str(task_log_root)))
     summary_path = latest_summary_file(run_dir)
