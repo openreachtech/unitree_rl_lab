@@ -32,17 +32,75 @@ import unitree_rl_lab.unitree_go2_locomotion_heightmap.lidar_processor as lp
 YAML_PATH = os.path.join(os.path.dirname(os.path.abspath(lp.__file__)), "heightmap_spec.yaml")
 lidar_processor = HeightmapProcessor(config_yaml_path=YAML_PATH, device="cuda:0")
 
+class LidarRotaryFilter:
+    def __init__(self, spin_freq: float = 10.0, num_layers: int = 28, phase_shift_per_cycle: float = 3.214):
+        self.spin_freq = spin_freq                # 回転速度 (Hz)
+        self.num_layers = num_layers              # 1回転あたりのレイヤ数
+        self.angle_step_rad = 2.0 * math.pi / num_layers # レイヤ間の角度間隔 (rad)
+        self.phase_shift_rad = math.radians(phase_shift_per_cycle) # 周回ごとの位相シフト量 (rad)
+        self.epsilon_rad = math.radians(1.5)      # 検出漏れを防ぐためのサンプリング角度許容誤差 (rad)
+
+    def filter_points(self, pos_w: torch.Tensor, sensor_pos_w: torch.Tensor, current_time: torch.Tensor) -> torch.Tensor:
+        """
+        時間経過とスピン位相に応じて、密な全方位スキャン点群から放射状スキャン点群を抽出する
+        pos_w: [N, R, 3] (衝突点ワールド座標)
+        sensor_pos_w: [N, 3] (センサー位置ワールド座標)
+        current_time: [N] (各環境の経過時間[秒])
+        """
+        N, R, _ = pos_w.shape
+        device = pos_w.device
+        
+        # 1. センサー中心に対する点群の相対方位角 (Yaw) を計算
+        pos_rel = pos_w - sensor_pos_w.unsqueeze(1)
+        yaw_points = torch.atan2(pos_rel[..., 1], pos_rel[..., 0]) # [N, R]
+        
+        # 2. 現在時間から累積回転数と基本スピン角度、および周回数に応じた位相シフトを計算
+        total_rotations = current_time * self.spin_freq # [N]
+        base_angle = (total_rotations * 2.0 * math.pi) % (2.0 * math.pi) # [N]
+        cycle_idx = total_rotations.long() # [N]
+        phase_offset = (cycle_idx.float() * self.phase_shift_rad) % self.angle_step_rad # [N]
+        
+        # 3. 現在のステップで有効な28方向のサンプリング角度を算出
+        layer_indices = torch.arange(self.num_layers, device=device).float() # [num_layers]
+        valid_angles = layer_indices.view(1, -1) * self.angle_step_rad + base_angle.unsqueeze(1) + phase_offset.unsqueeze(1) # [N, num_layers]
+        valid_angles = torch.atan2(torch.sin(valid_angles), torch.cos(valid_angles)) # [N, num_layers] ([-pi, pi]正規化)
+        
+        # 4. 点群の角度と有効サンプリング角度の最短差分を計算
+        diff = torch.abs(yaw_points.unsqueeze(-1) - valid_angles.unsqueeze(1)) # [N, R, num_layers]
+        diff = torch.minimum(diff, 2.0 * math.pi - diff) # 周期境界
+        
+        # 5. いずれかのスキャンラインに適合する点を選択するマスクを生成
+        mask = torch.any(diff < self.epsilon_rad, dim=-1) # [N, R]
+        
+        # 6. 選択外の点のZ座標を極小値 (-1e9) にして無効化
+        filtered_pos_w = pos_w.clone()
+        filtered_pos_w[..., 2] = torch.where(mask, filtered_pos_w[..., 2], torch.tensor(-1e9, device=device))
+        
+        return filtered_pos_w
+
+lidar_filter = LidarRotaryFilter()
+
 def go2_lidar_heightmap(env, randomize: bool = False):
-    """LiDAR観測関数"""
-    heightmap = lidar_processor.process(
+    """毎ステップ呼び出されるLiDAR観測関数"""
+    # 各環境の経過秒数を計算
+    current_time = env.episode_length_buf.float() * (env.cfg.sim.dt * env.cfg.decimation)
+    
+    # 放射サンプリングの適用
+    filtered_pos_w = lidar_filter.filter_points(
         pos_w=env.scene["lidar"].data.ray_hits_w,
+        sensor_pos_w=env.scene["lidar"].data.pos_w,
+        current_time=current_time
+    )
+    
+    heightmap = lidar_processor.process(
+        pos_w=filtered_pos_w,
         root_pos_w=env.scene["robot"].data.root_pos_w,
         root_quat_w=env.scene["robot"].data.root_quat_w,
         randomize=randomize
     )
-
-    # ハイトマップ描画
-    if env.num_envs <= 1:
+    
+    # デバッグ用に、ロボット8台以下の場合にハイトマップを描画
+    if env.num_envs <= 8:
         visualize_heightmap(env, heightmap, lidar_processor)
     return heightmap
 
@@ -404,6 +462,9 @@ class CurriculumCfg:
 class RobotEnvCfg(ManagerBasedRLEnvCfg):
     """Configuration for the locomotion velocity-tracking environment."""
 
+    # Heightmap usage flag
+    use_heightmap: bool = False
+
     # Scene settings
     scene: RobotSceneCfg = RobotSceneCfg(num_envs=4096, env_spacing=2.5)
     # Basic settings
@@ -418,6 +479,15 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
 
     def __post_init__(self):
         """Post initialization."""
+        # use_heightmap が False の場合はハイトマップ観測とLiDARセンサーを無効化
+        if not self.use_heightmap:
+            if hasattr(self.observations.policy, "heightmap"):
+                delattr(self.observations.policy, "heightmap")
+            if hasattr(self.observations.critic, "heightmap"):
+                delattr(self.observations.critic, "heightmap")
+            if hasattr(self.scene, "lidar"):
+                delattr(self.scene, "lidar")
+
         # general settings
         self.decimation = 4
         self.episode_length_s = 20.0
@@ -431,7 +501,8 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
         # we tick all the sensors based on the smallest update period (physics update period)
         self.scene.contact_forces.update_period = self.sim.dt
         # self.scene.height_scanner.update_period = self.decimation * self.sim.dt
-        self.scene.lidar.update_period = self.decimation * self.sim.dt
+        if hasattr(self.scene, "lidar"):
+            self.scene.lidar.update_period = self.decimation * self.sim.dt
 
         # check if terrain levels curriculum is enabled - if so, enable curriculum for terrain generator
         # this generates terrains with increasing difficulty and is useful for training
@@ -451,4 +522,5 @@ class RobotPlayEnvCfg(RobotEnvCfg):
         self.scene.terrain.terrain_generator.num_rows = 2
         self.scene.terrain.terrain_generator.num_cols = 4
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
-        self.observations.policy.heightmap.params["randomize"] = False
+        if hasattr(self.observations.policy, "heightmap"):
+            self.observations.policy.heightmap.params["randomize"] = False
