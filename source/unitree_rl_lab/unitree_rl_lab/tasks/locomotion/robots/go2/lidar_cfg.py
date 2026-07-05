@@ -37,11 +37,7 @@ def get_go2_lidar_cfg(prim_path: str = "{ENV_REGEX_NS}/Robot/base/lidar", config
     sensor_cfg = cfg['lidar_sensor']
     channels = int(sensor_cfg['channels'])
     v_fov = tuple(float(x) for x in sensor_cfg['vertical_fov_range_deg'])
-    
-    # 実機Go2の物理的マスキング（後方および自己干渉領域の除外）を模擬するため、水平視野角を制限
-    # 実機ではロボット自身の胴体に遮られる後方（±120度〜±180度）は完全にマスクされて点群が得られません
-    h_fov = (-120.0, 120.0)
-    
+    h_fov = tuple(float(x) for x in sensor_cfg['horizontal_fov_range_deg'])
     h_res = float(sensor_cfg['horizontal_res_deg'])
     max_dist = float(sensor_cfg['max_distance_m'])
     
