@@ -64,6 +64,53 @@ def upward(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("r
     return reward
 
 
+def base_height_climb_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    sensor_cfg: SceneEntityCfg,
+    nominal_clearance: float = 0.35,
+    std: float = 0.15,
+) -> torch.Tensor:
+    """Reward the base for sitting ``nominal_clearance`` above whatever
+    terrain is directly beneath it right now.
+
+    None of the existing terrain rewards (``forward_command_progress``,
+    ``adaptive_foot_clearance_reward``) reward the vertical body-height gain
+    needed to actually haul the torso up onto a step -- they reward
+    horizontal progress and foot lift. This targets a specific failure mode:
+    the front feet reach a step but the body/hind legs don't follow, so the
+    body stays low even though the terrain right under it has risen.
+
+    This is a potential-based tracking signal,
+    ``exp(-(base_z - target_z)^2 / std^2)``, where ``target_z`` is the local
+    terrain height (nearest height-scan point to the base) plus
+    ``nominal_clearance``. It collapses to "maintain ordinary standing
+    height" on flat ground (no conflict with flat-ground gait naturalness),
+    and as the base's own xy position advances over a riser, ``target_z``
+    rises with it -- pulling the body upward instead of letting it lag
+    behind the front legs.
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    sensor = env.scene[sensor_cfg.name]
+
+    base_xy = asset.data.root_pos_w[:, :2]
+    base_z = asset.data.root_pos_w[:, 2]
+
+    ray_hits_w = sensor.data.ray_hits_w  # (N, R, 3)
+    ray_xy = ray_hits_w[:, :, :2]
+    ray_z = ray_hits_w[:, :, 2]
+    valid_rays = torch.isfinite(ray_z)
+
+    dist = torch.norm(base_xy.unsqueeze(1) - ray_xy, dim=-1)  # (N, R)
+    dist = torch.where(valid_rays, dist, torch.full_like(dist, 1e9))
+    nearest = dist.argmin(dim=-1)  # (N,)
+    local_terrain_h = torch.gather(ray_z, 1, nearest.unsqueeze(-1)).squeeze(-1)  # (N,)
+
+    target_z = local_terrain_h + nominal_clearance
+    height_error = base_z - target_z
+    return torch.exp(-torch.square(height_error) / std**2)
+
+
 def joint_position_penalty(
     env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, stand_still_scale: float, velocity_threshold: float
 ) -> torch.Tensor:
@@ -446,6 +493,127 @@ def forward_command_progress(
     # apply the lower and upper bounds separately.
     progress = torch.minimum(progress.clamp(min=0.0), cmd_norm)
     return progress * (cmd_norm > 0.1)
+
+
+def stall_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str = "base_velocity",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    speed_scale: float = 0.1,
+) -> torch.Tensor:
+    """Penalize near-zero body speed while a non-trivial command is active.
+
+    ``forward_command_progress`` rewards positive progress but gives zero
+    gradient once a robot has already stopped -- "attempted and failed" and
+    "never tried" score identically. On terrain hard enough that most
+    climbing attempts fail, that makes freezing at the base of an obstacle a
+    locally safer strategy than attempting to climb: it avoids
+    ``bad_orientation``/``base_contact`` termination while forfeiting reward
+    that's already near zero either way. This term makes standing still
+    itself costly instead of merely non-rewarding: ``exp(-body_speed /
+    speed_scale)`` is ~1 when the body is essentially stationary and decays
+    quickly as soon as there is *any* real forward motion, so it targets true
+    stalling without penalizing slow, deliberate climbing steps.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
+    body_speed = torch.norm(asset.data.root_lin_vel_b[:, :2], dim=1)
+    stall = torch.exp(-body_speed / speed_scale)
+    return stall * (cmd_norm > 0.1)
+
+
+def stair_commit_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    sensor_cfg: SceneEntityCfg,
+    contact_sensor_cfg: SceneEntityCfg,
+    height_gap_threshold: float = 0.08,
+    max_forward_speed: float = 1.0,
+    max_climb_speed: float = 0.5,
+) -> torch.Tensor:
+    """Strongly reward forward+upward body progress at the exact moment the
+    front feet are planted on a step higher than the hind feet.
+
+    MuJoCo testing found a specific, repeated failure: the front feet reach a
+    step but the hind legs stay on the ground below, and the robot often
+    freezes or gives up right there rather than driving the hind legs to
+    follow. ``base_height_climb_reward`` only rewards *having arrived* at the
+    right body height, and ``forward_command_progress``/``stall_penalty``
+    apply the same incentive everywhere -- neither concentrates gradient on
+    this exact, narrow "straddling" window where a decisive push matters most.
+
+    This term detects that state directly (front feet in contact with terrain
+    meaningfully higher than the terrain under the hind feet) and rewards
+    forward+upward body velocity only while it holds, so the incentive is
+    sharply localized to the moment the hind legs need to drive.
+
+    ``asset_cfg``/``contact_sensor_cfg`` must list feet in
+    ``[FR, FL, RR, RL]`` order (front pair first, hind pair second) -- the
+    same convention used by ``adaptive_foot_clearance_reward``.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    sensor = env.scene[sensor_cfg.name]
+    contact_sensor: ContactSensor = env.scene.sensors[contact_sensor_cfg.name]
+
+    foot_xy = asset.data.body_pos_w[:, asset_cfg.body_ids, :2]  # (N, 4, 2)
+    front_xy = foot_xy[:, :2, :]
+    hind_xy = foot_xy[:, 2:, :]
+
+    ray_hits_w = sensor.data.ray_hits_w  # (N, R, 3)
+    ray_xy = ray_hits_w[:, :, :2]
+    ray_z = ray_hits_w[:, :, 2]
+    valid_rays = torch.isfinite(ray_z)
+
+    def _nearest_height(query_xy: torch.Tensor) -> torch.Tensor:
+        dist = torch.norm(query_xy.unsqueeze(2) - ray_xy.unsqueeze(1), dim=-1)  # (N, 2, R)
+        dist = torch.where(valid_rays.unsqueeze(1), dist, torch.full_like(dist, 1e9))
+        nearest = dist.argmin(dim=-1)  # (N, 2)
+        return torch.gather(
+            ray_z.unsqueeze(1).expand(-1, query_xy.shape[1], -1), dim=2, index=nearest.unsqueeze(-1)
+        ).squeeze(-1)
+
+    front_terrain_h = _nearest_height(front_xy).mean(dim=1)  # (N,)
+    hind_terrain_h = _nearest_height(hind_xy).mean(dim=1)  # (N,)
+
+    in_contact = contact_sensor.data.current_contact_time[:, contact_sensor_cfg.body_ids] > 0.0  # (N, 4)
+    front_planted = in_contact[:, :2].any(dim=1)
+    hind_down = in_contact[:, 2:].any(dim=1)
+    straddling = front_planted & hind_down & ((front_terrain_h - hind_terrain_h) > height_gap_threshold)
+
+    forward_speed = torch.clamp(asset.data.root_lin_vel_b[:, 0], min=0.0, max=max_forward_speed)
+    climb_speed = torch.clamp(asset.data.root_lin_vel_w[:, 2], min=0.0, max=max_climb_speed)
+    progress = forward_speed + climb_speed
+    return progress * straddling.float()
+
+
+def landing_stability_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    contact_sensor_cfg: SceneEntityCfg,
+    landing_window: float = 0.1,
+    ang_vel_std: float = 2.0,
+) -> torch.Tensor:
+    """Reward quickly re-stabilizing body orientation right after a foot lands.
+
+    ``stair_commit_reward`` pushes the robot to lunge onto risers, but a
+    forceful landing that isn't quickly stabilized can leave small
+    orientation/angular-velocity errors that compound across several steps
+    until the robot topples -- a "climbs several steps then falls" failure
+    mode. This detects a recent landing event (any foot's current contact
+    time is still within ``landing_window`` of having started) and rewards
+    low body angular velocity specifically in that window, so settling
+    quickly after impact is worth something on its own instead of only being
+    implicitly required to avoid termination later.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    contact_sensor: ContactSensor = env.scene.sensors[contact_sensor_cfg.name]
+
+    current_contact_time = contact_sensor.data.current_contact_time[:, contact_sensor_cfg.body_ids]
+    just_landed = ((current_contact_time > 0.0) & (current_contact_time <= landing_window)).any(dim=1)
+
+    ang_vel = torch.norm(asset.data.root_ang_vel_b, dim=1)
+    stability = torch.exp(-torch.square(ang_vel) / ang_vel_std**2)
+    return stability * just_landed.float()
 
 
 def joint_mirror(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, mirror_joints: list[list[str]]) -> torch.Tensor:

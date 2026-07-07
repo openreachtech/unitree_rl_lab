@@ -1,4 +1,5 @@
 import isaaclab.terrains as terrain_gen
+from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 
@@ -103,11 +104,40 @@ class RobotPlayEnvCfgPhase3(RobotEnvCfgPhase3):
 
 
 # =============================================================================
-# Phase3-stairfocus: promoted from sandbox Try-1 + Try-2.
-# Maximizes terrain_levels (reached ~5.3-5.4 in the sandbox runs) by relaxing
-# penalties that conflict with stair-climbing and adding a forward-progress
-# term, at the cost of an exaggerated flat-ground gait (see Phase3-balance
-# below for the fix).
+# Phase3-stairfocus: promoted from sandbox Try-8 (best stair-climbing result
+# to date, superseding the original Try-1/Try-2 promotion).
+#
+# Trained on the harder terrain (pyramid_stairs_inv tread narrowed to 0.19 m,
+# step_height up to 0.25 m -- see PHASE3_TERRAIN_CFG above). Training result:
+# Curriculum/terrain_levels reached ~4.75 and was still rising, not yet
+# plateaued, when training stopped. MuJoCo sim-to-sim testing (fixed 0.21 m
+# step / 0.19 m tread) confirmed real behavioral progress through the
+# sandbox lineage:
+#   Try-1/2 (this class's previous definition) : climbs smoothly on the
+#       *old*, easier terrain, but with an exaggerated flat-ground gait
+#       (see Phase3-balance) and gets stuck straddling a step once terrain
+#       got harder.
+#   Try-5/6/7 (harder terrain, various fixes)  : freezes at the very first
+#       step rather than attempting to climb -- surviving by doing nothing,
+#       not by succeeding (time_out 91-93% while terrain_levels stayed ~3.6-3.9).
+#   Try-8 (this config)                        : climbs to about the 4th
+#       step before falling -- a genuine break from the freeze/stuck
+#       plateau, at the cost of some survivability (time_out 84.9%,
+#       base_contact 9.6%) from more committed, less risk-averse attempts.
+#
+# Composition (each piece traces to the sandbox try that introduced it):
+#   Try-1/2 : relaxed flat_orientation_l2/base_linear_velocity/joint_pos/
+#             undesired_contacts, feet_air_time 0.2, forward_command_progress 0.8
+#   Try-5   : wild_foot_clearance -> mdp.adaptive_foot_clearance_reward
+#             (obstacle-aware lookahead + roughness gate, tuned for the taller
+#             risers: max_clearance 0.22, roughness_ref 0.04)
+#   Try-6   : + base_height_climb (rewards the base for actually rising onto
+#             a step instead of leaving the hind legs behind)
+#   Try-7   : + stall_penalty (penalizes freezing at an obstacle instead of
+#             attempting it)
+#   Try-8   : joint_torques/action_rate/energy relaxed further (room for a
+#             committed, dynamic push) + stair_commit (sharply rewards
+#             forward+upward progress specifically while straddling a step)
 # =============================================================================
 
 
@@ -118,18 +148,78 @@ class RewardsCfgPhase3StairFocus(RewardsCfgPhase3):
     joint_pos = RewardsCfgPhase3().joint_pos.replace(weight=-0.3)
     undesired_contacts = RewardsCfgPhase3().undesired_contacts.replace(weight=-0.3)
     feet_air_time = RewardsCfgPhase3().feet_air_time.replace(weight=0.2)
+    forward_command_progress = RewardsCfgPhase3().forward_command_progress.replace(weight=0.8)
+
+    # Relaxed further so the policy has room for a committed, dynamic push
+    # onto a step rather than only the efficient, smooth gait these
+    # penalties otherwise shape for flat walking.
+    joint_torques = RewardsCfgPhase3().joint_torques.replace(weight=-3e-5)
+    action_rate = RewardsCfgPhase3().action_rate.replace(weight=-0.02)
+    energy = RewardsCfgPhase3().energy.replace(weight=-5e-6)
+
+    # Terrain-adaptive foot clearance: obstacle-aware lookahead + roughness
+    # gate instead of a fixed target, so flat sections don't get an
+    # exaggerated marching lift; scales toward the real riser height (up to
+    # 0.25 m) as a step approaches.
     wild_foot_clearance = RewardsCfgPhase3().wild_foot_clearance.replace(
+        func=mdp.adaptive_foot_clearance_reward,
         weight=0.6,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"]),
             "sensor_cfg": SceneEntityCfg("height_scanner"),
             "period": 0.4,
             "offset": [0.0, 0.5, 0.5, 0.0],
-            "radius": 0.1,
-            "target_clearance": 0.15,
+            "lookahead_distance": 0.15,
+            "natural_clearance": 0.03,
+            "max_clearance": 0.22,
+            "roughness_ref": 0.04,
         },
     )
-    forward_command_progress = RewardsCfgPhase3().forward_command_progress.replace(weight=0.8)
+
+    # Reward the base for sitting at nominal standing height above whatever
+    # terrain is directly beneath it, so it actually rises onto a step
+    # instead of leaving the hind legs behind (the "straddling" failure mode).
+    base_height_climb = RewTerm(
+        func=mdp.base_height_climb_reward,
+        weight=1.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "sensor_cfg": SceneEntityCfg("height_scanner"),
+            "nominal_clearance": 0.35,
+            "std": 0.15,
+        },
+    )
+
+    # Penalize near-zero body speed while a command is active, so freezing
+    # at an obstacle isn't the locally safer strategy.
+    stall_penalty = RewTerm(
+        func=mdp.stall_penalty,
+        weight=-1.0,
+        params={
+            "command_name": "base_velocity",
+            "asset_cfg": SceneEntityCfg("robot"),
+            "speed_scale": 0.1,
+        },
+    )
+
+    # Sharply reward forward+upward body progress specifically while the
+    # front feet are planted on terrain higher than the terrain under the
+    # hind feet -- concentrates gradient on the exact moment a decisive
+    # hind-leg push matters most.
+    stair_commit = RewTerm(
+        func=mdp.stair_commit_reward,
+        weight=2.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"]),
+            "sensor_cfg": SceneEntityCfg("height_scanner"),
+            "contact_sensor_cfg": SceneEntityCfg(
+                "contact_forces", body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"]
+            ),
+            "height_gap_threshold": 0.08,
+            "max_forward_speed": 1.0,
+            "max_climb_speed": 0.5,
+        },
+    )
 
 
 @configclass
@@ -140,7 +230,8 @@ class TerminationsCfgPhase3StairFocus(TerminationsCfg):
 
 @configclass
 class RobotEnvCfgPhase3StairFocus(RobotEnvCfgPhase3):
-    """Phase 3 - stair focus: maximize terrain_levels (sandbox result: ~5.3-5.4)."""
+    """Phase 3 - stair focus: best stair-climbing result to date (sandbox Try-8:
+    terrain_levels ~4.75 on the harder terrain, climbs to ~4th step in MuJoCo)."""
 
     rewards: RewardsCfgPhase3StairFocus = RewardsCfgPhase3StairFocus()
     terminations: TerminationsCfgPhase3StairFocus = TerminationsCfgPhase3StairFocus()
@@ -157,20 +248,32 @@ class RobotPlayEnvCfgPhase3StairFocus(RobotEnvCfgPhase3StairFocus):
 
 
 # =============================================================================
-# Phase3-balance: promoted from sandbox Try-4.
+# Phase3-balance: promoted from sandbox Try-4. Independent of StairFocus
+# above (which now tracks Try-8) -- kept as its own flattened class so
+# StairFocus's later reward changes can't leak into this validated recipe.
 # Swaps the fixed-target foot-clearance reward for mdp.adaptive_foot_clearance_reward
 # (obstacle-aware lookahead + terrain-roughness gate), so the clearance target
 # collapses to a natural ~3 cm lift on flat ground and only scales up toward
-# real riser height near a stair. Trades peak terrain_levels (~4.9 vs
-# StairFocus's ~5.3-5.4) for a natural flat-ground gait and much higher
-# episode survivability (time_out 91.5% vs ~79-80%, bad_orientation 3.7% vs
-# ~11-15%).
+# real riser height near a stair. Trades peak terrain_levels (~4.9, measured
+# on the original easier terrain before it was hardened) for a natural
+# flat-ground gait and much higher episode survivability (time_out 91.5% vs
+# ~79-80%, bad_orientation 3.7% vs ~11-15%).
 # =============================================================================
 
 
 @configclass
-class RewardsCfgPhase3Balance(RewardsCfgPhase3StairFocus):
-    wild_foot_clearance = RewardsCfgPhase3StairFocus().wild_foot_clearance.replace(
+class RewardsCfgPhase3Balance(RewardsCfgPhase3):
+    """Independent of RewardsCfgPhase3StairFocus (which now tracks Try-8) --
+    this preserves the exact Try-4 recipe (Try-1/2's relaxed penalties +
+    Try-4's terrain-adaptive clearance) that produced its validated result."""
+
+    flat_orientation_l2 = RewardsCfgPhase3().flat_orientation_l2.replace(weight=-0.3)
+    base_linear_velocity = RewardsCfgPhase3().base_linear_velocity.replace(weight=-0.2)
+    joint_pos = RewardsCfgPhase3().joint_pos.replace(weight=-0.3)
+    undesired_contacts = RewardsCfgPhase3().undesired_contacts.replace(weight=-0.3)
+    forward_command_progress = RewardsCfgPhase3().forward_command_progress.replace(weight=0.8)
+    feet_air_time = RewardsCfgPhase3().feet_air_time.replace(weight=0.1)
+    wild_foot_clearance = RewardsCfgPhase3().wild_foot_clearance.replace(
         func=mdp.adaptive_foot_clearance_reward,
         weight=0.6,
         params={
@@ -184,12 +287,16 @@ class RewardsCfgPhase3Balance(RewardsCfgPhase3StairFocus):
             "roughness_ref": 0.05,
         },
     )
-    feet_air_time = RewardsCfgPhase3StairFocus().feet_air_time.replace(weight=0.1)
 
 
 @configclass
 class RobotEnvCfgPhase3Balance(RobotEnvCfgPhase3StairFocus):
-    """Phase 3 - balance: natural flat-ground gait + terrain_levels >= 4.5 (sandbox result: 4.899)."""
+    """Phase 3 - balance: natural flat-ground gait + terrain_levels >= 4.5 (sandbox result: 4.899).
+
+    Extends RobotEnvCfgPhase3StairFocus only for scene/commands/terminations
+    (unaffected by StairFocus's reward updates); rewards is the independent
+    RewardsCfgPhase3Balance above.
+    """
 
     rewards: RewardsCfgPhase3Balance = RewardsCfgPhase3Balance()
 
