@@ -3,7 +3,7 @@ from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 
-from unitree_rl_lab.tasks.locomotion import mdp
+from unitree_rl_lab.tasks.locomotion import mdp, terrains
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import TerminationsCfg
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_go2 import RewardsCfgGo2
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_phase2 import (
@@ -36,6 +36,46 @@ PHASE3_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
             proportion=0.60,
             step_height_range=(0.05, 0.25),
             step_width=0.19,
+            platform_width=2.0,
+            border_width=1.0,
+            holes=False,
+        ),
+    },
+)
+
+
+# Tread narrows from 0.25 m (difficulty 0 / row 0) to 0.19 m (difficulty 1 /
+# row 9) instead of being 0.19 m at every level -- the same difficulty-driven
+# interpolation step_height_range already uses, applied to tread width too
+# (see terrains.MeshPyramidStairsVariableWidthCfg). A robot promoted through
+# terrain_levels sees an easy, wide-tread staircase before it ever reaches
+# the narrow-tread rows. Used by Phase3-stairfocus below (sandbox Try-10
+# result: terrain_levels 4.869, softer initial collapse on first stairs
+# contact, faster recovery than the fixed-width PHASE3_TERRAIN_CFG).
+PHASE3_TERRAIN_CFG_VARIABLE_WIDTH = terrain_gen.TerrainGeneratorCfg(
+    size=(8.0, 8.0),
+    border_width=20.0,
+    num_cols=20,
+    num_rows=10,
+    horizontal_scale=0.1,
+    vertical_scale=0.005,
+    slope_threshold=0.75,
+    difficulty_range=(0.0, 1.0),
+    use_cache=False,
+    sub_terrains={
+        "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.10),
+        "pyramid_stairs": terrains.MeshPyramidStairsVariableWidthCfg(
+            proportion=0.30,
+            step_height_range=(0.05, 0.25),
+            step_width_range=(0.25, 0.19),
+            platform_width=2.0,
+            border_width=1.0,
+            holes=False,
+        ),
+        "pyramid_stairs_inv": terrains.MeshInvertedPyramidStairsVariableWidthCfg(
+            proportion=0.60,
+            step_height_range=(0.05, 0.25),
+            step_width_range=(0.25, 0.19),
             platform_width=2.0,
             border_width=1.0,
             holes=False,
@@ -104,26 +144,8 @@ class RobotPlayEnvCfgPhase3(RobotEnvCfgPhase3):
 
 
 # =============================================================================
-# Phase3-stairfocus: promoted from sandbox Try-8 (best stair-climbing result
-# to date, superseding the original Try-1/Try-2 promotion).
-#
-# Trained on the harder terrain (pyramid_stairs_inv tread narrowed to 0.19 m,
-# step_height up to 0.25 m -- see PHASE3_TERRAIN_CFG above). Training result:
-# Curriculum/terrain_levels reached ~4.75 and was still rising, not yet
-# plateaued, when training stopped. MuJoCo sim-to-sim testing (fixed 0.21 m
-# step / 0.19 m tread) confirmed real behavioral progress through the
-# sandbox lineage:
-#   Try-1/2 (this class's previous definition) : climbs smoothly on the
-#       *old*, easier terrain, but with an exaggerated flat-ground gait
-#       (see Phase3-balance) and gets stuck straddling a step once terrain
-#       got harder.
-#   Try-5/6/7 (harder terrain, various fixes)  : freezes at the very first
-#       step rather than attempting to climb -- surviving by doing nothing,
-#       not by succeeding (time_out 91-93% while terrain_levels stayed ~3.6-3.9).
-#   Try-8 (this config)                        : climbs to about the 4th
-#       step before falling -- a genuine break from the freeze/stuck
-#       plateau, at the cost of some survivability (time_out 84.9%,
-#       base_contact 9.6%) from more committed, less risk-averse attempts.
+# Phase3-stairfocus: promoted from sandbox Try-10 (best stair-climbing result
+# to date, superseding the Try-8 and original Try-1/Try-2 promotions).
 #
 # Composition (each piece traces to the sandbox try that introduced it):
 #   Try-1/2 : relaxed flat_orientation_l2/base_linear_velocity/joint_pos/
@@ -138,6 +160,34 @@ class RobotPlayEnvCfgPhase3(RobotEnvCfgPhase3):
 #   Try-8   : joint_torques/action_rate/energy relaxed further (room for a
 #             committed, dynamic push) + stair_commit (sharply rewards
 #             forward+upward progress specifically while straddling a step)
+#   Try-10  : scene.terrain -> PHASE3_TERRAIN_CFG_VARIABLE_WIDTH (tread narrows
+#             with difficulty instead of being 0.19 m at every level); rewards
+#             unchanged from Try-8
+#
+# MuJoCo sim-to-sim testing (fixed 0.21 m step / 0.19 m tread) confirmed real
+# behavioral progress through the sandbox lineage:
+#   Try-1/2 (this class's original definition) : climbs smoothly on the
+#       *old*, easier terrain, but with an exaggerated flat-ground gait
+#       (see Phase3-balance) and gets stuck straddling a step once terrain
+#       got harder.
+#   Try-5/6/7 (harder terrain, various fixes)  : freezes at the very first
+#       step rather than attempting to climb -- surviving by doing nothing,
+#       not by succeeding (time_out 91-93% while terrain_levels stayed ~3.6-3.9).
+#   Try-8 (fixed 0.19 m tread)                 : climbs to about the 4th
+#       step before falling -- a genuine break from the freeze/stuck
+#       plateau, at the cost of some survivability (time_out 84.9%,
+#       base_contact 9.6%) from more committed, less risk-averse attempts.
+#       terrain_levels reached ~4.75, still rising, not yet plateaued.
+#   Try-10 (this config, variable-width tread) : same rewards as Try-8, but
+#       reaches the 4th step with front legs while the hind legs have
+#       already reached the 1st step (vs Try-8's hind legs left further
+#       behind) -- confirmed improved. terrain_levels reached ~4.87, with a
+#       softer initial collapse and faster recovery on first stairs contact
+#       than the fixed-width terrain.
+#
+# Still open (see sandbox try11+ if pursued): front feet can still get
+# several steps ahead of the hind feet before the hind legs catch up -- no
+# current reward caps that stride span.
 # =============================================================================
 
 
@@ -229,10 +279,20 @@ class TerminationsCfgPhase3StairFocus(TerminationsCfg):
 
 
 @configclass
-class RobotEnvCfgPhase3StairFocus(RobotEnvCfgPhase3):
-    """Phase 3 - stair focus: best stair-climbing result to date (sandbox Try-8:
-    terrain_levels ~4.75 on the harder terrain, climbs to ~4th step in MuJoCo)."""
+class RobotSceneCfgPhase3StairFocus(RobotSceneCfgPhase3):
+    terrain = RobotSceneCfgPhase3().terrain.replace(
+        terrain_generator=PHASE3_TERRAIN_CFG_VARIABLE_WIDTH,
+        max_init_terrain_level=5,
+    )
 
+
+@configclass
+class RobotEnvCfgPhase3StairFocus(RobotEnvCfgPhase3):
+    """Phase 3 - stair focus: best stair-climbing result to date (sandbox Try-10:
+    terrain_levels ~4.87 on the variable-width terrain, reaches ~4th step with
+    front legs / ~1st step with hind legs in MuJoCo)."""
+
+    scene: RobotSceneCfgPhase3StairFocus = RobotSceneCfgPhase3StairFocus(num_envs=4096, env_spacing=2.5)
     rewards: RewardsCfgPhase3StairFocus = RewardsCfgPhase3StairFocus()
     terminations: TerminationsCfgPhase3StairFocus = TerminationsCfgPhase3StairFocus()
 
@@ -293,11 +353,14 @@ class RewardsCfgPhase3Balance(RewardsCfgPhase3):
 class RobotEnvCfgPhase3Balance(RobotEnvCfgPhase3StairFocus):
     """Phase 3 - balance: natural flat-ground gait + terrain_levels >= 4.5 (sandbox result: 4.899).
 
-    Extends RobotEnvCfgPhase3StairFocus only for scene/commands/terminations
-    (unaffected by StairFocus's reward updates); rewards is the independent
-    RewardsCfgPhase3Balance above.
+    Extends RobotEnvCfgPhase3StairFocus only for commands/terminations
+    (unaffected by StairFocus's reward/terrain updates). scene is pinned back
+    to the original fixed-width RobotSceneCfgPhase3 (StairFocus now uses the
+    variable-width terrain, which Balance was never trained or validated on),
+    and rewards is the independent RewardsCfgPhase3Balance above.
     """
 
+    scene: RobotSceneCfgPhase3 = RobotSceneCfgPhase3(num_envs=4096, env_spacing=2.5)
     rewards: RewardsCfgPhase3Balance = RewardsCfgPhase3Balance()
 
 
