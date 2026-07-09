@@ -3,7 +3,10 @@ from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 
+from unitree_rl_lab.assets.models.modules.teacher_actor import TeacherActorCritic
+from unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg import BasePPORunnerCfg
 from unitree_rl_lab.tasks.locomotion import mdp
+from unitree_rl_lab.tasks.locomotion.mdp.observations import height_scan_excluding_body
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import (
     CommandsCfg,
     ObservationsCfg,
@@ -14,10 +17,47 @@ from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import (
 POLICY_HISTORY_LENGTH = 3
 CRITIC_HISTORY_LENGTH = 3
 
+# LiDAR mount in base frame (LiDAR -> base translation). Matches deploy height_scan_pipeline.
+GO2_LIDAR_OFFSET_X = 0.28945  # m, forward from base
+GO2_LIDAR_OFFSET_Y = 0.0
+GO2_LIDAR_OFFSET_Z = -0.046825  # m
+
+# Nominal standing base height (world z above ground). Used to zero height_scan on flat terrain.
+GO2_NOMINAL_BASE_Z = 0.32  # m
+
+# Isaac mdp.height_scan offset: ground-to-sensor height at nominal stance (flat terrain -> ~0).
+GO2_HEIGHT_SCAN_OFFSET = GO2_NOMINAL_BASE_Z + GO2_LIDAR_OFFSET_Z  # 0.303175 m
+
+# RayCaster grid origin at LiDAR mount (matches unitree_mujoco utlidar site on base_link).
+GO2_HEIGHT_SCANNER_OFFSET = (
+    GO2_LIDAR_OFFSET_X,
+    GO2_LIDAR_OFFSET_Y,
+    GO2_LIDAR_OFFSET_Z,
+)
+
+# 17×11 grid, resolution 0.1m, size [1.6, 1.0]m
+POLICY_HEIGHT_SCAN_CFG = ObsTerm(
+    func=height_scan_excluding_body,
+    params={
+        "sensor_cfg": SceneEntityCfg("height_scanner"),
+        "asset_cfg": SceneEntityCfg("robot"),
+        "offset": GO2_HEIGHT_SCAN_OFFSET,
+        # Mask points under body footprint (in base xy, meters).
+        "exclude_half_extent_x": 0.22,
+        "exclude_half_extent_y": 0.12,
+        "fill_value": 0.0,
+    },
+    clip=(-1.0, 5.0),
+    # noise=Unoise(n_min=-0.05, n_max=0.05),
+    history_length=0,
+)
+
+# Height scan grid matches RobotSceneCfgGo2V2.height_scanner (LiDAR origin, 17×11 @ 0.1 m).
 CRITIC_HEIGHT_SCAN_CFG = ObsTerm(
     func=mdp.height_scan,
-    params={"sensor_cfg": SceneEntityCfg("height_scanner")},
+    params={"sensor_cfg": SceneEntityCfg("height_scanner"), "offset": GO2_HEIGHT_SCAN_OFFSET},
     clip=(-1.0, 5.0),
+    history_length=0,
 )
 
 
@@ -28,6 +68,7 @@ class PolicyCfgGo2(ObservationsCfg.PolicyCfg):
     joint_pos_rel = ObservationsCfg.PolicyCfg().joint_pos_rel.replace(history_length=POLICY_HISTORY_LENGTH)
     joint_vel_rel = ObservationsCfg.PolicyCfg().joint_vel_rel.replace(history_length=POLICY_HISTORY_LENGTH)
     last_action = ObservationsCfg.PolicyCfg().last_action.replace(history_length=POLICY_HISTORY_LENGTH)
+    height_scan = POLICY_HEIGHT_SCAN_CFG
 
     def __post_init__(self):
         super().__post_init__()
@@ -35,12 +76,18 @@ class PolicyCfgGo2(ObservationsCfg.PolicyCfg):
 
 @configclass
 class CriticCfgGo2(ObservationsCfg.CriticCfg):
-    """Go2 critic: privileged ``height_scan`` plus per-term observation history."""
+    """Go2 critic with explicit order: proprio -> extero(height_scan) -> privileged."""
 
-    height_scan = CRITIC_HEIGHT_SCAN_CFG
+    base_ang_vel = ObservationsCfg.CriticCfg().base_ang_vel
+    projected_gravity = ObservationsCfg.CriticCfg().projected_gravity
+    velocity_commands = ObservationsCfg.CriticCfg().velocity_commands
     joint_pos_rel = ObservationsCfg.CriticCfg().joint_pos_rel.replace(history_length=CRITIC_HISTORY_LENGTH)
     joint_vel_rel = ObservationsCfg.CriticCfg().joint_vel_rel.replace(history_length=CRITIC_HISTORY_LENGTH)
     last_action = ObservationsCfg.CriticCfg().last_action.replace(history_length=CRITIC_HISTORY_LENGTH)
+    height_scan = CRITIC_HEIGHT_SCAN_CFG
+    # critic-only privileged terms
+    base_lin_vel = ObservationsCfg.CriticCfg().base_lin_vel
+    joint_effort = ObservationsCfg.CriticCfg().joint_effort
 
 
 @configclass
@@ -108,3 +155,26 @@ class RobotEnvCfgGo2(RobotEnvCfg):
     observations: ObservationsCfgGo2 = ObservationsCfgGo2()
     commands: CommandsCfgGo2 = CommandsCfgGo2()
     rewards: RewardsCfgGo2 = RewardsCfgGo2()
+
+    def __post_init__(self):
+        super().__post_init__()
+        # Show height-scan rays/hits in Isaac Sim GUI for Go2 tasks.
+        self.scene.height_scanner.debug_vis = True
+
+
+@configclass
+class TeacherPPORunnerCfg(BasePPORunnerCfg):
+    """Use custom teacher actor-critic with rsl-rl PPO runner."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        # Ensure class symbol is imported in this module for config serialization/debug.
+        _ = TeacherActorCritic
+        self.policy.class_name = "TeacherActorCritic"
+        # Policy obs dim (proprio): base_ang_vel(3) + projected_gravity(3) + velocity_commands(3)
+        # + joint_pos_rel(12*history 3) + joint_vel_rel(12*history 3) + last_action(12*history 3) = 117
+        self.policy.proprio_obs_dim = 117
+        # Extero dim: height scan grid size = (1.6/0.1) * (1.0/0.1) = 16 * 10 = 160.
+        self.policy.extero_obs_dim = 160
+        # Privileged dim: critic-only extras = base_lin_vel(3) + joint_effort(12) = 15.
+        self.policy.priv_obs_dim = 15

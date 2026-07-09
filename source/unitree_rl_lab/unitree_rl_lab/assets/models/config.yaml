@@ -1,0 +1,46 @@
+teacher_model:
+  policy:
+    MLP:
+      extero_encoder:
+        # Height scan → exteroceptive latent l_t^e
+        shape: [ 80, 60 ]
+        activation: leakyrelu
+        output: 24
+
+      privileged_encoder:
+        # Privileged info: ground friction, contact forces, body velocities, etc.
+        shape: [ 64, 32 ]
+        activation: leakyrelu
+        output: 24        # l_t^p
+
+      base_net:
+        # Takes [proprio | extero_latent | priv_latent] → action
+        shape: [ 256, 160, 128 ]
+        activation: leakyrelu
+        # input/output are injected at runtime by TeacherPolicy._adapt()
+
+  critic:
+    MLP:
+      extero_encoder:
+        shape: [ 80, 60 ]
+        activation: leakyrelu
+        output: 24
+
+      privileged_encoder:
+        shape: [ 64, 32 ]
+        activation: leakyrelu
+        output: 24
+
+      base_net:
+        shape: [ 256, 160, 128 ]
+        activation: leakyrelu
+        # output is forced to 1 (value) by TeacherCritic._adapt()
+
+  ppo:
+    clip_param: 0.2
+    entropy_coef: 0.01
+    value_loss_coef: 0.5
+    use_clipped_value_loss: true
+    gamma: 0.99
+    lam: 0.95           # GAE-lambda
+    max_grad_norm: 1.0
