@@ -17,6 +17,23 @@ from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import (
 POLICY_HISTORY_LENGTH = 3
 CRITIC_HISTORY_LENGTH = 3
 
+# Must match RobotSceneCfg.height_scanner.pattern_cfg (velocity_env_cfg.py):
+# patterns.GridPatternCfg(resolution=HEIGHT_SCAN_RESOLUTION, size=HEIGHT_SCAN_SIZE).
+HEIGHT_SCAN_RESOLUTION = 0.1
+HEIGHT_SCAN_SIZE = (1.6, 1.0)
+
+
+def _grid_pattern_num_points(resolution: float, size: tuple[float, float]) -> int:
+    """Ray count produced by isaaclab.sensors.ray_caster.patterns.GridPatternCfg.
+
+    Mirrors isaaclab's grid_pattern(): arange(-size/2, size/2 + eps, resolution) includes both
+    endpoints, so each axis has round(size / resolution) + 1 points, not size / resolution.
+    """
+    num_x = round(size[0] / resolution) + 1
+    num_y = round(size[1] / resolution) + 1
+    return num_x * num_y
+
+
 # LiDAR mount in base frame (LiDAR -> base translation). Matches deploy height_scan_pipeline.
 GO2_LIDAR_OFFSET_X = 0.28945  # m, forward from base
 GO2_LIDAR_OFFSET_Y = 0.0
@@ -171,10 +188,7 @@ class TeacherPPORunnerCfg(BasePPORunnerCfg):
         # Ensure class symbol is imported in this module for config serialization/debug.
         _ = TeacherActorCritic
         self.policy.class_name = "TeacherActorCritic"
-        # Policy obs dim (proprio): base_ang_vel(3) + projected_gravity(3) + velocity_commands(3)
-        # + joint_pos_rel(12*history 3) + joint_vel_rel(12*history 3) + last_action(12*history 3) = 117
-        self.policy.proprio_obs_dim = 117
-        # Extero dim: height scan grid size = (1.6/0.1) * (1.0/0.1) = 16 * 10 = 160.
-        self.policy.extero_obs_dim = 160
-        # Privileged dim: critic-only extras = base_lin_vel(3) + joint_effort(12) = 15.
-        self.policy.priv_obs_dim = 15
+        # proprio/privileged widths are derived by TeacherActorCritic itself from the live
+        # policy/critic observation tensors. Only the height-scan (extero) width needs to be
+        # told apart explicitly, since it's a sub-slice of those tensors, not the whole thing.
+        self.policy.extero_obs_dim = _grid_pattern_num_points(HEIGHT_SCAN_RESOLUTION, HEIGHT_SCAN_SIZE)
