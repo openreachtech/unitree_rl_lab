@@ -43,6 +43,8 @@ class BeliefStudentTeacherCfg(RslRlDistillationStudentTeacherCfg):
     """Width of the height-scan block within proprio|extero observation vectors."""
     priv_obs_dim: int = MISSING
     """Privileged width for TeacherPolicy's encoder (must match teacher checkpoint)."""
+    transfer_extero_encoder_from_teacher: bool = True
+    """If True, copy teacher extero_encoder → student when loading a PPO teacher checkpoint."""
 
 
 @configclass

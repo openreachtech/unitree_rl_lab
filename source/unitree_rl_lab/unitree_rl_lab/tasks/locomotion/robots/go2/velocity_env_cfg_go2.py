@@ -223,3 +223,6 @@ class StudentDistillationRunnerCfg(BeliefDistillationRunnerCfg):
         # TeacherポリシーはPreveledgedInfoを使っていないが、ゼロ埋めしている。
         # そのため、Studentポリシーも同じゼロ埋めを行う必要がある。
         self.policy.priv_obs_dim = priv
+
+        # TeacherポリシーのExteroceptiveEncoderをStudentポリシーに転送しない。
+        # self.policy.transfer_extero_encoder_from_teacher = False

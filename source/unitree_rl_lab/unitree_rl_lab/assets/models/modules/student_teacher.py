@@ -49,6 +49,7 @@ class StudentTeacher(RslStudentTeacher):
         teacher_obs_normalization: bool = False,
         init_noise_std: float = 0.1,
         noise_std_type: str = "scalar",
+        transfer_extero_encoder_from_teacher: bool = True,
         **kwargs: dict[str, Any],
     ) -> None:
         # Parent builds placeholder MLPs + normalizers + action noise; we swap the nets below.
@@ -67,6 +68,7 @@ class StudentTeacher(RslStudentTeacher):
         self.extero_dim = int(extero_obs_dim)
         self.priv_dim = int(priv_obs_dim)
         self.action_dim = int(num_actions)
+        self.transfer_extero_encoder_from_teacher_enabled = bool(transfer_extero_encoder_from_teacher)
         assert self.proprio_dim > 0, f"proprio_obs_dim must be > 0, got {self.proprio_dim}."
         assert self.extero_dim > 0, f"extero_obs_dim must be > 0, got {self.extero_dim}."
         assert self.priv_dim >= 0, f"priv_obs_dim must be >= 0, got {self.priv_dim}."
@@ -115,6 +117,48 @@ class StudentTeacher(RslStudentTeacher):
         if model_cfg_key not in raw:
             raise KeyError(f"Config key '{model_cfg_key}' not found in {cfg_path}.")
         return raw[model_cfg_key]
+
+    def transfer_extero_encoder_from_teacher(self) -> None:
+        """Warm-start student extero encoder from the frozen teacher (paper / reference agent).
+
+        ``extero_encoder`` is architecturally identical in teacher and student
+        (``config.yaml``: shape [80, 60], output 24). ``base_net`` is not copied:
+        teacher input is [proprio | extero_latent | priv_latent], student is
+        [proprio | belief_state].
+        """
+        self.student.extero_encoder.load_state_dict(self.teacher.extero_encoder.state_dict())
+        print("[INFO] Transferred teacher extero_encoder → student extero_encoder.")
+
+    def load_state_dict(self, state_dict: dict, strict: bool = True) -> bool:
+        """Load teacher from PPO checkpoint (then warm-start student encoder), or resume distillation."""
+        if any("actor" in key for key in state_dict):
+            # PPO TeacherActorCritic → teacher only, then copy shared extero encoder to student.
+            teacher_state_dict = {}
+            teacher_obs_normalizer_state_dict = {}
+            for key, value in state_dict.items():
+                if "actor." in key:
+                    teacher_state_dict[key.replace("actor.", "")] = value
+                if "actor_obs_normalizer." in key:
+                    teacher_obs_normalizer_state_dict[key.replace("actor_obs_normalizer.", "")] = value
+            self.teacher.load_state_dict(teacher_state_dict, strict=strict)
+            self.teacher_obs_normalizer.load_state_dict(teacher_obs_normalizer_state_dict, strict=strict)
+            if self.transfer_extero_encoder_from_teacher_enabled:
+                self.transfer_extero_encoder_from_teacher()
+            else:
+                print("[INFO] Skipped teacher→student extero_encoder transfer (disabled in cfg).")
+            self.loaded_teacher = True
+            self.teacher.eval()
+            self.teacher_obs_normalizer.eval()
+            return False  # Distillation does not resume
+        elif any("student" in key for key in state_dict):
+            # Resume previous distillation (student already has its own encoder weights).
+            super(RslStudentTeacher, self).load_state_dict(state_dict, strict=strict)
+            self.loaded_teacher = True
+            self.teacher.eval()
+            self.teacher_obs_normalizer.eval()
+            return True
+        else:
+            raise ValueError("state_dict does not contain student or teacher parameters")
 
     def _split_proprio_extero(self, obs_tensor: torch.Tensor):
         proprio = obs_tensor[..., : self.proprio_dim]
