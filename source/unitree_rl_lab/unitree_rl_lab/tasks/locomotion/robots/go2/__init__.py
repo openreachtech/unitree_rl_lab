@@ -71,3 +71,18 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{__name__}.velocity_env_cfg_go2:TeacherPPORunnerCfg",
     },
 )
+
+# Student distillation (behavior cloning + height-map reconstruction) on the
+# Phase3-balance MDP. Load a teacher checkpoint via --previous-task / --resume, e.g.:
+#   --task Unitree-Go2-Velocity-v2-Student \
+#   --previous-task Unitree-Go2-Velocity-v2-Phase3-balance --resume
+gym.register(
+    id="Unitree-Go2-Velocity-v2-Student",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_student:RobotEnvCfgStudent",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_student:RobotPlayEnvCfgStudent",
+        "rsl_rl_cfg_entry_point": f"{__name__}.velocity_env_cfg_go2:StudentDistillationRunnerCfg",
+    },
+)

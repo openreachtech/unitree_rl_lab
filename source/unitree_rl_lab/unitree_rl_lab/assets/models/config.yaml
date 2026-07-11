@@ -35,3 +35,46 @@ teacher_model:
         shape: [ 256, 160, 128 ]
         activation: leakyrelu
         # output is forced to 1 (value) by TeacherCritic._adapt()
+
+student_model:
+  policy:
+    MLP:
+      extero_encoder:
+        # Single height-map encoder; input = extero_dim (injected by StudentPolicy._adapt)
+        shape: [ 80, 60 ]
+        activation: leakyrelu
+        output: 24
+      base_net:
+        # Takes [proprio | belief_state] → action
+        shape: [ 256, 160, 128 ]
+        activation: leakyrelu
+
+  belief_encoder:
+    GRU:
+      recurrent_encoder:
+        # input = proprio_dim + extero_encoder.output  (injected by StudentPolicy._adapt)
+        hidden: 50
+        num_layers: 2
+        batch_first: False
+        dropout: 0.
+    MLP:
+      attention_encoder:
+        # Gates the encoded extero latent; output = extero_encoder.output
+        shape: [ 64, 64 ]
+        activation: leakyrelu
+      state_encoder:
+        # Compressed belief from GRU; output matches extero_encoder.output
+        shape: [ 64, 64 ]
+        activation: leakyrelu
+        output: 24
+
+  belief_decoder:
+    MLP:
+      attention_encoder:
+        # Gates the raw extero scan; output = extero_dim
+        shape: [ 64, 64 ]
+        activation: leakyrelu
+      extero_decoder:
+        # Reconstructs clean exteroception from GRU output; output = extero_dim
+        shape: [ 64, 64 ]
+        activation: leakyrelu

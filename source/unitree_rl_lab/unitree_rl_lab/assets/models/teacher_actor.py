@@ -7,8 +7,10 @@ from pathlib import Path
 from types import SimpleNamespace
 import yaml
 
-from base_nn import BaseNet
 from rsl_rl.modules import ActorCritic
+
+from unitree_rl_lab.assets.models.modules.base_nn import BaseNet
+
 
 class TeacherPolicy(BaseNet):
     """
@@ -169,7 +171,9 @@ class TeacherActorCritic(ActorCritic):
         obs,
         obs_groups,
         num_actions,
+        proprio_obs_dim,
         extero_obs_dim,
+        priv_obs_dim,
         model_cfg_path=None,
         model_cfg_key="teacher_model",
         **kwargs,
@@ -177,9 +181,8 @@ class TeacherActorCritic(ActorCritic):
         """
         :param obs          : TensorDict of live observations from the env (rsl-rl 3.x API).
         :param obs_groups   : e.g. {"policy": ["policy"], "critic": ["critic"]} (rsl-rl 3.x API).
-        :param extero_obs_dim : width of the height-scan block within the policy/critic obs vector.
-            proprio/privileged widths are derived below from the real obs tensors, so they never
-            need to be hand-computed/hardcoded.
+        :param extero_obs_dim / proprio_obs_dim / priv_obs_dim : observation block widths from
+            the policy cfg. Layout is policy=[proprio|extero], critic=[proprio|extero|priv].
         """
         # Do not call ActorCritic.__init__ because it expects the default MLP architecture args.
         nn.Module.__init__(self)
@@ -188,25 +191,30 @@ class TeacherActorCritic(ActorCritic):
         self.actor_obs_normalization = False
         self.critic_obs_normalization = False
 
+        self.proprio_dim = int(proprio_obs_dim)
         self.extero_dim = int(extero_obs_dim)
+        self.priv_dim = int(priv_obs_dim)
         self.action_dim = int(num_actions)
+        assert self.proprio_dim > 0, f"proprio_obs_dim must be > 0, got {self.proprio_dim}."
+        assert self.extero_dim > 0, f"extero_obs_dim must be > 0, got {self.extero_dim}."
+        assert self.priv_dim >= 0, f"priv_obs_dim must be >= 0, got {self.priv_dim}."
 
-        # proprio/priv widths, derived from the live policy/critic obs tensors instead of being
-        # hardcoded: policy obs = [proprio | extero], critic obs = [proprio | extero | priv].
+        # Sanity-check cfg widths against live observation tensors.
         policy_obs_dim = sum(obs[group].shape[-1] for group in obs_groups["policy"])
         critic_obs_dim = sum(obs[group].shape[-1] for group in obs_groups["critic"])
-        self.proprio_dim = policy_obs_dim - self.extero_dim
-        self.priv_dim = critic_obs_dim - policy_obs_dim
-        assert self.proprio_dim > 0, (
-            f"extero_obs_dim ({self.extero_dim}) leaves no room for proprio in the policy obs "
-            f"({policy_obs_dim})."
+        expected_policy = self.proprio_dim + self.extero_dim
+        expected_critic = expected_policy + self.priv_dim
+        assert policy_obs_dim == expected_policy, (
+            f"Policy obs width ({policy_obs_dim}) != proprio+extero "
+            f"({self.proprio_dim}+{self.extero_dim}={expected_policy})."
         )
-        assert self.priv_dim >= 0, (
-            f"critic obs ({critic_obs_dim}) is smaller than policy obs ({policy_obs_dim})."
+        assert critic_obs_dim == expected_critic, (
+            f"Critic obs width ({critic_obs_dim}) != proprio+extero+priv "
+            f"({expected_policy}+{self.priv_dim}={expected_critic})."
         )
 
         if model_cfg_path is None:
-            model_cfg_path = Path(__file__).resolve().parent.parent / "config.yaml"
+            model_cfg_path = Path(__file__).resolve().parent / "config.yaml"
         model_cfg_data = self._load_model_cfg(model_cfg_path, model_cfg_key)
         model_cfg_actor = deepcopy(model_cfg_data)
         model_cfg_critic = deepcopy(model_cfg_data)

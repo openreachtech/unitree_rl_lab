@@ -133,7 +133,7 @@ import shutil
 import torch
 from datetime import datetime
 
-from custom_runner import UnitreeOnPolicyRunner
+from unitree_rl_lab.assets.models.modules.runners import UnitreeDistillationRunner, UnitreeOnPolicyRunner
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab.envs import (
@@ -221,8 +221,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
-    # create runner from rsl-rl
-    runner = UnitreeOnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+    # create runner from rsl-rl (Unitree* wrappers register custom policy / alg classes)
+    if agent_cfg.class_name == "OnPolicyRunner":
+        runner = UnitreeOnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+    elif agent_cfg.class_name == "DistillationRunner":
+        runner = UnitreeDistillationRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+    else:
+        raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
     # load the checkpoint

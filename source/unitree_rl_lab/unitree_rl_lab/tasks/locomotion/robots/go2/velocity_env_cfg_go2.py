@@ -3,8 +3,10 @@ from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 
-from unitree_rl_lab.assets.models.modules.teacher_actor import TeacherActorCritic
+from unitree_rl_lab.assets.models.teacher_actor import TeacherActorCritic
+from unitree_rl_lab.assets.models.modules.student_teacher import StudentTeacher
 from unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg import BasePPORunnerCfg
+from unitree_rl_lab.tasks.locomotion.agents.rsl_rl_distillation_cfg import BeliefDistillationRunnerCfg
 from unitree_rl_lab.tasks.locomotion import mdp
 from unitree_rl_lab.tasks.locomotion.mdp.observations import height_scan_excluding_body
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import (
@@ -179,6 +181,20 @@ class RobotEnvCfgGo2(RobotEnvCfg):
         self.scene.height_scanner.debug_vis = True
 
 
+def _go2_obs_block_dims() -> tuple[int, int, int]:
+    """Go2 policy/critic observation block widths (proprio, extero, priv).
+
+    Must match ``ObservationsCfgGo2`` / ``ObservationsCfgStudent``:
+      proprio: ang_vel(3)+gravity(3)+cmd(3)+joint_pos(12*H)+joint_vel(12*H)+action(12*H)
+      extero:  height-scan grid
+      priv:    critic-only base_lin_vel(3)+joint_effort(12)
+    """
+    proprio = 3 + 3 + 3 + 12 * POLICY_HISTORY_LENGTH * 3
+    extero = _grid_pattern_num_points(HEIGHT_SCAN_RESOLUTION, HEIGHT_SCAN_SIZE)
+    priv = 3 + 12
+    return proprio, extero, priv
+
+
 @configclass
 class TeacherPPORunnerCfg(BasePPORunnerCfg):
     """Use custom teacher actor-critic with rsl-rl PPO runner."""
@@ -188,7 +204,22 @@ class TeacherPPORunnerCfg(BasePPORunnerCfg):
         # Ensure class symbol is imported in this module for config serialization/debug.
         _ = TeacherActorCritic
         self.policy.class_name = "TeacherActorCritic"
-        # proprio/privileged widths are derived by TeacherActorCritic itself from the live
-        # policy/critic observation tensors. Only the height-scan (extero) width needs to be
-        # told apart explicitly, since it's a sub-slice of those tensors, not the whole thing.
-        self.policy.extero_obs_dim = _grid_pattern_num_points(HEIGHT_SCAN_RESOLUTION, HEIGHT_SCAN_SIZE)
+        proprio, extero, priv = _go2_obs_block_dims()
+        self.policy.proprio_obs_dim = proprio
+        self.policy.extero_obs_dim = extero
+        self.policy.priv_obs_dim = priv
+
+
+@configclass
+class StudentDistillationRunnerCfg(BeliefDistillationRunnerCfg):
+    """Belief-encoder student distillation (BC + height-map reconstruction)."""
+
+    def __post_init__(self):
+        # Ensure class symbol is imported for config serialization/debug.
+        _ = StudentTeacher
+        proprio, extero, priv = _go2_obs_block_dims()
+        self.policy.proprio_obs_dim = proprio
+        self.policy.extero_obs_dim = extero
+        # TeacherポリシーはPreveledgedInfoを使っていないが、ゼロ埋めしている。
+        # そのため、Studentポリシーも同じゼロ埋めを行う必要がある。
+        self.policy.priv_obs_dim = priv
