@@ -120,6 +120,18 @@ def cleanup_marker_artifacts(marker_output_dir: Path, keep_md: Path) -> None:
         path.unlink(missing_ok=True)
 
 
+def append_source_notes(markdown: str, title: str, url: str) -> str:
+    """Append title and source URL as a notes section at the end of the markdown."""
+    body = markdown.rstrip()
+    notes = (
+        "\n\n---\n\n"
+        "## Notes\n\n"
+        f"- **Title:** {title}\n"
+        f"- **URL:** {url}\n"
+    )
+    return body + notes
+
+
 def main() -> int:
     args = parse_args()
     PAPERS_DIR.mkdir(parents=True, exist_ok=True)
@@ -141,7 +153,8 @@ def main() -> int:
         md_path = run_marker(pdf_path, marker_dir)
         cleanup_marker_artifacts(marker_dir, md_path)
 
-        out_path.write_text(md_path.read_text(encoding="utf-8"), encoding="utf-8")
+        markdown = append_source_notes(md_path.read_text(encoding="utf-8"), title, args.url)
+        out_path.write_text(markdown, encoding="utf-8")
         print(f"Wrote markdown: {out_path}")
 
     return 0
