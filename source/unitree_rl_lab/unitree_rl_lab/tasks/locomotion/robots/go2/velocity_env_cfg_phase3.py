@@ -96,10 +96,10 @@ class RobotSceneCfgPhase3(RobotSceneCfgPhase2):
 class CommandsCfgPhase3(CommandsCfgPhase2):
     base_velocity = CommandsCfgPhase2().base_velocity.replace(
         ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
-            lin_vel_x=(-0.1, 0.1), lin_vel_y=(-0.15, 0.15), ang_vel_z=(-0.5, 0.5)
+            lin_vel_x=(-0.2, 0.2), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-0.5, 0.5)
         ),
         limit_ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
-            lin_vel_x=(-1.0, 1.2), lin_vel_y=(-0.7, 0.7), ang_vel_z=(-1.2, 1.2)
+            lin_vel_x=(-1.2, 1.2), lin_vel_y=(-0.7, 0.7), ang_vel_z=(-1.2, 1.2)
         ),
     )
 
