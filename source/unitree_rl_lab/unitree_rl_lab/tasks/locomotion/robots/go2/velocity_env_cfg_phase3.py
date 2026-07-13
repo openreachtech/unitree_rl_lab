@@ -64,18 +64,38 @@ PHASE3_TERRAIN_CFG_VARIABLE_WIDTH = terrain_gen.TerrainGeneratorCfg(
     use_cache=False,
     sub_terrains={
         "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.10),
-        "pyramid_stairs": terrains.MeshPyramidStairsVariableWidthCfg(
-            proportion=0.30,
+        # 1段ごとに登らせる想定（段差、踏み幅広め）
+        "pyramid_stairs_wide": terrains.MeshPyramidStairsVariableWidthCfg(
+            proportion=0.10,
             step_height_range=(0.05, 0.25),
-            step_width_range=(0.35, 0.20),
+            step_width_range=(0.60, 0.30),
             platform_width=2.0,
             border_width=1.0,
             holes=False,
         ),
-        "pyramid_stairs_inv": terrains.MeshInvertedPyramidStairsVariableWidthCfg(
-            proportion=0.60,
+        # 普通の階段
+        "pyramid_stairs": terrains.MeshPyramidStairsVariableWidthCfg(
+            proportion=0.20,
             step_height_range=(0.05, 0.25),
-            step_width_range=(0.35, 0.20),
+            step_width_range=(0.27, 0.23),
+            platform_width=2.0,
+            border_width=1.0,
+            holes=False,
+        ),
+        # 1段ごとに登らせる想定（段差、踏み幅広め）
+        "pyramid_stairs_inv_wide": terrains.MeshInvertedPyramidStairsVariableWidthCfg(
+            proportion=0.20,
+            step_height_range=(0.05, 0.25),
+            step_width_range=(0.60, 0.30),
+            platform_width=2.0,
+            border_width=1.0,
+            holes=False,
+        ),
+        # 普通の階段
+        "pyramid_stairs_inv": terrains.MeshInvertedPyramidStairsVariableWidthCfg(
+            proportion=0.40,
+            step_height_range=(0.05, 0.25),
+            step_width_range=(0.27, 0.23),
             platform_width=2.0,
             border_width=1.0,
             holes=False,
@@ -213,7 +233,7 @@ class RobotPlayEnvCfgPhase3Balance(RobotEnvCfgPhase3Balance):
         super().__post_init__()
         self.scene.num_envs = 32
         self.scene.terrain.terrain_generator.num_rows = 3
-        self.scene.terrain.terrain_generator.num_cols = 3
+        self.scene.terrain.terrain_generator.num_cols = 5
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
 
 
@@ -377,5 +397,5 @@ class RobotPlayEnvCfgPhase3StairFocus(RobotEnvCfgPhase3StairFocus):
         super().__post_init__()
         self.scene.num_envs = 32
         self.scene.terrain.terrain_generator.num_rows = 3
-        self.scene.terrain.terrain_generator.num_cols = 3
+        self.scene.terrain.terrain_generator.num_cols = 5
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
