@@ -46,6 +46,19 @@ gym.register(
     },
 )
 
+# Promoted from sandbox Try-4: terrain-adaptive foot clearance for a natural
+# flat-ground gait, terrain_levels >= 4.5 (reached 4.899).
+gym.register(
+    id="Unitree-Go2-Velocity-v2-Phase3-balance",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_phase3:RobotEnvCfgPhase3Balance",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_phase3:RobotPlayEnvCfgPhase3Balance",
+        "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
+    },
+)
+
 # Promoted from sandbox Try-1 + Try-2: maximizes terrain_levels (~5.3-5.4),
 # exaggerated flat-ground gait as a tradeoff.
 gym.register(
@@ -59,30 +72,14 @@ gym.register(
     },
 )
 
-# Promoted from sandbox Try-4: terrain-adaptive foot clearance for a natural
-# flat-ground gait, terrain_levels >= 4.5 (reached 4.899).
+# Balance rewards + terrain mix that includes floating inverted pyramid stairs.
 gym.register(
-    id="Unitree-Go2-Velocity-v2-Phase3-balance",
+    id="Unitree-Go2-Velocity-v2-Phase3-balance-floating",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_phase3:RobotEnvCfgPhase3Balance",
-        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_phase3:RobotPlayEnvCfgPhase3Balance",
-        "rsl_rl_cfg_entry_point": f"{__name__}.velocity_env_cfg_go2:TeacherPPORunnerCfg",
-    },
-)
-
-# Student distillation (behavior cloning + height-map reconstruction) on the
-# Phase3-balance MDP. Load a teacher checkpoint via --previous-task / --resume, e.g.:
-#   --task Unitree-Go2-Velocity-v2-Student \
-#   --previous-task Unitree-Go2-Velocity-v2-Phase3-balance --resume
-gym.register(
-    id="Unitree-Go2-Velocity-v2-Student",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_student:RobotEnvCfgStudent",
-        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_student:RobotPlayEnvCfgStudent",
-        "rsl_rl_cfg_entry_point": f"{__name__}.velocity_env_cfg_go2:StudentDistillationRunnerCfg",
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_phase3:RobotEnvCfgPhase3BalanceFloating",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_phase3:RobotPlayEnvCfgPhase3BalanceFloating",
+        "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
     },
 )

@@ -182,3 +182,239 @@ class MeshInvertedPyramidStairsVariableWidthCfg(MeshPyramidStairsVariableWidthCf
     """Inverted pyramid stairs whose tread width narrows with difficulty."""
 
     function = inverted_pyramid_stairs_variable_width_terrain
+
+
+def _box(dims: tuple[float, float, float], pos: tuple[float, float, float]) -> trimesh.Trimesh:
+    return trimesh.creation.box(dims, trimesh.transformations.translation_matrix(pos))
+
+
+def floating_pyramid_stairs_terrain(
+    difficulty: float, cfg: "MeshFloatingPyramidStairsTerrainCfg"
+) -> tuple[list[trimesh.Trimesh], np.ndarray]:
+    """Pyramid stairs made of thin treads and vertical stringers (no risers).
+
+    Same ring layout as :func:`isaaclab.terrains.trimesh.mesh_terrains.pyramid_stairs_terrain`,
+    but each step is a thin horizontal tread instead of a solid riser-filled box, with
+    optional posts under the tread ends as a simple frame (骨組み).
+    """
+    step_height = _lerp(cfg.step_height_range, difficulty)
+    step_width = _lerp(cfg.step_width_range, difficulty)
+    tread_thickness = cfg.tread_thickness
+    stringer_width = cfg.stringer_width
+
+    num_steps_x = (cfg.size[0] - 2 * cfg.border_width - cfg.platform_width) // (2 * step_width) + 1
+    num_steps_y = (cfg.size[1] - 2 * cfg.border_width - cfg.platform_width) // (2 * step_width) + 1
+    num_steps = int(min(num_steps_x, num_steps_y))
+
+    meshes_list = list()
+
+    if cfg.border_width > 0.0 and not cfg.holes:
+        border_center = [0.5 * cfg.size[0], 0.5 * cfg.size[1], -step_height / 2]
+        border_inner_size = (cfg.size[0] - 2 * cfg.border_width, cfg.size[1] - 2 * cfg.border_width)
+        meshes_list += make_border(cfg.size, border_inner_size, step_height, border_center)
+
+    terrain_center = [0.5 * cfg.size[0], 0.5 * cfg.size[1], 0.0]
+    terrain_size = (cfg.size[0] - 2 * cfg.border_width, cfg.size[1] - 2 * cfg.border_width)
+
+    # Floor under the open risers so feet that slip through land on ground.
+    meshes_list.append(
+        _box((terrain_size[0], terrain_size[1], tread_thickness), (terrain_center[0], terrain_center[1], -tread_thickness / 2))
+    )
+
+    for k in range(num_steps):
+        if cfg.holes:
+            box_size = (cfg.platform_width, cfg.platform_width)
+        else:
+            box_size = (terrain_size[0] - 2 * k * step_width, terrain_size[1] - 2 * k * step_width)
+        box_offset = (k + 0.5) * step_width
+        tread_top_z = (k + 1) * step_height
+        tread_z = tread_top_z - tread_thickness / 2.0
+
+        # top / bottom treads
+        tread_dims_tb = (box_size[0], step_width, tread_thickness)
+        y_top = terrain_center[1] + terrain_size[1] / 2.0 - box_offset
+        y_bottom = terrain_center[1] - terrain_size[1] / 2.0 + box_offset
+        meshes_list += [
+            _box(tread_dims_tb, (terrain_center[0], y_top, tread_z)),
+            _box(tread_dims_tb, (terrain_center[0], y_bottom, tread_z)),
+        ]
+
+        # left / right treads
+        if cfg.holes:
+            tread_dims_lr = (step_width, box_size[1], tread_thickness)
+        else:
+            tread_dims_lr = (step_width, box_size[1] - 2 * step_width, tread_thickness)
+        x_right = terrain_center[0] + terrain_size[0] / 2.0 - box_offset
+        x_left = terrain_center[0] - terrain_size[0] / 2.0 + box_offset
+        meshes_list += [
+            _box(tread_dims_lr, (x_right, terrain_center[1], tread_z)),
+            _box(tread_dims_lr, (x_left, terrain_center[1], tread_z)),
+        ]
+
+        if cfg.add_stringers:
+            post_height = max(tread_top_z - tread_thickness, tread_thickness)
+            post_z = post_height / 2.0
+            post_dims = (stringer_width, stringer_width, post_height)
+            half_x = box_size[0] / 2.0 - stringer_width / 2.0
+            half_y_lr = tread_dims_lr[1] / 2.0 - stringer_width / 2.0
+            # posts under ends of top/bottom treads
+            for y in (y_top, y_bottom):
+                meshes_list += [
+                    _box(post_dims, (terrain_center[0] + half_x, y, post_z)),
+                    _box(post_dims, (terrain_center[0] - half_x, y, post_z)),
+                ]
+            # posts under ends of left/right treads
+            for x in (x_right, x_left):
+                meshes_list += [
+                    _box(post_dims, (x, terrain_center[1] + half_y_lr, post_z)),
+                    _box(post_dims, (x, terrain_center[1] - half_y_lr, post_z)),
+                ]
+
+    platform_top_z = (num_steps + 1) * step_height
+    platform_size = (
+        terrain_size[0] - 2 * num_steps * step_width,
+        terrain_size[1] - 2 * num_steps * step_width,
+    )
+    meshes_list.append(
+        _box(
+            (platform_size[0], platform_size[1], tread_thickness),
+            (terrain_center[0], terrain_center[1], platform_top_z - tread_thickness / 2.0),
+        )
+    )
+    if cfg.add_stringers:
+        post_height = max(platform_top_z - tread_thickness, tread_thickness)
+        post_z = post_height / 2.0
+        post_dims = (stringer_width, stringer_width, post_height)
+        half_x = platform_size[0] / 2.0 - stringer_width / 2.0
+        half_y = platform_size[1] / 2.0 - stringer_width / 2.0
+        for dx in (half_x, -half_x):
+            for dy in (half_y, -half_y):
+                meshes_list.append(_box(post_dims, (terrain_center[0] + dx, terrain_center[1] + dy, post_z)))
+
+    origin = np.array([terrain_center[0], terrain_center[1], platform_top_z])
+    return meshes_list, origin
+
+
+def floating_inverted_pyramid_stairs_terrain(
+    difficulty: float, cfg: "MeshFloatingInvertedPyramidStairsTerrainCfg"
+) -> tuple[list[trimesh.Trimesh], np.ndarray]:
+    """Inverted pyramid stairs made of thin treads and vertical stringers (no risers).
+
+    Same ring layout as
+    :func:`isaaclab.terrains.trimesh.mesh_terrains.inverted_pyramid_stairs_terrain`,
+    but each step is a thin horizontal tread instead of a solid riser-filled box.
+    """
+    step_height = _lerp(cfg.step_height_range, difficulty)
+    step_width = _lerp(cfg.step_width_range, difficulty)
+    tread_thickness = cfg.tread_thickness
+    stringer_width = cfg.stringer_width
+
+    num_steps_x = (cfg.size[0] - 2 * cfg.border_width - cfg.platform_width) // (2 * step_width) + 1
+    num_steps_y = (cfg.size[1] - 2 * cfg.border_width - cfg.platform_width) // (2 * step_width) + 1
+    num_steps = int(min(num_steps_x, num_steps_y))
+    total_height = (num_steps + 1) * step_height
+
+    meshes_list = list()
+
+    if cfg.border_width > 0.0 and not cfg.holes:
+        border_center = [0.5 * cfg.size[0], 0.5 * cfg.size[1], -0.5 * step_height]
+        border_inner_size = (cfg.size[0] - 2 * cfg.border_width, cfg.size[1] - 2 * cfg.border_width)
+        meshes_list += make_border(cfg.size, border_inner_size, step_height, border_center)
+
+    terrain_center = [0.5 * cfg.size[0], 0.5 * cfg.size[1], 0.0]
+    terrain_size = (cfg.size[0] - 2 * cfg.border_width, cfg.size[1] - 2 * cfg.border_width)
+    # No full floor here: a slab at z=0 would seal the pit. The border is the
+    # top walking surface; open space under treads is intentional.
+
+    bottom_z = -total_height
+
+    for k in range(num_steps):
+        if cfg.holes:
+            box_size = (cfg.platform_width, cfg.platform_width)
+        else:
+            box_size = (terrain_size[0] - 2 * k * step_width, terrain_size[1] - 2 * k * step_width)
+        box_offset = (k + 0.5) * step_width
+        tread_top_z = -(k + 1) * step_height
+        tread_z = tread_top_z - tread_thickness / 2.0
+
+        tread_dims_tb = (box_size[0], step_width, tread_thickness)
+        y_top = terrain_center[1] + terrain_size[1] / 2.0 - box_offset
+        y_bottom = terrain_center[1] - terrain_size[1] / 2.0 + box_offset
+        meshes_list += [
+            _box(tread_dims_tb, (terrain_center[0], y_top, tread_z)),
+            _box(tread_dims_tb, (terrain_center[0], y_bottom, tread_z)),
+        ]
+
+        if cfg.holes:
+            tread_dims_lr = (step_width, box_size[1], tread_thickness)
+        else:
+            tread_dims_lr = (step_width, box_size[1] - 2 * step_width, tread_thickness)
+        x_right = terrain_center[0] + terrain_size[0] / 2.0 - box_offset
+        x_left = terrain_center[0] - terrain_size[0] / 2.0 + box_offset
+        meshes_list += [
+            _box(tread_dims_lr, (x_right, terrain_center[1], tread_z)),
+            _box(tread_dims_lr, (x_left, terrain_center[1], tread_z)),
+        ]
+
+        if cfg.add_stringers:
+            # Posts hang from the tread down toward the bottom platform.
+            post_height = max(tread_top_z - tread_thickness - bottom_z, tread_thickness)
+            post_z = tread_top_z - tread_thickness - post_height / 2.0
+            post_dims = (stringer_width, stringer_width, post_height)
+            half_x = box_size[0] / 2.0 - stringer_width / 2.0
+            half_y_lr = tread_dims_lr[1] / 2.0 - stringer_width / 2.0
+            for y in (y_top, y_bottom):
+                meshes_list += [
+                    _box(post_dims, (terrain_center[0] + half_x, y, post_z)),
+                    _box(post_dims, (terrain_center[0] - half_x, y, post_z)),
+                ]
+            for x in (x_right, x_left):
+                meshes_list += [
+                    _box(post_dims, (x, terrain_center[1] + half_y_lr, post_z)),
+                    _box(post_dims, (x, terrain_center[1] - half_y_lr, post_z)),
+                ]
+
+    platform_size = (
+        terrain_size[0] - 2 * num_steps * step_width,
+        terrain_size[1] - 2 * num_steps * step_width,
+    )
+    meshes_list.append(
+        _box(
+            (platform_size[0], platform_size[1], tread_thickness),
+            (terrain_center[0], terrain_center[1], bottom_z - tread_thickness / 2.0),
+        )
+    )
+
+    origin = np.array([terrain_center[0], terrain_center[1], bottom_z])
+    return meshes_list, origin
+
+
+@configclass
+class MeshFloatingPyramidStairsTerrainCfg(SubTerrainBaseCfg):
+    """Floating pyramid stairs: thin treads + optional posts, no riser walls.
+
+    Both step height and tread width scale with difficulty via ranges.
+    """
+
+    function = floating_pyramid_stairs_terrain
+
+    border_width: float = 0.0
+    step_height_range: tuple[float, float] = MISSING
+    step_width_range: tuple[float, float] = MISSING
+    """The tread width (in m) at difficulty 0 and difficulty 1:
+    ``(wide_easy, narrow_hard)``."""
+    platform_width: float = 1.0
+    holes: bool = False
+    tread_thickness: float = 0.04
+    """Thickness of each floating tread (in m)."""
+    stringer_width: float = 0.03
+    """Cross-section width of vertical support posts (in m)."""
+    add_stringers: bool = True
+    """If True, add vertical posts under tread ends as a simple frame."""
+
+
+@configclass
+class MeshFloatingInvertedPyramidStairsTerrainCfg(MeshFloatingPyramidStairsTerrainCfg):
+    """Floating inverted pyramid stairs: thin treads + optional posts, no riser walls."""
+
+    function = floating_inverted_pyramid_stairs_terrain
