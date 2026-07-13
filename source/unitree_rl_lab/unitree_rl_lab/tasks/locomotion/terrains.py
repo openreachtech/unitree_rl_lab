@@ -198,7 +198,7 @@ def floating_pyramid_stairs_terrain(
     optional posts under the tread ends as a simple frame (骨組み).
     """
     step_height = _lerp(cfg.step_height_range, difficulty)
-    step_width = cfg.step_width
+    step_width = _lerp(cfg.step_width_range, difficulty)
     tread_thickness = cfg.tread_thickness
     stringer_width = cfg.stringer_width
 
@@ -305,7 +305,7 @@ def floating_inverted_pyramid_stairs_terrain(
     but each step is a thin horizontal tread instead of a solid riser-filled box.
     """
     step_height = _lerp(cfg.step_height_range, difficulty)
-    step_width = cfg.step_width
+    step_width = _lerp(cfg.step_width_range, difficulty)
     tread_thickness = cfg.tread_thickness
     stringer_width = cfg.stringer_width
 
@@ -391,13 +391,18 @@ def floating_inverted_pyramid_stairs_terrain(
 
 @configclass
 class MeshFloatingPyramidStairsTerrainCfg(SubTerrainBaseCfg):
-    """Floating pyramid stairs: thin treads + optional posts, no riser walls."""
+    """Floating pyramid stairs: thin treads + optional posts, no riser walls.
+
+    Both step height and tread width scale with difficulty via ranges.
+    """
 
     function = floating_pyramid_stairs_terrain
 
     border_width: float = 0.0
     step_height_range: tuple[float, float] = MISSING
-    step_width: float = MISSING
+    step_width_range: tuple[float, float] = MISSING
+    """The tread width (in m) at difficulty 0 and difficulty 1:
+    ``(wide_easy, narrow_hard)``."""
     platform_width: float = 1.0
     holes: bool = False
     tread_thickness: float = 0.04
