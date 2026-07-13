@@ -399,3 +399,97 @@ class RobotPlayEnvCfgPhase3StairFocus(RobotEnvCfgPhase3StairFocus):
         self.scene.terrain.terrain_generator.num_rows = 3
         self.scene.terrain.terrain_generator.num_cols = 5
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
+
+
+# Balance terrain + floating inverted pyramid stairs (thin treads / open risers).
+# Same mix as PHASE3_TERRAIN_CFG_VARIABLE_WIDTH, with 0.30 of the solid
+# inverted-stairs mass moved onto MeshFloatingInvertedPyramidStairsTerrainCfg.
+PHASE3_TERRAIN_CFG_BALANCE_FLOATING = terrain_gen.TerrainGeneratorCfg(
+    size=(8.0, 8.0),
+    border_width=20.0,
+    num_cols=20,
+    num_rows=10,
+    horizontal_scale=0.1,
+    vertical_scale=0.005,
+    slope_threshold=0.75,
+    difficulty_range=(0.0, 1.0),
+    use_cache=False,
+    sub_terrains={
+        "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.10),
+        "pyramid_stairs_wide": terrains.MeshPyramidStairsVariableWidthCfg(
+            proportion=0.10,
+            step_height_range=(0.05, 0.25),
+            step_width_range=(0.60, 0.30),
+            platform_width=2.0,
+            border_width=1.0,
+            holes=False,
+        ),
+        "pyramid_stairs": terrains.MeshPyramidStairsVariableWidthCfg(
+            proportion=0.10,
+            step_height_range=(0.05, 0.25),
+            step_width_range=(0.27, 0.23),
+            platform_width=2.0,
+            border_width=1.0,
+            holes=False,
+        ),
+        "floating_pyramid_stairs": terrains.MeshFloatingPyramidStairsTerrainCfg(
+            proportion=0.10,
+            step_height_range=(0.05, 0.25),
+            step_width_range=(0.27, 0.23),
+            platform_width=2.0,
+            border_width=1.0,
+            holes=False,
+        ),
+        "pyramid_stairs_inv_wide": terrains.MeshInvertedPyramidStairsVariableWidthCfg(
+            proportion=0.10,
+            step_height_range=(0.05, 0.25),
+            step_width_range=(0.60, 0.30),
+            platform_width=2.0,
+            border_width=1.0,
+            holes=False,
+        ),
+        "pyramid_stairs_inv": terrains.MeshInvertedPyramidStairsVariableWidthCfg(
+            proportion=0.20,
+            step_height_range=(0.05, 0.25),
+            step_width_range=(0.27, 0.23),
+            platform_width=2.0,
+            border_width=1.0,
+            holes=False,
+        ),
+        "floating_pyramid_stairs_inv": terrains.MeshFloatingInvertedPyramidStairsTerrainCfg(
+            proportion=0.30,
+            step_height_range=(0.05, 0.25),
+            step_width_range=(0.27, 0.23),
+            platform_width=2.0,
+            border_width=1.0,
+            holes=False,
+        ),
+    },
+)
+
+
+@configclass
+class RobotSceneCfgPhase3BalanceFloating(RobotSceneCfgPhase3Balance):
+    terrain = RobotSceneCfgPhase3Balance().terrain.replace(
+        terrain_generator=PHASE3_TERRAIN_CFG_BALANCE_FLOATING,
+        max_init_terrain_level=5,
+    )
+
+
+@configclass
+class RobotEnvCfgPhase3BalanceFloating(RobotEnvCfgPhase3Balance):
+    """Phase 3 - balance + floating inverted stairs terrain."""
+
+    scene: RobotSceneCfgPhase3BalanceFloating = RobotSceneCfgPhase3BalanceFloating(
+        num_envs=4096, env_spacing=2.5
+    )
+
+
+@configclass
+class RobotPlayEnvCfgPhase3BalanceFloating(RobotEnvCfgPhase3BalanceFloating):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 32
+        self.scene.terrain.terrain_generator.num_rows = 3
+        self.scene.terrain.terrain_generator.num_cols = 5
+        self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
