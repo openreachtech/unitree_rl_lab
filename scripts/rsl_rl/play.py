@@ -148,8 +148,23 @@ def main():
 
     # export policy to onnx/jit
     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
-    export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
-    export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
+    from unitree_rl_lab.assets.models.modules.student_teacher import StudentTeacher
+
+    if isinstance(policy_nn, StudentTeacher):
+        # StudentPolicy is a single fused module (extero encoder -> belief GRU+attention ->
+        # base net); it doesn't decompose into isaaclab_rl's generic `memory.rnn` + stateless
+        # MLP split, so it needs its own export path (see StudentPolicyJitExporter docstring).
+        from unitree_rl_lab.assets.models.student_actor import StudentPolicyJitExporter, StudentPolicyOnnxExporter
+
+        StudentPolicyJitExporter(policy_nn.student, normalizer=normalizer).export(
+            export_model_dir, filename="policy.pt"
+        )
+        StudentPolicyOnnxExporter(policy_nn.student, normalizer=normalizer).export(
+            export_model_dir, filename="policy.onnx"
+        )
+    else:
+        export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
+        export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
 
     dt = env.unwrapped.step_dt
 
