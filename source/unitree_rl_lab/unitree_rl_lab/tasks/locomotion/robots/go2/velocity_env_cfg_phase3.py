@@ -27,7 +27,7 @@ PHASE3_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
         "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
             proportion=0.30,
             step_height_range=(0.05, 0.25),
-            step_width=0.19,
+            step_width=0.23,
             platform_width=2.0,
             border_width=1.0,
             holes=False,
@@ -35,7 +35,7 @@ PHASE3_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
         "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
             proportion=0.60,
             step_height_range=(0.05, 0.25),
-            step_width=0.19,
+            step_width=0.23,
             platform_width=2.0,
             border_width=1.0,
             holes=False,
@@ -67,7 +67,7 @@ PHASE3_TERRAIN_CFG_VARIABLE_WIDTH = terrain_gen.TerrainGeneratorCfg(
         "pyramid_stairs": terrains.MeshPyramidStairsVariableWidthCfg(
             proportion=0.30,
             step_height_range=(0.05, 0.25),
-            step_width_range=(0.25, 0.19),
+            step_width_range=(0.35, 0.20),
             platform_width=2.0,
             border_width=1.0,
             holes=False,
@@ -75,7 +75,7 @@ PHASE3_TERRAIN_CFG_VARIABLE_WIDTH = terrain_gen.TerrainGeneratorCfg(
         "pyramid_stairs_inv": terrains.MeshInvertedPyramidStairsVariableWidthCfg(
             proportion=0.60,
             step_height_range=(0.05, 0.25),
-            step_width_range=(0.25, 0.19),
+            step_width_range=(0.35, 0.20),
             platform_width=2.0,
             border_width=1.0,
             holes=False,
@@ -139,7 +139,81 @@ class RobotPlayEnvCfgPhase3(RobotEnvCfgPhase3):
         super().__post_init__()
         self.scene.num_envs = 32
         self.scene.terrain.terrain_generator.num_rows = 3
-        self.scene.terrain.terrain_generator.num_cols = 5
+        self.scene.terrain.terrain_generator.num_cols = 3
+        self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
+
+
+
+# =============================================================================
+# Phase3-balance: promoted from sandbox Try-4. Independent of StairFocus
+# above (which now tracks Try-8) -- kept as its own flattened class so
+# StairFocus's later reward changes can't leak into this validated recipe.
+# Swaps the fixed-target foot-clearance reward for mdp.adaptive_foot_clearance_reward
+# (obstacle-aware lookahead + terrain-roughness gate), so the clearance target
+# collapses to a natural ~3 cm lift on flat ground and only scales up toward
+# real riser height near a stair. Trades peak terrain_levels (~4.9, measured
+# on the original easier terrain before it was hardened) for a natural
+# flat-ground gait and much higher episode survivability (time_out 91.5% vs
+# ~79-80%, bad_orientation 3.7% vs ~11-15%).
+# =============================================================================
+
+
+@configclass
+class RewardsCfgPhase3Balance(RewardsCfgPhase3):
+    """Independent of RewardsCfgPhase3StairFocus (which now tracks Try-8) --
+    this preserves the exact Try-4 recipe (Try-1/2's relaxed penalties +
+    Try-4's terrain-adaptive clearance) that produced its validated result."""
+
+    flat_orientation_l2 = RewardsCfgPhase3().flat_orientation_l2.replace(weight=-0.3)
+    base_linear_velocity = RewardsCfgPhase3().base_linear_velocity.replace(weight=-0.2)
+    joint_pos = RewardsCfgPhase3().joint_pos.replace(weight=-0.3)
+    undesired_contacts = RewardsCfgPhase3().undesired_contacts.replace(weight=-0.3)
+    forward_command_progress = RewardsCfgPhase3().forward_command_progress.replace(weight=0.8)
+    feet_air_time = RewardsCfgPhase3().feet_air_time.replace(weight=0.1)
+    wild_foot_clearance = RewardsCfgPhase3().wild_foot_clearance.replace(
+        func=mdp.adaptive_foot_clearance_reward,
+        weight=0.6,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"]),
+            "sensor_cfg": SceneEntityCfg("height_scanner"),
+            "period": 0.4,
+            "offset": [0.0, 0.5, 0.5, 0.0],
+            "lookahead_distance": 0.15,
+            "natural_clearance": 0.03,
+            "max_clearance": 0.20,
+            "roughness_ref": 0.05,
+        },
+    )
+
+
+@configclass
+class RobotSceneCfgPhase3Balance(RobotSceneCfgPhase3):
+    terrain = RobotSceneCfgPhase3().terrain.replace(
+        terrain_generator=PHASE3_TERRAIN_CFG_VARIABLE_WIDTH,
+        max_init_terrain_level=5,
+    )
+
+
+@configclass
+class RobotEnvCfgPhase3Balance(RobotEnvCfgPhase3):
+    """Phase 3 - balance: natural flat-ground gait + terrain_levels >= 4.5 (sandbox result: 4.899).
+
+    Extends RobotEnvCfgPhase3 directly. Uses the variable-width terrain
+    (PHASE3_TERRAIN_CFG_VARIABLE_WIDTH) and the independent
+    RewardsCfgPhase3Balance above.
+    """
+
+    scene: RobotSceneCfgPhase3Balance = RobotSceneCfgPhase3Balance(num_envs=4096, env_spacing=2.5)
+    rewards: RewardsCfgPhase3Balance = RewardsCfgPhase3Balance()
+
+
+@configclass
+class RobotPlayEnvCfgPhase3Balance(RobotEnvCfgPhase3Balance):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 32
+        self.scene.terrain.terrain_generator.num_rows = 3
+        self.scene.terrain.terrain_generator.num_cols = 3
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
 
 
@@ -303,72 +377,5 @@ class RobotPlayEnvCfgPhase3StairFocus(RobotEnvCfgPhase3StairFocus):
         super().__post_init__()
         self.scene.num_envs = 32
         self.scene.terrain.terrain_generator.num_rows = 3
-        self.scene.terrain.terrain_generator.num_cols = 5
-        self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
-
-
-# =============================================================================
-# Phase3-balance: promoted from sandbox Try-4. Independent of StairFocus
-# above (which now tracks Try-8) -- kept as its own flattened class so
-# StairFocus's later reward changes can't leak into this validated recipe.
-# Swaps the fixed-target foot-clearance reward for mdp.adaptive_foot_clearance_reward
-# (obstacle-aware lookahead + terrain-roughness gate), so the clearance target
-# collapses to a natural ~3 cm lift on flat ground and only scales up toward
-# real riser height near a stair. Trades peak terrain_levels (~4.9, measured
-# on the original easier terrain before it was hardened) for a natural
-# flat-ground gait and much higher episode survivability (time_out 91.5% vs
-# ~79-80%, bad_orientation 3.7% vs ~11-15%).
-# =============================================================================
-
-
-@configclass
-class RewardsCfgPhase3Balance(RewardsCfgPhase3):
-    """Independent of RewardsCfgPhase3StairFocus (which now tracks Try-8) --
-    this preserves the exact Try-4 recipe (Try-1/2's relaxed penalties +
-    Try-4's terrain-adaptive clearance) that produced its validated result."""
-
-    flat_orientation_l2 = RewardsCfgPhase3().flat_orientation_l2.replace(weight=-0.3)
-    base_linear_velocity = RewardsCfgPhase3().base_linear_velocity.replace(weight=-0.2)
-    joint_pos = RewardsCfgPhase3().joint_pos.replace(weight=-0.3)
-    undesired_contacts = RewardsCfgPhase3().undesired_contacts.replace(weight=-0.3)
-    forward_command_progress = RewardsCfgPhase3().forward_command_progress.replace(weight=0.8)
-    feet_air_time = RewardsCfgPhase3().feet_air_time.replace(weight=0.1)
-    wild_foot_clearance = RewardsCfgPhase3().wild_foot_clearance.replace(
-        func=mdp.adaptive_foot_clearance_reward,
-        weight=0.6,
-        params={
-            "asset_cfg": SceneEntityCfg("robot", body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"]),
-            "sensor_cfg": SceneEntityCfg("height_scanner"),
-            "period": 0.4,
-            "offset": [0.0, 0.5, 0.5, 0.0],
-            "lookahead_distance": 0.15,
-            "natural_clearance": 0.03,
-            "max_clearance": 0.20,
-            "roughness_ref": 0.05,
-        },
-    )
-
-
-@configclass
-class RobotEnvCfgPhase3Balance(RobotEnvCfgPhase3StairFocus):
-    """Phase 3 - balance: natural flat-ground gait + terrain_levels >= 4.5 (sandbox result: 4.899).
-
-    Extends RobotEnvCfgPhase3StairFocus only for commands/terminations
-    (unaffected by StairFocus's reward/terrain updates). scene is pinned back
-    to the original fixed-width RobotSceneCfgPhase3 (StairFocus now uses the
-    variable-width terrain, which Balance was never trained or validated on),
-    and rewards is the independent RewardsCfgPhase3Balance above.
-    """
-
-    scene: RobotSceneCfgPhase3 = RobotSceneCfgPhase3(num_envs=4096, env_spacing=2.5)
-    rewards: RewardsCfgPhase3Balance = RewardsCfgPhase3Balance()
-
-
-@configclass
-class RobotPlayEnvCfgPhase3Balance(RobotEnvCfgPhase3Balance):
-    def __post_init__(self):
-        super().__post_init__()
-        self.scene.num_envs = 32
-        self.scene.terrain.terrain_generator.num_rows = 3
-        self.scene.terrain.terrain_generator.num_cols = 5
+        self.scene.terrain.terrain_generator.num_cols = 3
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
