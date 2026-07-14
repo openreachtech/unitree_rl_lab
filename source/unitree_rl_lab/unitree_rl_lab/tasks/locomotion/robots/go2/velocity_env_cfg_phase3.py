@@ -165,7 +165,7 @@ class RobotPlayEnvCfgPhase3(RobotEnvCfgPhase3):
 
 
 # =============================================================================
-# Phase3-balance: promoted from sandbox Try-11. Independent of StairFocus
+# Phase3-balance: promoted from sandbox Try-13. Independent of StairFocus
 # above (which now tracks Try-8) -- kept as its own flattened class so
 # StairFocus's later reward changes can't leak into this validated recipe.
 # Swaps the fixed-target foot-clearance reward for mdp.adaptive_foot_clearance_reward
@@ -179,23 +179,28 @@ class RobotPlayEnvCfgPhase3(RobotEnvCfgPhase3):
 # Try-4 -> Try-11: feet_slide strengthened -0.1 -> -0.2 (stock isaaclab_tasks
 # reward, previously inherited unchanged from the base RewardsCfg despite all
 # the clearance-reward work) to discourage foot-dragging/scuffing, on top of
-# adaptive_foot_clearance_reward's lift incentive. Try-12/13 explored raising
-# wild_foot_clearance's max_clearance (0.20 -> 0.23) and adding
-# base_height_climb/landing_stability on top of this, aimed at smoother stair
-# climbing -- MuJoCo comparison preferred plain Try-11 (climbs less smoothly,
-# but more stable/natural on flat ground) over those variants, so this
-# promotion stays at exactly Try-11's recipe. Terrain is unchanged by this
-# promotion -- still whatever RobotSceneCfgPhase3Balance below already uses,
-# no floating-stairs terrain.
+# adaptive_foot_clearance_reward's lift incentive.
+#
+# Try-11 -> Try-13: wild_foot_clearance's max_clearance raised 0.20 -> 0.23 m
+# -- 0.20 m was capping the adaptive clearance target 1 cm *below* a 0.21 m
+# stair riser, a plausible direct cause of toe-catching on the edge. MuJoCo
+# confirmed improvement (fewer bad_orientation falls) with no flat-ground
+# regression. Try-12 additionally added landing_stability_reward alongside
+# this same clearance raise, but that caused idle foot-fidgeting and stair
+# refusal (landing_stability is farmable by standing still and tapping a
+# foot, with nothing in Balance to make standing still costly) -- dropped,
+# not part of this promotion. Terrain is unchanged by this promotion -- still
+# whatever RobotSceneCfgPhase3Balance below already uses, no floating-stairs
+# terrain.
 # =============================================================================
 
 
 @configclass
 class RewardsCfgPhase3Balance(RewardsCfgPhase3):
-    """Preserves the exact Try-11 recipe (Try-1/2's relaxed penalties +
-    Try-4's terrain-adaptive clearance + Try-11's strengthened feet_slide)
-    that produced its validated result -- independent of
-    RewardsCfgPhase3StairFocus (which now tracks Try-8)."""
+    """Preserves the exact Try-13 recipe (Try-1/2's relaxed penalties +
+    Try-4's terrain-adaptive clearance + Try-11's strengthened feet_slide +
+    Try-13's raised clearance cap) that produced its validated result --
+    independent of RewardsCfgPhase3StairFocus (which now tracks Try-8)."""
 
     flat_orientation_l2 = RewardsCfgPhase3().flat_orientation_l2.replace(weight=-0.3)
     base_linear_velocity = RewardsCfgPhase3().base_linear_velocity.replace(weight=-0.2)
@@ -213,7 +218,7 @@ class RewardsCfgPhase3Balance(RewardsCfgPhase3):
             "offset": [0.0, 0.5, 0.5, 0.0],
             "lookahead_distance": 0.15,
             "natural_clearance": 0.03,
-            "max_clearance": 0.20,
+            "max_clearance": 0.23,
             "roughness_ref": 0.05,
         },
     )
@@ -231,7 +236,7 @@ class RobotSceneCfgPhase3Balance(RobotSceneCfgPhase3):
 
 @configclass
 class RobotEnvCfgPhase3Balance(RobotEnvCfgPhase3):
-    """Phase 3 - balance: natural flat-ground gait + terrain_levels >= 4.5 (sandbox Try-11 result: 4.988).
+    """Phase 3 - balance: natural flat-ground gait + terrain_levels >= 4.5 (sandbox Try-13 result: 5.049).
 
     Extends RobotEnvCfgPhase3 directly. Uses the variable-width terrain
     (PHASE3_TERRAIN_CFG_VARIABLE_WIDTH) and the independent
