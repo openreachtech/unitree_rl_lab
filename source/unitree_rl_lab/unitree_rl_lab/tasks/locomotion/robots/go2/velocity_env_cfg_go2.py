@@ -45,9 +45,11 @@ GO2_LIDAR_OFFSET_Z = -0.046825  # m
 GO2_NOMINAL_BASE_Z = 0.32  # m
 
 # Isaac mdp.height_scan offset: ground-to-sensor height at nominal stance (flat terrain -> ~0).
-GO2_HEIGHT_SCAN_OFFSET = GO2_NOMINAL_BASE_Z + GO2_LIDAR_OFFSET_Z  # 0.303175 m
+GO2_HEIGHT_SCAN_OFFSET = GO2_NOMINAL_BASE_Z + GO2_LIDAR_OFFSET_Z  # 0.273175 m
 
-# RayCaster grid origin at LiDAR mount (matches unitree_mujoco utlidar site on base_link).
+# RayCaster grid xy origin at LiDAR mount (matches unitree_mujoco utlidar site on base_link).
+# Wired into RobotSceneCfg.height_scanner.offset in RobotEnvCfgGo2.__post_init__ below (z there
+# is a fixed ray-start height for raycasting, unrelated to GO2_LIDAR_OFFSET_Z).
 GO2_HEIGHT_SCANNER_OFFSET = (
     GO2_LIDAR_OFFSET_X,
     GO2_LIDAR_OFFSET_Y,
@@ -179,6 +181,14 @@ class RobotEnvCfgGo2(RobotEnvCfg):
         super().__post_init__()
         # Show height-scan rays/hits in Isaac Sim GUI for Go2 tasks.
         self.scene.height_scanner.debug_vis = True
+        # Shift the grid to the LiDAR mount (z is just a fixed ray-start height for raycasting,
+        # unrelated to GO2_LIDAR_OFFSET_Z); matches unitree_mujoco utlidar site / deploy
+        # HeightScanUpdater.
+        _, _, z = self.scene.height_scanner.offset.pos
+        self.scene.height_scanner.offset.pos = (GO2_LIDAR_OFFSET_X, GO2_LIDAR_OFFSET_Y, z)
+        # ordering="yx": inner loop over y, outer loop over x (idx = ix * Ny + iy), matching the
+        # flatten order used by unitree_mujoco height_map_simulator and deploy HeightScanUpdater.
+        self.scene.height_scanner.pattern_cfg.ordering = "yx"
 
 
 def _go2_obs_block_dims() -> tuple[int, int, int]:

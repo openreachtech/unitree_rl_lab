@@ -34,4 +34,8 @@ FSM:
       Passive: LT + B.on_pressed
     keyboard_transitions:
       Passive: "0"
+    # Debug: ignore LiDAR pipeline for policy input; all 187 cells = flat_value.
+    height_scan:
+      flat_override: false
+      flat_value: 0.0
     policy_dir: ../../../logs/rsl_rl/unitree_go2_velocity_v1
