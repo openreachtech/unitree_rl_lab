@@ -476,6 +476,80 @@ class RobotSceneCfgPhase3BalanceFloating(RobotSceneCfgPhase3Balance):
     )
 
 
+# =============================================================================
+# Phase3-balance-floating: promoted from sandbox Try-1.
+#
+# Problem: on the plain balance-floating recipe (RewardsCfgPhase3Balance +
+# default TerminationsCfg), the robot detects a stair, reaches the edge, then
+# stops. RewardsCfgPhase3Balance's forward_command_progress rewards positive
+# progress but gives zero gradient once a robot has already stopped, so on
+# terrain hard enough that climbing attempts often fail (this mix is 30%
+# floating_pyramid_stairs_inv, whose pit has no safety floor -- a missed
+# footing falls further than on solid stairs), freezing at the obstacle
+# becomes the reward-maximizing policy instead of committing to the climb.
+#
+# Fix: port the anti-stall terms already validated in RewardsCfgPhase3StairFocus
+# (base_height_climb, stall_penalty, stair_commit) plus its matching
+# bad_orientation relaxation, onto this task's own reward/termination classes
+# (RewardsCfgPhase3Balance and plain Phase3-balance are untouched).
+#
+# Try-1 result (resumed from Unitree-Go2-Velocity-v2-Phase2, ~2900 iterations):
+#   terrain_levels 5.514 (still rising, no plateau) vs 4.899 for plain balance
+#   time_out 87.1% / base_contact 5.3% / bad_orientation 7.7%
+#   (vs plain balance's time_out 91.5% / bad_orientation 3.7% -- expected
+#   trade: a robot that commits to climbing instead of freezing fails more
+#   often than one that stands still, but reaches much further)
+#   stall_penalty ~ -0.055 (near zero -- little residual stalling)
+#   stair_commit/base_height_climb both firing positive, confirming the robot
+#   is actively pushing through the straddle rather than freezing there.
+# =============================================================================
+
+
+@configclass
+class RewardsCfgPhase3BalanceFloating(RewardsCfgPhase3Balance):
+    base_height_climb = RewTerm(
+        func=mdp.base_height_climb_reward,
+        weight=1.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "sensor_cfg": SceneEntityCfg("height_scanner"),
+            "nominal_clearance": 0.35,
+            "std": 0.15,
+        },
+    )
+
+    stall_penalty = RewTerm(
+        func=mdp.stall_penalty,
+        weight=-1.0,
+        params={
+            "command_name": "base_velocity",
+            "asset_cfg": SceneEntityCfg("robot"),
+            "speed_scale": 0.1,
+        },
+    )
+
+    stair_commit = RewTerm(
+        func=mdp.stair_commit_reward,
+        weight=2.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"]),
+            "sensor_cfg": SceneEntityCfg("height_scanner"),
+            "contact_sensor_cfg": SceneEntityCfg(
+                "contact_forces", body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"]
+            ),
+            "height_gap_threshold": 0.08,
+            "max_forward_speed": 1.0,
+            "max_climb_speed": 0.5,
+        },
+    )
+
+
+@configclass
+class TerminationsCfgPhase3BalanceFloating(TerminationsCfg):
+    # Floating stairs require more sustained body pitch than solid stairs.
+    bad_orientation = TerminationsCfg().bad_orientation.replace(params={"limit_angle": 1.0})
+
+
 @configclass
 class RobotEnvCfgPhase3BalanceFloating(RobotEnvCfgPhase3Balance):
     """Phase 3 - balance + floating inverted stairs terrain."""
@@ -483,6 +557,8 @@ class RobotEnvCfgPhase3BalanceFloating(RobotEnvCfgPhase3Balance):
     scene: RobotSceneCfgPhase3BalanceFloating = RobotSceneCfgPhase3BalanceFloating(
         num_envs=4096, env_spacing=2.5
     )
+    rewards: RewardsCfgPhase3BalanceFloating = RewardsCfgPhase3BalanceFloating()
+    terminations: TerminationsCfgPhase3BalanceFloating = TerminationsCfgPhase3BalanceFloating()
 
 
 @configclass

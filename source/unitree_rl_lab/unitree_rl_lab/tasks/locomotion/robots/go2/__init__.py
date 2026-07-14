@@ -73,6 +73,10 @@ gym.register(
 )
 
 # Balance rewards + terrain mix that includes floating inverted pyramid stairs.
+# Promoted from sandbox Try-1: anti-stall rewards (base_height_climb,
+# stall_penalty, stair_commit) + relaxed bad_orientation, fixing the robot
+# freezing at the stair edge instead of climbing. terrain_levels 5.514 (vs
+# 4.899 without the fix); see velocity_env_cfg_phase3.py for full results.
 gym.register(
     id="Unitree-Go2-Velocity-v2-Phase3-balance-floating",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
