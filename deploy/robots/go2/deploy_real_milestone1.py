@@ -231,14 +231,40 @@ class RealLidarHeightmapViewer:
             vis.destroy_window()
             print("[INFO] Visualizer window closed.")
 
+    def run_no_gui(self):
+        """GUIを表示せず、受信状況をコンソール出力するモード"""
+        print("[INFO] Starting in No-GUI mode. Press Ctrl+C to stop.")
+        try:
+            while True:
+                update_needed = False
+                with self.lock:
+                    if self.new_data_available:
+                        pts = self.latest_accumulated_points.copy()
+                        hmap_2d = self.latest_heightmap_2d.copy()
+                        self.new_data_available = False
+                        update_needed = True
+                        
+                if update_needed:
+                    valid_cnt = np.sum(hmap_2d != self.processor.unknown_fill)
+                    print(f"[{time.strftime('%H:%M:%S')}] 受信点群数: {len(pts)} | ハイトマップ有効セル数: {valid_cnt}/{self.num_cells}")
+                    
+                time.sleep(0.1)
+        except KeyboardInterrupt:
+            print("[INFO] Exiting...")
+
 def main():
     parser = argparse.ArgumentParser(description="Go2 Real Lidar & Heightmap Realtime Viewer (Milestone 1)")
     parser.add_argument('--interface', type=str, default='eth0', help='ネットワークインターフェース名 (例: eth0)')
     parser.add_argument('--topic', type=str, default='rt/utlidar/cloud_deskewed', help='対象のLiDAR点群トピック')
+    parser.add_argument('--no-gui', action='store_true', help='GUI(Open3D)を表示せず、コンソールログのみで動作確認する')
     args = parser.parse_args()
 
     viewer = RealLidarHeightmapViewer(interface=args.interface, topic=args.topic)
-    viewer.run_visualization()
+    
+    if args.no-gui:
+        viewer.run_no_gui()
+    else:
+        viewer.run_visualization()
 
 if __name__ == '__main__':
     main()
