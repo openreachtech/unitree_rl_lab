@@ -188,6 +188,96 @@ def _box(dims: tuple[float, float, float], pos: tuple[float, float, float]) -> t
     return trimesh.creation.box(dims, trimesh.transformations.translation_matrix(pos))
 
 
+def thin_wall_terrain(
+    difficulty: float, cfg: "MeshThinWallTerrainCfg"
+) -> tuple[list[trimesh.Trimesh], np.ndarray]:
+    """Concentric free-standing thin walls (hurdles) around a center spawn platform.
+
+    Same ring layout as :func:`isaaclab.terrains.trimesh.mesh_terrains.pyramid_stairs_terrain`
+    (concentric square rings around a flat center platform) but each ring is a
+    free-standing wall instead of a raised/lowered stair tread -- ground stays flat
+    at z=0 everywhere except the walls themselves, which the robot must step over.
+
+    Both wall height and wall thickness scale with difficulty, the same way
+    ``step_height_range``/``step_width_range`` already do for the pyramid-stairs
+    family: low and thick (easy to clear, easy to see) at difficulty 0, tall and
+    thin (a real height challenge, harder to detect via height-scan) at difficulty
+    1. Ring-to-ring spacing (``cfg.wall_spacing``) is a fixed walking gap, decoupled
+    from thickness, so consecutive hurdles don't get closer together as they get
+    thinner.
+    """
+    wall_height = _lerp(cfg.wall_height_range, difficulty)
+    wall_thickness = _lerp(cfg.wall_thickness_range, difficulty)
+    wall_spacing = cfg.wall_spacing
+
+    num_walls_x = (cfg.size[0] - 2 * cfg.border_width - cfg.platform_width) // (2 * wall_spacing) + 1
+    num_walls_y = (cfg.size[1] - 2 * cfg.border_width - cfg.platform_width) // (2 * wall_spacing) + 1
+    num_walls = int(min(num_walls_x, num_walls_y))
+
+    meshes_list = list()
+
+    if cfg.border_width > 0.0:
+        border_center = [0.5 * cfg.size[0], 0.5 * cfg.size[1], -0.5 * cfg.floor_thickness]
+        border_inner_size = (cfg.size[0] - 2 * cfg.border_width, cfg.size[1] - 2 * cfg.border_width)
+        meshes_list += make_border(cfg.size, border_inner_size, cfg.floor_thickness, border_center)
+
+    terrain_center = [0.5 * cfg.size[0], 0.5 * cfg.size[1], 0.0]
+    terrain_size = (cfg.size[0] - 2 * cfg.border_width, cfg.size[1] - 2 * cfg.border_width)
+
+    # Flat ground everywhere; walls stand on top of it.
+    meshes_list.append(
+        _box(
+            (terrain_size[0], terrain_size[1], cfg.floor_thickness),
+            (terrain_center[0], terrain_center[1], -cfg.floor_thickness / 2),
+        )
+    )
+    wall_z = wall_height / 2.0
+    for k in range(num_walls):
+        box_size = (terrain_size[0] - 2 * k * wall_spacing, terrain_size[1] - 2 * k * wall_spacing)
+        box_offset = (k + 0.5) * wall_spacing
+
+        # top / bottom wall segments
+        wall_dims_tb = (box_size[0], wall_thickness, wall_height)
+        y_top = terrain_center[1] + terrain_size[1] / 2.0 - box_offset
+        y_bottom = terrain_center[1] - terrain_size[1] / 2.0 + box_offset
+        meshes_list += [
+            _box(wall_dims_tb, (terrain_center[0], y_top, wall_z)),
+            _box(wall_dims_tb, (terrain_center[0], y_bottom, wall_z)),
+        ]
+
+        # left / right wall segments, notched so corners don't double up with top/bottom
+        wall_dims_lr = (wall_thickness, box_size[1] - 2 * wall_thickness, wall_height)
+        x_right = terrain_center[0] + terrain_size[0] / 2.0 - box_offset
+        x_left = terrain_center[0] - terrain_size[0] / 2.0 + box_offset
+        meshes_list += [
+            _box(wall_dims_lr, (x_right, terrain_center[1], wall_z)),
+            _box(wall_dims_lr, (x_left, terrain_center[1], wall_z)),
+        ]
+
+    origin = np.array([terrain_center[0], terrain_center[1], 0.0])
+    return meshes_list, origin
+
+
+@configclass
+class MeshThinWallTerrainCfg(SubTerrainBaseCfg):
+    """Concentric thin free-standing walls the robot must step over, centered on a
+    flat spawn platform -- same ring layout as the pyramid-stairs family, but each
+    ring is a hurdle instead of a stair tread."""
+
+    function = thin_wall_terrain
+
+    border_width: float = 0.0
+    wall_height_range: tuple[float, float] = (0.05, 0.25)
+    """Wall height (in m) at difficulty 0 and difficulty 1: ``(low_easy, tall_hard)``."""
+    wall_thickness_range: tuple[float, float] = (0.15, 0.03)
+    """Wall thickness (in m) at difficulty 0 and difficulty 1: ``(thick_easy, thin_hard)``."""
+    wall_spacing: float = 0.60
+    """Fixed center-to-center spacing between consecutive concentric wall rings (in m),
+    independent of wall_thickness_range."""
+    platform_width: float = 1.0
+    floor_thickness: float = 0.05
+
+
 def floating_pyramid_stairs_terrain(
     difficulty: float, cfg: "MeshFloatingPyramidStairsTerrainCfg"
 ) -> tuple[list[trimesh.Trimesh], np.ndarray]:

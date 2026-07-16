@@ -70,6 +70,8 @@ def base_height_climb_reward(
     sensor_cfg: SceneEntityCfg,
     nominal_clearance: float = 0.35,
     std: float = 0.15,
+    command_name: str | None = None,
+    min_cmd_norm: float = 0.1,
 ) -> torch.Tensor:
     """Reward the base for sitting ``nominal_clearance`` above whatever
     terrain is directly beneath it right now.
@@ -89,6 +91,16 @@ def base_height_climb_reward(
     and as the base's own xy position advances over a riser, ``target_z``
     rises with it -- pulling the body upward instead of letting it lag
     behind the front legs.
+
+    ``command_name``: if set, the reward is masked to 0 whenever
+    ``|command| <= min_cmd_norm`` (mirrors ``stall_penalty``'s gating). This
+    term is otherwise unconditional on command, so on tasks with a
+    meaningful standing-env fraction, a zero-command env parked on uneven
+    curriculum terrain still gets a tight (std-scale) gradient to chase the
+    local terrain height with rapid leg motion -- reinforcing a twitchy
+    "correct height even at rest" habit that has nothing to do with climbing
+    and transfers badly to genuinely flat ground. Gating by command restricts
+    the term to when there's an actual climb/traverse attempt underway.
     """
     asset: RigidObject = env.scene[asset_cfg.name]
     sensor = env.scene[sensor_cfg.name]
@@ -108,7 +120,13 @@ def base_height_climb_reward(
 
     target_z = local_terrain_h + nominal_clearance
     height_error = base_z - target_z
-    return torch.exp(-torch.square(height_error) / std**2)
+    reward = torch.exp(-torch.square(height_error) / std**2)
+
+    if command_name is not None:
+        cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
+        reward = reward * (cmd_norm > min_cmd_norm)
+
+    return reward
 
 
 def joint_position_penalty(
