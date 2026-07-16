@@ -13,8 +13,7 @@ import threading
 
 # パスの解決と共通モジュールの追加
 DEPLOY_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(DEPLOY_DIR, "../../../.."))
-HEIGHTMAP_SRC_DIR = os.path.join(PROJECT_ROOT, "unitree_go2_locomotion_heightmap")
+HEIGHTMAP_SRC_DIR = os.path.join(DEPLOY_DIR, "unitree_go2_locomotion_heightmap")
 sys.path.append(HEIGHTMAP_SRC_DIR)
 
 from lidar_processor import HeightmapProcessor
