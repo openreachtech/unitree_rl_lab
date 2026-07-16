@@ -261,7 +261,7 @@ def main():
 
     viewer = RealLidarHeightmapViewer(interface=args.interface, topic=args.topic)
     
-    if args.no-gui:
+    if args.no_gui:
         viewer.run_no_gui()
     else:
         viewer.run_visualization()
