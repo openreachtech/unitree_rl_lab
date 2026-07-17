@@ -22,10 +22,15 @@ import torch
 import scipy.spatial.transform as transform
 from .lidar_cfg import get_go2_lidar_cfg
 from .heightmap_visualizer import visualize_heightmap
-from unitree_rl_lab.unitree_go2_locomotion_heightmap.lidar_processor import HeightmapProcessor
-import unitree_rl_lab.unitree_go2_locomotion_heightmap.lidar_processor as lp
+import sys
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../../"))
+HEIGHTMAP_DIR = os.path.join(ROOT_DIR, "deploy/robots/go2/unitree_go2_locomotion_heightmap")
+sys.path.append(HEIGHTMAP_DIR)
 
-YAML_PATH = os.path.join(os.path.dirname(os.path.abspath(lp.__file__)), "heightmap_spec.yaml")
+from lidar_processor import HeightmapProcessor
+import lidar_processor as lp
+
+YAML_PATH = os.path.join(HEIGHTMAP_DIR, "heightmap_spec.yaml")
 lidar_processor = HeightmapProcessor(config_yaml_path=YAML_PATH, device="cuda:0")
 
 class LidarRotaryFilter:
