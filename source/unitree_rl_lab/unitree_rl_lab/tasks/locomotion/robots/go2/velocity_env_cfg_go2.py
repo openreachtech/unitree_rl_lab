@@ -68,10 +68,14 @@ class LidarRotaryFilter:
         valid_angles = layer_indices.view(1, -1) * self.angle_step_rad + base_angle.unsqueeze(1) + phase_offset.unsqueeze(1) # [N, num_layers]
         valid_angles = torch.atan2(torch.sin(valid_angles), torch.cos(valid_angles)) # [N, num_layers]
         
-        diff = torch.abs(yaw_points.unsqueeze(-1) - valid_angles.unsqueeze(1)) # [N, R, num_layers]
-        diff = torch.minimum(diff, 2.0 * math.pi - diff)
+        # 巨大テンソルの生成を回避するため、レイヤ数 (28) のループで比較を行ってメモリ使用量を激減させる (2.7GB -> 98MB)
+        mask = torch.zeros((N, R), dtype=torch.bool, device=device)
+        for i in range(self.num_layers):
+            angle = valid_angles[:, i].unsqueeze(1) # [N, 1]
+            diff = torch.abs(yaw_points - angle)    # [N, R]
+            diff = torch.minimum(diff, 2.0 * math.pi - diff)
+            mask |= (diff < self.epsilon_rad)
         
-        mask = torch.any(diff < self.epsilon_rad, dim=-1) # [N, R]
         filtered_pos_w = pos_w.clone()
         filtered_pos_w[..., 2] = torch.where(mask, filtered_pos_w[..., 2], torch.tensor(-1e9, device=device))
         return filtered_pos_w
