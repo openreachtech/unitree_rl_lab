@@ -86,8 +86,8 @@ def go2_lidar_heightmap(env, randomize: bool = False):
     """毎ステップ呼び出されるLiDAR観測関数"""
     current_time = env.episode_length_buf.float() * (env.cfg.sim.dt * env.cfg.decimation)
     filtered_pos_w = lidar_filter.filter_points(
-        pos_w=env.scene["lidar"].data.ray_hits_w,
-        sensor_pos_w=env.scene["lidar"].data.pos_w,
+        pos_w=env.scene["height_scanner"].data.ray_hits_w,
+        sensor_pos_w=env.scene["height_scanner"].data.pos_w,
         current_time=current_time
     )
     heightmap = lidar_processor.process(
@@ -261,17 +261,16 @@ class RobotEnvCfgGo2(RobotEnvCfg):
                 delattr(self.observations.policy, "height_scan")
             if hasattr(self.observations.critic, "height_scan"):
                 delattr(self.observations.critic, "height_scan")
-            if hasattr(self.scene, "lidar"):
-                delattr(self.scene, "lidar")
+            if hasattr(self.scene, "height_scanner"):
+                delattr(self.scene, "height_scanner")
         else:
-            # LiDAR センサーを有効化し、不要になった height_scanner を削除
-            self.scene.lidar = get_go2_lidar_cfg(
+            # 報酬関数や他モジュールからの参照名 "height_scanner" を維持したまま、
+            # 中身を L1 LiDAR センサーの RayCasterCfg に置き換える
+            self.scene.height_scanner = get_go2_lidar_cfg(
                 prim_path="{ENV_REGEX_NS}/Robot/base",
                 config_yaml_path=YAML_PATH
             )
-            self.scene.lidar.update_period = self.decimation * self.sim.dt
-            if hasattr(self.scene, "height_scanner"):
-                delattr(self.scene, "height_scanner")
+            self.scene.height_scanner.update_period = self.decimation * self.sim.dt
 
 
 def _go2_obs_block_dims() -> tuple[int, int, int]:
