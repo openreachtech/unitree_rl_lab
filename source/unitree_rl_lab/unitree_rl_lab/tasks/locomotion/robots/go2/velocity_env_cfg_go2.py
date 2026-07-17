@@ -262,7 +262,7 @@ class RobotEnvCfgGo2(RobotEnvCfg):
         else:
             # LiDAR センサーを有効化し、不要になった height_scanner を削除
             self.scene.lidar = get_go2_lidar_cfg(
-                prim_path="{ENV_REGEX_NS}/Robot/base/lidar",
+                prim_path="{ENV_REGEX_NS}/Robot/base",
                 config_yaml_path=YAML_PATH
             )
             self.scene.lidar.update_period = self.decimation * self.sim.dt
