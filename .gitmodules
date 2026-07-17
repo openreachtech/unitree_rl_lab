@@ -1,0 +1,6 @@
+[submodule "unitree_go2_locomotion_heightmap"]
+	path = source/unitree_rl_lab/unitree_rl_lab/unitree_go2_locomotion_heightmap
+	url = https://github.com/openreachtech/unitree_go2_locomotion_heightmap.git
+[submodule "deploy/robots/go2/unitree_go2_locomotion_heightmap"]
+	path = deploy/robots/go2/unitree_go2_locomotion_heightmap
+	url = https://github.com/openreachtech/unitree_go2_locomotion_heightmap.git
