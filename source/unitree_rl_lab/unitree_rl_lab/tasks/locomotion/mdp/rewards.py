@@ -330,6 +330,8 @@ def adaptive_foot_clearance_reward(
     natural_clearance: float = 0.03,
     max_clearance: float = 0.20,
     roughness_ref: float = 0.05,
+    command_name: str | None = None,
+    min_cmd_norm: float = 0.1,
 ) -> torch.Tensor:
     """Reward swing feet for clearing the terrain ahead, with the clearance
     *target* itself scaled by how much clearance is actually needed.
@@ -356,6 +358,16 @@ def adaptive_foot_clearance_reward(
     (``natural_clearance``) while an approaching stair riser raises it toward
     ``max_clearance``. Swing detection reuses the same open-loop CPG gate as
     ``wild_foot_clearance_reward`` to keep gait timing/coordination unchanged.
+
+    ``command_name``: if set, the reward is masked to 0 whenever
+    ``|command| <= min_cmd_norm`` (mirrors ``stall_penalty``/
+    ``base_height_climb_reward``'s gating). The CPG swing phase
+    (:func:`_cpg_leg_phases_rad`) is a pure open-loop clock driven by elapsed
+    episode time, not by command or actual motion -- so without this gate,
+    a standing, zero-command robot still cycles through "swing" phases every
+    ``period`` seconds and is still paid to lift each foot by
+    ``natural_clearance``, i.e. march in place. Gating restricts that payout
+    to when there's an actual command to walk.
     """
     robot: Articulation = env.scene[asset_cfg.name]
     sensor = env.scene[sensor_cfg.name]
@@ -406,7 +418,76 @@ def adaptive_foot_clearance_reward(
     phases = _cpg_leg_phases_rad(env, period, offset)
     is_swing = phases < torch.pi
     reward = reward * is_swing.float()
-    return torch.sum(reward, dim=-1)
+    reward = torch.sum(reward, dim=-1)
+
+    if command_name is not None:
+        cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
+        reward = reward * (cmd_norm > min_cmd_norm)
+
+    return reward
+
+
+def quiet_standing_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    contact_sensor_cfg: SceneEntityCfg,
+    sensor_cfg: SceneEntityCfg | None = None,
+    command_name: str = "base_velocity",
+    max_cmd_norm: float = 0.1,
+    joint_vel_std: float = 1.0,
+    roughness_ref: float = 0.05,
+) -> torch.Tensor:
+    """Reward literal stillness (all feet planted, low joint velocity) while the
+    commanded velocity is ~0 *and* the terrain underneath is flat.
+
+    base_height_climb_reward, wild_foot_clearance, and stall_penalty are all
+    gated *off* near zero command -- that removes pressure toward motion, but
+    nothing pushes back toward hard stillness being the unambiguous optimum.
+    Generic penalties left active there (action_rate, joint_torques, energy,
+    joint_vel) are small and uniform, and don't specifically cost a small
+    asymmetric single-leg lift more than doing nothing, so residual noise
+    (policy stochasticity, height-scan noise still feeding the observation
+    even though it no longer drives reward at rest) can leave that lift as a
+    locally-costless habit. This adds the missing positive pressure: reward is
+    ``all_feet_planted * exp(-mean(joint_vel^2) / joint_vel_std^2)``, masked to
+    0 whenever ``|command| > max_cmd_norm`` -- the inverse of the existing
+    motion-reward gates, active only in the regime they turn off.
+
+    ``sensor_cfg``: if set, also masks the reward by terrain flatness under
+    the robot (same height-range-over-roughness_ref gate
+    ``adaptive_foot_clearance_reward`` uses). Standing envs are spawned across
+    the *whole* curriculum terrain, not just flat ground -- a zero-command env
+    can be sitting on or next to a stair. Without this gate, "freeze here" gets
+    rewarded there too, which can bias the shared policy toward hesitating
+    right when a climb needs a committed push. With it, the reward only ever
+    fires on genuinely flat terrain, so it can't compete with
+    stall_penalty/stair_commit's "don't freeze on the stairs" pressure.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    contact_sensor: ContactSensor = env.scene.sensors[contact_sensor_cfg.name]
+
+    in_contact = contact_sensor.data.current_contact_time[:, contact_sensor_cfg.body_ids] > 0.0
+    all_planted = in_contact.all(dim=1).float()
+
+    joint_vel = asset.data.joint_vel
+    stillness = torch.exp(-torch.mean(torch.square(joint_vel), dim=1) / joint_vel_std**2)
+
+    reward = all_planted * stillness
+
+    if sensor_cfg is not None:
+        sensor = env.scene[sensor_cfg.name]
+        ray_z = sensor.data.ray_hits_w[:, :, 2]
+        valid_rays = torch.isfinite(ray_z)
+        z_for_max = torch.where(valid_rays, ray_z, torch.full_like(ray_z, -1e9))
+        z_for_min = torch.where(valid_rays, ray_z, torch.full_like(ray_z, 1e9))
+        roughness = (z_for_max.amax(dim=1) - z_for_min.amin(dim=1)).clamp(min=0.0)
+        flatness_gate = torch.clamp(1.0 - roughness / roughness_ref, 0.0, 1.0)
+        reward = reward * flatness_gate
+
+    cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
+    reward = reward * (cmd_norm <= max_cmd_norm)
+
+    return reward
 
 
 def feet_too_near(

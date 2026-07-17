@@ -497,10 +497,10 @@ class RobotSceneCfgPhase3BalanceFloating(RobotSceneCfgPhase3Balance):
 
 
 # =============================================================================
-# Phase3-balance-floating: promoted from sandbox Try-1.
+# Phase3-balance-floating: promoted from sandbox Try-1 through Try-7.
 #
-# Problem: on the plain balance-floating recipe (RewardsCfgPhase3Balance +
-# default TerminationsCfg), the robot detects a stair, reaches the edge, then
+# Problem 1 (Try-1): on the plain balance-floating recipe (RewardsCfgPhase3Balance
+# + default TerminationsCfg), the robot detects a stair, reaches the edge, then
 # stops. RewardsCfgPhase3Balance's forward_command_progress rewards positive
 # progress but gives zero gradient once a robot has already stopped, so on
 # terrain hard enough that climbing attempts often fail (this mix is 30%
@@ -508,7 +508,7 @@ class RobotSceneCfgPhase3BalanceFloating(RobotSceneCfgPhase3Balance):
 # footing falls further than on solid stairs), freezing at the obstacle
 # becomes the reward-maximizing policy instead of committing to the climb.
 #
-# Fix: port the anti-stall terms already validated in RewardsCfgPhase3StairFocus
+# Fix 1: port the anti-stall terms already validated in RewardsCfgPhase3StairFocus
 # (base_height_climb, stall_penalty, stair_commit) plus its matching
 # bad_orientation relaxation, onto this task's own reward/termination classes
 # (RewardsCfgPhase3Balance and plain Phase3-balance are untouched).
@@ -522,7 +522,54 @@ class RobotSceneCfgPhase3BalanceFloating(RobotSceneCfgPhase3Balance):
 #   stall_penalty ~ -0.055 (near zero -- little residual stalling)
 #   stair_commit/base_height_climb both firing positive, confirming the robot
 #   is actively pushing through the straddle rather than freezing there.
+#
+# Problem 2 (Try-2 through Try-7): MuJoCo deploy testing found the policy
+# flattening/flapping its legs on flat ground at zero command. rel_standing_envs
+# is 0.01 for all Go2 tasks (CommandsCfgGo2) -- only 1% of envs ever get a
+# near-zero command -- so this checkpoint had almost never been trained on
+# "stand still, zero command." Worse, two reward terms are unconditional on
+# command: base_height_climb_reward always chases local terrain height (Try-2
+# raising rel_standing_envs alone made this worse, not better, by giving 10x
+# more zero-command episodes -- still spawned across the full terrain mix, not
+# just flat ground -- to a term that was still always-on); and
+# wild_foot_clearance's swing gate (_cpg_leg_phases_rad) is a pure open-loop
+# clock, independent of command or motion, so it kept paying for a marching
+# gait even standing still (Try-3/Try-4).
+#
+# Fix 2: rel_standing_envs 0.01 -> 0.1 (Try-2), gate base_height_climb (Try-3)
+# and wild_foot_clearance (Try-4) to 0 whenever |command| <= 0.1. That fixed
+# four-leg marching but left a small single-leg twitch at rest (nothing
+# actively rewards *stillness*, only removes reward for motion). Try-5 added
+# quiet_standing_reward (all feet planted + low joint velocity) to close that
+# gap, but at weight 0.5 with only a command gate, it also rewarded "freeze
+# here" for standing envs parked on/near a stair -- MuJoCo testing showed
+# climbing then regressed (front legs would reach the 4th step, then fall,
+# instead of driving the hind legs up). Try-6 added a terrain-flatness gate
+# (reusing wild_foot_clearance's roughness-gate pattern) so quiet_standing only
+# fires on a genuinely flat terrain cell, never on/near a stair -- structurally
+# closing that interference path regardless of weight -- and cut weight to
+# 0.15 as a second precaution, which fixed climbing but weakened the
+# flat-terrain fix (0.15 was calibrated for firing ~10x more often, before the
+# flatness gate made it rare). Try-7 raised the weight back to 0.5 now that the
+# gate (not the weight) is what protects climbing.
+#
+# Try-7 result (resumed from Unitree-Go2-Velocity-v2-Phase2, 2x3000 iterations):
+#   terrain_levels 5.26 (comparable to Try-1's 5.51 plateau)
+#   base_contact 0.043 / bad_orientation ~0.09 / time_out 0.865
+#   stair_commit 0.27 -- best of the whole Try-1..Try-7 lineage
+#   quiet_standing near-zero in the population-wide average (expected: it only
+#   fires for the rare standing-env-on-a-flat-cell subset) but MuJoCo testing
+#   confirmed both the flat-ground twitch and the stair-climbing regression
+#   were resolved together.
 # =============================================================================
+
+
+@configclass
+class CommandsCfgPhase3BalanceFloating(CommandsCfgPhase3):
+    # Restore a real standing-env fraction (Try-2): CommandsCfgGo2 drops this
+    # to 0.01 for all Go2 tasks, which left this checkpoint almost never
+    # trained on "stand still, zero command."
+    base_velocity = CommandsCfgPhase3().base_velocity.replace(rel_standing_envs=0.1)
 
 
 @configclass
@@ -535,6 +582,28 @@ class RewardsCfgPhase3BalanceFloating(RewardsCfgPhase3Balance):
             "sensor_cfg": SceneEntityCfg("height_scanner"),
             "nominal_clearance": 0.35,
             "std": 0.15,
+            # Try-3: gate to 0 near zero command, so it can't chase terrain
+            # height while genuinely standing still.
+            "command_name": "base_velocity",
+            "min_cmd_norm": 0.1,
+        },
+    )
+
+    # Try-4: same command gate as base_height_climb -- wild_foot_clearance's
+    # swing detection is a pure open-loop clock (elapsed time only), so
+    # without this it kept paying for a marching gait even at rest.
+    wild_foot_clearance = RewardsCfgPhase3Balance().wild_foot_clearance.replace(
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"]),
+            "sensor_cfg": SceneEntityCfg("height_scanner"),
+            "period": 0.4,
+            "offset": [0.0, 0.5, 0.5, 0.0],
+            "lookahead_distance": 0.15,
+            "natural_clearance": 0.03,
+            "max_clearance": 0.23,
+            "roughness_ref": 0.05,
+            "command_name": "base_velocity",
+            "min_cmd_norm": 0.1,
         },
     )
 
@@ -563,6 +632,29 @@ class RewardsCfgPhase3BalanceFloating(RewardsCfgPhase3Balance):
         },
     )
 
+    # Try-5/Try-6/Try-7: positive reward for literal stillness (all feet
+    # planted + low joint velocity), gated to only the |command| <= 0.1 AND
+    # terrain-roughness <= roughness_ref regime -- structurally incapable of
+    # firing on/near a stair, so it can't compete with stall_penalty/
+    # stair_commit's "don't freeze on the stairs" pressure. Weight 0.5 (Try-7)
+    # after Try-6's 0.15 proved too weak once gated down to the rare
+    # standing-on-flat-cell subset.
+    quiet_standing = RewTerm(
+        func=mdp.quiet_standing_reward,
+        weight=0.5,
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "contact_sensor_cfg": SceneEntityCfg(
+                "contact_forces", body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"]
+            ),
+            "sensor_cfg": SceneEntityCfg("height_scanner"),
+            "command_name": "base_velocity",
+            "max_cmd_norm": 0.1,
+            "joint_vel_std": 1.0,
+            "roughness_ref": 0.05,
+        },
+    )
+
 
 @configclass
 class TerminationsCfgPhase3BalanceFloating(TerminationsCfg):
@@ -577,6 +669,7 @@ class RobotEnvCfgPhase3BalanceFloating(RobotEnvCfgPhase3Balance):
     scene: RobotSceneCfgPhase3BalanceFloating = RobotSceneCfgPhase3BalanceFloating(
         num_envs=4096, env_spacing=2.5
     )
+    commands: CommandsCfgPhase3BalanceFloating = CommandsCfgPhase3BalanceFloating()
     rewards: RewardsCfgPhase3BalanceFloating = RewardsCfgPhase3BalanceFloating()
     terminations: TerminationsCfgPhase3BalanceFloating = TerminationsCfgPhase3BalanceFloating()
 
