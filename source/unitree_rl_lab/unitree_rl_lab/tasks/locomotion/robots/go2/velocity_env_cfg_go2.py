@@ -23,9 +23,20 @@ import scipy.spatial.transform as transform
 from .lidar_cfg import get_go2_lidar_cfg
 from .heightmap_visualizer import visualize_heightmap
 import sys
-import unitree_rl_lab
-pkg_dir = os.path.dirname(os.path.abspath(unitree_rl_lab.__file__))
-ROOT_DIR = os.path.abspath(os.path.join(pkg_dir, "../.."))
+# リポジトリルート (sourceとdeployが同居するフォルダ) を走査して自動取得
+current_dir = os.path.dirname(os.path.abspath(__file__))
+root_dir = None
+while current_dir != os.path.dirname(current_dir):
+    if os.path.exists(os.path.join(current_dir, "deploy")) and os.path.exists(os.path.join(current_dir, "source")):
+        root_dir = current_dir
+        break
+    current_dir = os.path.dirname(current_dir)
+
+if root_dir is None:
+    # フォールバック (7個上に遡る)
+    root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../../../"))
+
+ROOT_DIR = root_dir
 HEIGHTMAP_DIR = os.path.join(ROOT_DIR, "deploy/robots/go2/unitree_go2_locomotion_heightmap")
 sys.path.append(HEIGHTMAP_DIR)
 
