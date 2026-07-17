@@ -16,6 +16,68 @@ from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import (
     RobotEnvCfg,
 )
 
+import os
+import math
+import torch
+import scipy.spatial.transform as transform
+from .lidar_cfg import get_go2_lidar_cfg
+from .heightmap_visualizer import visualize_heightmap
+from unitree_rl_lab.unitree_go2_locomotion_heightmap.lidar_processor import HeightmapProcessor
+import unitree_rl_lab.unitree_go2_locomotion_heightmap.lidar_processor as lp
+
+YAML_PATH = os.path.join(os.path.dirname(os.path.abspath(lp.__file__)), "heightmap_spec.yaml")
+lidar_processor = HeightmapProcessor(config_yaml_path=YAML_PATH, device="cuda:0")
+
+class LidarRotaryFilter:
+    def __init__(self, spin_freq: float = 10.0, num_layers: int = 28, phase_shift_per_cycle: float = 3.214):
+        self.spin_freq = spin_freq                # 回転速度 (Hz)
+        self.num_layers = num_layers              # 1回転あたりのレイヤ数
+        self.angle_step_rad = 2.0 * math.pi / num_layers # レイヤ間の角度間隔 (rad)
+        self.phase_shift_rad = math.radians(phase_shift_per_cycle) # 周回ごとの位相シフト量 (rad)
+        self.epsilon_rad = math.radians(1.5)      # 検出漏れを防ぐためのサンプリング角度許容誤差 (rad)
+
+    def filter_points(self, pos_w: torch.Tensor, sensor_pos_w: torch.Tensor, current_time: torch.Tensor) -> torch.Tensor:
+        N, R, _ = pos_w.shape
+        device = pos_w.device
+        pos_rel = pos_w - sensor_pos_w.unsqueeze(1)
+        yaw_points = torch.atan2(pos_rel[..., 1], pos_rel[..., 0]) # [N, R]
+        total_rotations = current_time * self.spin_freq # [N]
+        base_angle = (total_rotations * 2.0 * math.pi) % (2.0 * math.pi) # [N]
+        cycle_idx = total_rotations.long() # [N]
+        phase_offset = (cycle_idx.float() * self.phase_shift_rad) % self.angle_step_rad # [N]
+        
+        layer_indices = torch.arange(self.num_layers, device=device).float() # [num_layers]
+        valid_angles = layer_indices.view(1, -1) * self.angle_step_rad + base_angle.unsqueeze(1) + phase_offset.unsqueeze(1) # [N, num_layers]
+        valid_angles = torch.atan2(torch.sin(valid_angles), torch.cos(valid_angles)) # [N, num_layers]
+        
+        diff = torch.abs(yaw_points.unsqueeze(-1) - valid_angles.unsqueeze(1)) # [N, R, num_layers]
+        diff = torch.minimum(diff, 2.0 * math.pi - diff)
+        
+        mask = torch.any(diff < self.epsilon_rad, dim=-1) # [N, R]
+        filtered_pos_w = pos_w.clone()
+        filtered_pos_w[..., 2] = torch.where(mask, filtered_pos_w[..., 2], torch.tensor(-1e9, device=device))
+        return filtered_pos_w
+
+lidar_filter = LidarRotaryFilter()
+
+def go2_lidar_heightmap(env, randomize: bool = False):
+    """毎ステップ呼び出されるLiDAR観測関数"""
+    current_time = env.episode_length_buf.float() * (env.cfg.sim.dt * env.cfg.decimation)
+    filtered_pos_w = lidar_filter.filter_points(
+        pos_w=env.scene["lidar"].data.ray_hits_w,
+        sensor_pos_w=env.scene["lidar"].data.pos_w,
+        current_time=current_time
+    )
+    heightmap = lidar_processor.process(
+        pos_w=filtered_pos_w,
+        root_pos_w=env.scene["robot"].data.root_pos_w,
+        root_quat_w=env.scene["robot"].data.root_quat_w,
+        randomize=randomize
+    )
+    if env.num_envs <= 8:
+        visualize_heightmap(env, heightmap, lidar_processor)
+    return heightmap
+
 POLICY_HISTORY_LENGTH = 3
 CRITIC_HISTORY_LENGTH = 3
 
@@ -56,29 +118,17 @@ GO2_HEIGHT_SCANNER_OFFSET = (
     GO2_LIDAR_OFFSET_Z,
 )
 
-# 17×11 grid, resolution 0.1m, size [1.6, 1.0]m
 POLICY_HEIGHT_SCAN_CFG = ObsTerm(
-    func=height_scan_excluding_body,
-    params={
-        "sensor_cfg": SceneEntityCfg("height_scanner"),
-        "asset_cfg": SceneEntityCfg("robot"),
-        "offset": GO2_HEIGHT_SCAN_OFFSET,
-        # Mask points under body footprint (in base xy, meters).
-        "exclude_half_extent_x": 0.22,
-        "exclude_half_extent_y": 0.12,
-        "fill_value": 0.0,
-    },
+    func=go2_lidar_heightmap,
+    params={"randomize": True},
     clip=(-1.0, 5.0),
-    # noise=Unoise(n_min=-0.05, n_max=0.05),
-    history_length=0,
 )
 
 # Height scan grid matches RobotSceneCfgGo2V2.height_scanner (LiDAR origin, 17×11 @ 0.1 m).
 CRITIC_HEIGHT_SCAN_CFG = ObsTerm(
-    func=mdp.height_scan,
-    params={"sensor_cfg": SceneEntityCfg("height_scanner"), "offset": GO2_HEIGHT_SCAN_OFFSET},
+    func=go2_lidar_heightmap,
+    params={"randomize": False},
     clip=(-1.0, 5.0),
-    history_length=0,
 )
 
 
@@ -173,22 +223,33 @@ class RewardsCfgGo2(RewardsCfg):
 class RobotEnvCfgGo2(RobotEnvCfg):
     """Shared Go2 v1 MDP settings."""
 
+    # Heightmap usage flag
+    use_heightmap: bool = True
+
     observations: ObservationsCfgGo2 = ObservationsCfgGo2()
     commands: CommandsCfgGo2 = CommandsCfgGo2()
     rewards: RewardsCfgGo2 = RewardsCfgGo2()
 
     def __post_init__(self):
         super().__post_init__()
-        # Show height-scan rays/hits in Isaac Sim GUI for Go2 tasks.
-        self.scene.height_scanner.debug_vis = True
-        # Shift the grid to the LiDAR mount (z is just a fixed ray-start height for raycasting,
-        # unrelated to GO2_LIDAR_OFFSET_Z); matches unitree_mujoco utlidar site / deploy
-        # HeightScanUpdater.
-        _, _, z = self.scene.height_scanner.offset.pos
-        self.scene.height_scanner.offset.pos = (GO2_LIDAR_OFFSET_X, GO2_LIDAR_OFFSET_Y, z)
-        # ordering="yx": inner loop over y, outer loop over x (idx = ix * Ny + iy), matching the
-        # flatten order used by unitree_mujoco height_map_simulator and deploy HeightScanUpdater.
-        self.scene.height_scanner.pattern_cfg.ordering = "yx"
+        
+        # use_heightmap が False の場合はハイトマップ観測とLiDARセンサーを無効化
+        if not self.use_heightmap:
+            if hasattr(self.observations.policy, "height_scan"):
+                delattr(self.observations.policy, "height_scan")
+            if hasattr(self.observations.critic, "height_scan"):
+                delattr(self.observations.critic, "height_scan")
+            if hasattr(self.scene, "lidar"):
+                delattr(self.scene, "lidar")
+        else:
+            # LiDAR センサーを有効化し、不要になった height_scanner を削除
+            self.scene.lidar = get_go2_lidar_cfg(
+                prim_path="{ENV_REGEX_NS}/Robot/base/lidar",
+                config_yaml_path=YAML_PATH
+            )
+            self.scene.lidar.update_period = self.decimation * self.sim.dt
+            if hasattr(self.scene, "height_scanner"):
+                delattr(self.scene, "height_scanner")
 
 
 def _go2_obs_block_dims() -> tuple[int, int, int]:
