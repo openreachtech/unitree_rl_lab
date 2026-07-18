@@ -9,12 +9,14 @@ from isaaclab.utils.string import resolve_matching_names
 
 
 def _rename_observation_preserve_order(observations: dict, old_name: str, new_name: str) -> None:
-    """Rename an observation key without moving it to the end of the dict (pop+assign would)."""
+    """Rename an observation key without moving it to the end of the dict (pop+assign would).
+
+    A no-op if ``old_name`` is absent: renames like ``velocity_commands`` are
+    velocity-task-specific and legitimately don't apply to other task families
+    (e.g. jump/backflip use ``jump_command`` instead).
+    """
     if old_name not in observations:
-        raise KeyError(
-            f"Cannot rename observation '{old_name}' -> '{new_name}': "
-            f"'{old_name}' not in exported observations {list(observations.keys())}"
-        )
+        return
     items = list(observations.items())
     observations.clear()
     observations.update({(new_name if key == old_name else key): value for key, value in items})

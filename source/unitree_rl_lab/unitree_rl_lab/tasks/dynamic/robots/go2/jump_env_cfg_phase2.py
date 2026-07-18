@@ -21,12 +21,11 @@ class CommandsCfgPhase2(CommandsCfg):
         enable_backflip=False,
         enable_sideflip=False,
         trigger_time_range=(0.8, 1.2),
-        target_height_range=(0.20, 0.20),
+        target_height_range=(0.10, 0.30),
         target_pitch_turns_range=(0.0, 0.0),
         target_roll_turns_range=(0.0, 0.0),
         command_duration_s=0.50,
         assist_duration_s=0.10,
-        total_assist_force=400.0,
         initial_assist_scale=1.0,
     )
 

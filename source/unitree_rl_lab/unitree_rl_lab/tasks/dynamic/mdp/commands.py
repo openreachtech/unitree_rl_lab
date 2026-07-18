@@ -51,6 +51,12 @@ class JumpCommand(CommandTerm):
         self.backflip_force_indices = resolve_profile(cfg.backflip_assist_body_names)
         self.sideflip_force_indices = resolve_profile(cfg.sideflip_assist_body_names)
 
+        self.jump_assist_mass = (
+            cfg.jump_assist_mass
+            if cfg.jump_assist_mass is not None
+            else float(self.robot.data.default_mass[0].sum().item())
+        )
+
         self.enabled = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.previous_enabled = torch.zeros_like(self.enabled)
         self.command_issued = torch.zeros_like(self.enabled)
@@ -305,7 +311,19 @@ class JumpCommand(CommandTerm):
                 for force_index in force_indices:
                     forces[motion_mask, force_index, 2] = force_per_body
 
-        apply_profile(self.MOTION_JUMP, self.jump_force_indices, self.cfg.total_assist_force)
+        # Jump assist force is derived per-env from projectile motion, following the
+        # paper's f_jump(h_target): the average force needed to reach the initial
+        # vertical velocity v0 = sqrt(2*g*h_target) over the assist window.
+        jump_mask = assist_active & (self.motion_code == self.MOTION_JUMP)
+        if torch.any(jump_mask):
+            initial_velocity = torch.sqrt(
+                2.0 * self.cfg.gravity * self.target_height[jump_mask].clamp(min=0.0)
+            )
+            total_force = self.jump_assist_mass * initial_velocity / self.cfg.assist_duration_s
+            force_per_body = total_force * self.assist_scale / len(self.jump_force_indices)
+            for force_index in self.jump_force_indices:
+                forces[jump_mask, force_index, 2] = force_per_body
+
         apply_profile(
             self.MOTION_BACKFLIP,
             self.backflip_force_indices,
@@ -346,14 +364,17 @@ class JumpCommandCfg(CommandTermCfg):
     enable_backflip: bool = False
     enable_sideflip: bool = False
     trigger_time_range: tuple[float, float] = (0.8, 1.2)
-    target_height_range: tuple[float, float] = (0.20, 0.20)
+    target_height_range: tuple[float, float] = (0.10, 0.30)
     target_pitch_turns_range: tuple[float, float] = (0.0, 0.0)
     target_roll_turns_range: tuple[float, float] = (0.0, 0.0)
     nominal_standing_height: float = 0.40
 
     command_duration_s: float = 0.50
     assist_duration_s: float = 0.10
-    total_assist_force: float = 400.0
+    gravity: float = 9.81
+    jump_assist_mass: float | None = None
+    """Mass (kg) used to derive the jump assist force via projectile motion. If ``None``,
+    it is auto-detected from the robot's simulated total mass at init time."""
     backflip_assist_force: float = 350.0
     sideflip_assist_force: float = 600.0
     initial_assist_scale: float = 1.0
