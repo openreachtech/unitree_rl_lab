@@ -8,10 +8,78 @@
 
 #include <array>
 #include <algorithm>
+#include <cstdint>
+#include <random>
+#include <utility>
 #include <spdlog/spdlog.h>
 
 namespace isaaclab
 {
+
+namespace
+{
+
+std::vector<float> apply_height_scan_noise(
+    std::vector<float> scan,
+    const YAML::Node& noise_cfg)
+{
+    if (!noise_cfg.IsDefined() ||
+        !noise_cfg["enabled"].IsDefined() ||
+        !noise_cfg["enabled"].as<bool>())
+    {
+        return scan;
+    }
+
+    float noise_min = -0.05f;
+    float noise_max = 0.05f;
+    std::uint32_t seed = 0;
+    if (noise_cfg["min"].IsDefined())
+    {
+        noise_min = noise_cfg["min"].as<float>();
+    }
+    if (noise_cfg["max"].IsDefined())
+    {
+        noise_max = noise_cfg["max"].as<float>();
+    }
+    if (noise_cfg["seed"].IsDefined())
+    {
+        seed = noise_cfg["seed"].as<std::uint32_t>();
+    }
+    if (noise_min > noise_max)
+    {
+        std::swap(noise_min, noise_max);
+    }
+
+    static std::mt19937 generator;
+    static std::uint32_t generator_seed = 0;
+    static bool initialized = false;
+    if (!initialized || generator_seed != seed)
+    {
+        generator.seed(seed);
+        generator_seed = seed;
+        initialized = true;
+    }
+
+    std::uniform_real_distribution<float> distribution(noise_min, noise_max);
+    for (auto& value : scan)
+    {
+        value += distribution(generator);
+    }
+
+    static bool logged = false;
+    if (!logged)
+    {
+        spdlog::info(
+            "height_scan: uniform noise ON (range [{:.4f}, {:.4f}], seed {})",
+            noise_min,
+            noise_max,
+            seed);
+        logged = true;
+    }
+    return scan;
+}
+
+} // namespace
 
 // deploy.yaml:
 //   observations: keyboard_velocity_commands  (not velocity_commands)
@@ -96,6 +164,8 @@ REGISTER_OBSERVATION(keyboard_velocity_commands)
 // Optional debug overrides (constant flat terrain for the policy):
 //   observations.height_scan.params.flat_override / flat_value
 //   OR config.yaml FSM.Velocity.height_scan.flat_override / flat_value
+// Optional config.yaml uniform noise:
+//   FSM.Velocity.height_scan.noise: {enabled: false, min: -0.05, max: 0.05, seed: 0}
 REGISTER_OBSERVATION(height_scan)
 {
     (void)env;
@@ -123,6 +193,7 @@ REGISTER_OBSERVATION(height_scan)
         }
     }
 
+    std::vector<float> scan;
     if (flat_override)
     {
         static bool logged = false;
@@ -133,10 +204,14 @@ REGISTER_OBSERVATION(height_scan)
                 flat_value);
             logged = true;
         }
-        return go2::make_flat_height_scan(flat_value);
+        scan = go2::make_flat_height_scan(flat_value);
+    }
+    else
+    {
+        scan = go2::HeightScanUpdater::instance().get();
     }
 
-    return go2::HeightScanUpdater::instance().get();
+    return apply_height_scan_noise(std::move(scan), fsm_height_scan["noise"]);
 }
 
 } // namespace isaaclab

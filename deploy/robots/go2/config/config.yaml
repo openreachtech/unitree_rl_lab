@@ -38,4 +38,11 @@ FSM:
     height_scan:
       flat_override: false
       flat_value: 0.0
+      # Optional MuJoCo robustness test. Added before observation clipping,
+      # matching Isaac Lab's Unoise(-0.05, 0.05). Keep disabled for normal use.
+      noise:
+        enabled: false
+        min: -0.05
+        max: 0.05
+        seed: 0
     policy_dir: ../../../logs/rsl_rl/unitree_go2_velocity_v1
