@@ -252,7 +252,6 @@ class JumpCommand(CommandTerm):
             self.command_issued[rising_edge] = True
             self.success[rising_edge] = False
             self.trigger_step[rising_edge] = self._env.episode_length_buf[rising_edge]
-            self.standing_height[rising_edge] = self.robot.data.root_pos_w[rising_edge, 2]
             self.max_height[rising_edge] = 0.0
             self.accumulated_pitch[rising_edge] = 0.0
             self.accumulated_roll[rising_edge] = 0.0
