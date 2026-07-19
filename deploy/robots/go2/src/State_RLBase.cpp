@@ -8,6 +8,7 @@
 
 #include <array>
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <random>
 #include <utility>
@@ -19,6 +20,14 @@ namespace isaaclab
 namespace
 {
 
+// Mirrors Isaac Lab's NoiseModelWithAdditiveBiasCfg used for POLICY_HEIGHT_SCAN_CFG
+// (velocity_env_cfg_go2.py): a per-step gaussian sample (one draw per cell, every
+// call) plus a shared bias drawn once and held constant, standing in for that
+// config's per-episode reset -- there's no discrete "episode" in continuous
+// deployment, so the bias is instead resampled once per (re)seed, i.e. once per
+// session with a given config, matching "one persistent offset for the duration
+// of this run" the same way the paper's w_z represents a slowly-varying,
+// episode-scale offset (map drift / deformable terrain), not per-step jitter.
 std::vector<float> apply_height_scan_noise(
     std::vector<float> scan,
     const YAML::Node& noise_cfg)
@@ -30,49 +39,57 @@ std::vector<float> apply_height_scan_noise(
         return scan;
     }
 
-    float noise_min = -0.05f;
-    float noise_max = 0.05f;
+    float mean = 0.0f;
+    float std_dev = 0.05f;
+    float bias_std = 0.0f;
     std::uint32_t seed = 0;
-    if (noise_cfg["min"].IsDefined())
+    if (noise_cfg["mean"].IsDefined())
     {
-        noise_min = noise_cfg["min"].as<float>();
+        mean = noise_cfg["mean"].as<float>();
     }
-    if (noise_cfg["max"].IsDefined())
+    if (noise_cfg["std"].IsDefined())
     {
-        noise_max = noise_cfg["max"].as<float>();
+        std_dev = noise_cfg["std"].as<float>();
+    }
+    if (noise_cfg["bias_std"].IsDefined())
+    {
+        bias_std = noise_cfg["bias_std"].as<float>();
     }
     if (noise_cfg["seed"].IsDefined())
     {
         seed = noise_cfg["seed"].as<std::uint32_t>();
     }
-    if (noise_min > noise_max)
-    {
-        std::swap(noise_min, noise_max);
-    }
+    std_dev = std::abs(std_dev);
+    bias_std = std::abs(bias_std);
 
     static std::mt19937 generator;
     static std::uint32_t generator_seed = 0;
     static bool initialized = false;
+    static float bias = 0.0f;
     if (!initialized || generator_seed != seed)
     {
         generator.seed(seed);
         generator_seed = seed;
         initialized = true;
+        bias = std::normal_distribution<float>(mean, bias_std)(generator);
     }
 
-    std::uniform_real_distribution<float> distribution(noise_min, noise_max);
+    std::normal_distribution<float> distribution(mean, std_dev);
     for (auto& value : scan)
     {
-        value += distribution(generator);
+        value += distribution(generator) + bias;
     }
 
     static bool logged = false;
     if (!logged)
     {
         spdlog::info(
-            "height_scan: uniform noise ON (range [{:.4f}, {:.4f}], seed {})",
-            noise_min,
-            noise_max,
+            "height_scan: gaussian noise ON (mean {:.4f}, std {:.4f}, bias_std {:.4f}, "
+            "sampled bias {:.4f}, seed {})",
+            mean,
+            std_dev,
+            bias_std,
+            bias,
             seed);
         logged = true;
     }
@@ -164,8 +181,10 @@ REGISTER_OBSERVATION(keyboard_velocity_commands)
 // Optional debug overrides (constant flat terrain for the policy):
 //   observations.height_scan.params.flat_override / flat_value
 //   OR config.yaml FSM.Velocity.height_scan.flat_override / flat_value
-// Optional config.yaml uniform noise:
-//   FSM.Velocity.height_scan.noise: {enabled: false, min: -0.05, max: 0.05, seed: 0}
+// Optional config.yaml gaussian noise (matches Isaac Lab's Gnoise, not Unoise,
+// and POLICY_HEIGHT_SCAN_CFG's NoiseModelWithAdditiveBiasCfg):
+//   FSM.Velocity.height_scan.noise:
+//     {enabled: false, mean: 0.0, std: 0.071, bias_std: 0.05, seed: 0}
 REGISTER_OBSERVATION(height_scan)
 {
     (void)env;

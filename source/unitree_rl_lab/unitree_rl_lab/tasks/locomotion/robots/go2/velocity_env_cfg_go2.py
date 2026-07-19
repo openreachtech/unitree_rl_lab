@@ -2,6 +2,8 @@ from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
+from isaaclab.utils.noise import AdditiveGaussianNoiseCfg as GaussianNoiseCfg
+from isaaclab.utils.noise import NoiseModelWithAdditiveBiasCfg
 
 from unitree_rl_lab.assets.models.teacher_actor import TeacherActorCritic
 from unitree_rl_lab.assets.models.modules.student_teacher import StudentTeacher
@@ -69,7 +71,33 @@ POLICY_HEIGHT_SCAN_CFG = ObsTerm(
         "fill_value": 0.0,
     },
     clip=(-1.0, 5.0),
-    # noise=Unoise(n_min=-0.05, n_max=0.05),
+    # Gaussian, not uniform -- matches "Learning robust perceptive locomotion
+    # for quadrupedal robots in the wild" (height-sample noise sampled from a
+    # Gaussian, not a bounded uniform distribution), and structured the same
+    # way as the paper's per-scan-point + per-episode terms (Eq. 2, S8):
+    #   - per-step noise: resampled every control step, one draw per cell --
+    #     matches the paper's eps_pz ~ N(0, z1), z1_nominal = 0.005 (variance)
+    #     -> std = sqrt(0.005) ~= 0.071.
+    #   - bias_noise_cfg: one shared scalar drawn on every episode reset and
+    #     held constant for the whole episode -- matches the paper's w_z
+    #     (per-foot, per-episode height offset from pose-estimation drift /
+    #     deformable terrain). Our height_scan isn't organized per-foot like
+    #     the paper's, so this applies as one shared offset across the whole
+    #     scan instead of per-foot (sample_bias_per_component=False).
+    #     NOTE: the paper's published z-vector for this condition lists only
+    #     7 values for 8 named parameters (z0..z7) -- one entry (almost
+    #     certainly the last, z6 or z7) didn't survive PDF->markdown
+    #     extraction, so the exact w_z magnitude isn't recoverable from
+    #     doc/papers/. std=0.05 here is a reasonable same-order-of-magnitude
+    #     placeholder, not a literal paper value.
+    # Per-foot noise and intermittent outlier injection (also in the paper)
+    # aren't included -- both are structurally tied to per-foot height
+    # samples, which this body-centered grid doesn't have.
+    # noise=NoiseModelWithAdditiveBiasCfg(
+    #     noise_cfg=GaussianNoiseCfg(mean=0.0, std=0.071),
+    #     bias_noise_cfg=GaussianNoiseCfg(mean=0.0, std=0.05),
+    #     sample_bias_per_component=False,
+    # ),
     history_length=0,
 )
 
