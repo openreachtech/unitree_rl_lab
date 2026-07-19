@@ -37,6 +37,7 @@ class CommandsCfgPhase3(CommandsCfg):
         sideflip_assist_force=600.0,
         initial_assist_scale=1.0,
         minimum_landing_time_s=0.80,
+        state_file="logs/rsl_rl/unitree_go2_jump_phase3/jump_curriculum_state.json",
     )
 
 
@@ -108,4 +109,9 @@ class RobotPlayEnvCfgPhase3(RobotEnvCfgPhase3):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 32
+        # Play mode ignores the training curriculum's saved decay state and defaults to no
+        # external assist -- edit initial_assist_scale below (0.0-1.0) to manually test with
+        # partial/full assist force instead.
+        self.commands.jump.state_file = None
+        self.commands.jump.initial_assist_scale = 0.0
         self.observations.policy.enable_corruption = False

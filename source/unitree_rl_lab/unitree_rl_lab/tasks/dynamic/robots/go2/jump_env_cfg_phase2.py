@@ -21,12 +21,13 @@ class CommandsCfgPhase2(CommandsCfg):
         enable_backflip=False,
         enable_sideflip=False,
         trigger_time_range=(0.8, 1.2),
-        target_height_range=(0.10, 0.30),
+        target_height_range=(0.20, 0.20),
         target_pitch_turns_range=(0.0, 0.0),
         target_roll_turns_range=(0.0, 0.0),
         command_duration_s=0.50,
         assist_duration_s=0.10,
         initial_assist_scale=1.0,
+        state_file="logs/rsl_rl/unitree_go2_jump_phase2/jump_curriculum_state.json",
     )
 
 
@@ -90,3 +91,8 @@ class RobotPlayEnvCfgPhase2(RobotEnvCfgPhase2):
         super().__post_init__()
         self.scene.num_envs = 32
         self.observations.policy.enable_corruption = False
+        # Play mode ignores the training curriculum's saved decay state and defaults to no
+        # external assist -- edit initial_assist_scale below (0.0-1.0) to manually test with
+        # partial/full assist force instead.
+        self.commands.jump.state_file = None
+        self.commands.jump.initial_assist_scale = 0.0

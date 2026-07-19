@@ -1,8 +1,27 @@
 from __future__ import annotations
 
+import json
+import os
 from collections.abc import Sequence
 
 import torch
+
+
+def _save_curriculum_state(command) -> None:
+    """Persist assist-force curriculum state so it survives a training process restart."""
+    if command.cfg.state_file is None:
+        return
+    state = {
+        "assist_scale": command.assist_scale,
+        "curriculum_success_rate": command.curriculum_success_rate,
+        "curriculum_episode_count_by_motion": command.curriculum_episode_count_by_motion.tolist(),
+        "curriculum_success_count_by_motion": command.curriculum_success_count_by_motion.tolist(),
+    }
+    os.makedirs(os.path.dirname(command.cfg.state_file), exist_ok=True)
+    tmp_path = command.cfg.state_file + ".tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(state, f)
+    os.replace(tmp_path, command.cfg.state_file)
 
 
 def assist_force_decay(
@@ -53,5 +72,6 @@ def assist_force_decay(
             command.assist_scale = max(0.0, command.assist_scale - decay_step)
         command.curriculum_episode_count_by_motion.zero_()
         command.curriculum_success_count_by_motion.zero_()
+        _save_curriculum_state(command)
 
     return torch.tensor(command.assist_scale, device=env.device)

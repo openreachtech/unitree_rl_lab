@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import math
+import os
 from collections.abc import Sequence
 from dataclasses import MISSING
 from typing import TYPE_CHECKING
@@ -80,6 +82,18 @@ class JumpCommand(CommandTerm):
         self.curriculum_success_count = 0
         self.curriculum_episode_count_by_motion = torch.zeros(4, dtype=torch.long, device=self.device)
         self.curriculum_success_count_by_motion = torch.zeros(4, dtype=torch.long, device=self.device)
+
+        if cfg.state_file is not None and os.path.isfile(cfg.state_file):
+            with open(cfg.state_file) as f:
+                saved_state = json.load(f)
+            self.assist_scale = saved_state["assist_scale"]
+            self.curriculum_success_rate = saved_state["curriculum_success_rate"]
+            self.curriculum_episode_count_by_motion = torch.tensor(
+                saved_state["curriculum_episode_count_by_motion"], dtype=torch.long, device=self.device
+            )
+            self.curriculum_success_count_by_motion = torch.tensor(
+                saved_state["curriculum_success_count_by_motion"], dtype=torch.long, device=self.device
+            )
 
         self.metrics["max_height"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["success"] = torch.zeros(self.num_envs, device=self.device)
@@ -313,7 +327,10 @@ class JumpCommand(CommandTerm):
 
         # Jump assist force is derived per-env from projectile motion, following the
         # paper's f_jump(h_target): the average force needed to reach the initial
-        # vertical velocity v0 = sqrt(2*g*h_target) over the assist window.
+        # vertical velocity v0 = sqrt(2*g*h_target) over the assist window. By design this
+        # is strong enough alone to fully launch the robot at assist_scale=1.0 -- the paper's
+        # intent is for the robot to physically experience the successful trajectory early on,
+        # not to require the policy's own contribution from the start.
         jump_mask = assist_active & (self.motion_code == self.MOTION_JUMP)
         if torch.any(jump_mask):
             initial_velocity = torch.sqrt(
@@ -359,12 +376,18 @@ class JumpCommandCfg(CommandTermCfg):
     backflip_assist_body_names: tuple[str, ...] = ()
     sideflip_assist_body_names: tuple[str, ...] = ()
 
+    state_file: str | None = None
+    """Path used to persist/restore the EFGCL assist-force curriculum (assist_scale and the
+    per-motion episode/success counters) across process restarts. rsl_rl checkpoints only save
+    network weights, so without this, every ``--resume`` silently restarts the curriculum's
+    assist-force decay from ``initial_assist_scale``."""
+
     auto_trigger: bool = False
     enable_jump: bool = True
     enable_backflip: bool = False
     enable_sideflip: bool = False
     trigger_time_range: tuple[float, float] = (0.8, 1.2)
-    target_height_range: tuple[float, float] = (0.10, 0.30)
+    target_height_range: tuple[float, float] = (0.20, 0.20)
     target_pitch_turns_range: tuple[float, float] = (0.0, 0.0)
     target_roll_turns_range: tuple[float, float] = (0.0, 0.0)
     nominal_standing_height: float = 0.40
