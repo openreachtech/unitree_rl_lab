@@ -566,9 +566,15 @@ class RobotSceneCfgPhase3BalanceFloating(RobotSceneCfgPhase3Balance):
 
 @configclass
 class CommandsCfgPhase3BalanceFloating(CommandsCfgPhase3):
-    # Restore a real standing-env fraction (Try-2): CommandsCfgGo2 drops this
-    # to 0.01 for all Go2 tasks, which left this checkpoint almost never
-    # trained on "stand still, zero command."
+    # Try-2 raised this from CommandsCfgGo2's 0.01 to 0.1 because rel_standing_envs
+    # exposure volume was, at the time, the *only* lever shaping idle behavior.
+    # Tried reverting to 0.01 on the theory that quiet_standing_reward's dense
+    # per-occurrence signal (Try-5/6/7) would need less exposure volume to
+    # compensate -- MuJoCo testing confirmed the flat-idle flattening/flapping
+    # came back at 0.01, so the risk noted at the time (quiet_standing only
+    # fires when both |command| <= 0.1 AND the robot is on a genuinely flat
+    # terrain cell, ~10% of the mix -- the overlap population was too sparse
+    # at 0.01 to keep the fix reliably trained) was real. Back to 0.1.
     base_velocity = CommandsCfgPhase3().base_velocity.replace(rel_standing_envs=0.1)
 
 
