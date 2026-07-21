@@ -16,7 +16,9 @@ from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_phase3 import (
 # with --previous-task pointed at the promoted balance-floating checkpoint, not
 # from scratch), not by keeping stairs in this phase's terrain mix. This phase
 # mirrors the stairfocus/balance pattern of specializing the mix on one
-# obstacle: 10% flat (keeps flat-ground gait honest) + 90% thin_wall.
+# obstacle: 10% flat (keeps flat-ground gait honest) + solid/floating thin
+# walls (mirrors the pyramid_stairs / floating_pyramid_stairs split in the
+# stair terrain mixes).
 # =============================================================================
 PHASE4_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
     size=(8.0, 8.0),
@@ -37,7 +39,18 @@ PHASE4_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
         # step_height_range on the stair terrains; thickness still narrows
         # 0.15 m (easy) -> 0.03 m (hard); walls spaced a fixed 0.60 m apart.
         "thin_wall": terrains.MeshThinWallTerrainCfg(
-            proportion=0.90,
+            proportion=0.40,
+            wall_height_range=(0.05, 0.25),
+            wall_thickness_range=(0.15, 0.05),
+            wall_spacing=0.60,
+            platform_width=2.0,
+            border_width=1.0,
+        ),
+        # Same wall, but hollowed out: no solid body, just the thin tread
+        # hovering at wall_height with an open gap underneath -- mirrors
+        # floating_pyramid_stairs_inv's role in the stair terrain mixes.
+        "floating_thin_wall": terrains.MeshFloatingThinWallTerrainCfg(
+            proportion=0.50,
             wall_height_range=(0.05, 0.25),
             wall_thickness_range=(0.15, 0.05),
             wall_spacing=0.60,
@@ -58,7 +71,8 @@ class RobotSceneCfgPhase4(RobotSceneCfgPhase3Balance):
 @configclass
 class RobotEnvCfgPhase4(RobotEnvCfgPhase3BalanceFloating):
     """Phase 4: Phase3-balance-floating's rewards/terminations/commands, unchanged --
-    only the terrain mix changes (adds thin_wall). See module docstring."""
+    only the terrain mix changes (flat + thin_wall + floating_thin_wall).
+    See module docstring."""
 
     scene: RobotSceneCfgPhase4 = RobotSceneCfgPhase4(num_envs=4096, env_spacing=2.5)
 
