@@ -39,7 +39,7 @@ PHASE4_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
         "thin_wall": terrains.MeshThinWallTerrainCfg(
             proportion=0.90,
             wall_height_range=(0.05, 0.25),
-            wall_thickness_range=(0.15, 0.03),
+            wall_thickness_range=(0.15, 0.05),
             wall_spacing=0.60,
             platform_width=2.0,
             border_width=1.0,
