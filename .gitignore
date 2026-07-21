@@ -2,6 +2,8 @@
 **/cmake-build*/
 **/build*/
 **/*.so
+!deploy/thirdparty/**/*.so
+!deploy/thirdparty/**/*.so.*
 **/*.log*
 
 # Omniverse
