@@ -3,9 +3,9 @@
     <Domain id="any">
         <General>
             <NetworkInterfaceAddress>enp130s0</NetworkInterfaceAddress>
-            <SharedMemory>
-                <Enable>false</Enable>
-            </SharedMemory>
         </General>
+        <SharedMemory>
+            <Enable>false</Enable>
+        </SharedMemory>
     </Domain>
 </CycloneDDS>
