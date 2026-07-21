@@ -24,7 +24,7 @@ inline constexpr float kHeightScanOffset = 0.273175f;
 inline constexpr float kHeightScanClipMin = -1.0f;
 inline constexpr float kHeightScanClipMax = 5.0f;
 inline constexpr float kHeightScanEmpty = -1.0f;
-inline constexpr const char* kHeightScanTopic = "rt/height_scan";
+inline constexpr const char* kHeightScanTopic = "rt/height_scan_processed";
 
 // Matches POLICY_HEIGHT_SCAN_CFG / height_scan_excluding_body.
 inline constexpr float kLidarOffsetX = 0.28945f;
