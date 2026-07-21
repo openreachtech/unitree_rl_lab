@@ -27,12 +27,15 @@ from unitree_sdk2py.utils.joystick import Joystick
 try:
     from unitree_sdk2py.idl.sensor_msgs.msg.dds_ import PointCloud2_
     from unitree_sdk2py.idl.unitree_go.msg.dds_ import LowState_, LowCmd_, MotorCmd_
+    from unitree_sdk2py.idl.default import unitree_go_msg_dds__LowCmd_
 except ImportError:
     try:
         from unitree_sdk2py.idl.default import sensor_msgs_msg_dds__PointCloud2_ as PointCloud2_
         from unitree_sdk2py.idl.default import unitree_go_msg_dds__LowState_ as LowState_
         from unitree_sdk2py.idl.default import unitree_go_msg_dds__LowCmd_ as LowCmd_
         from unitree_sdk2py.idl.default import unitree_go_msg_dds__MotorCmd_ as MotorCmd_
+        unitree_go_msg_dds__LowCmd_ = LowCmd_
+        LowCmd_ = LowCmd_
     except ImportError:
         print("エラー: IDLのインポートに失敗しました。unitree_sdk2pyのインストールとIDLパスを確認してください。")
         exit(1)
@@ -352,8 +355,8 @@ class RealGo2Controller:
                 with self.lock:
                     target_q = self.default_joint_pos + self.last_action * self.action_scale
 
-                # LowCmd IDLオブジェクトの構築
-                cmd_msg = LowCmd_()
+                # LowCmd IDLオブジェクトの構築 (ヘルパー関数を使用)
+                cmd_msg = unitree_go_msg_dds__LowCmd_()
                 cmd_msg.head = [0xFE, 0xEF]
                 cmd_msg.level_flag = 0xFF # 低レベル制御モードを明示指定
 
@@ -391,7 +394,7 @@ class RealGo2Controller:
         except KeyboardInterrupt:
             print("[INFO] KeyboardInterrupt. Safely shutting down and disabling motor torque...")
             # 安全のため、終了時はKp=0でトルクを完全に抜く
-            cmd_msg = LowCmd_()
+            cmd_msg = unitree_go_msg_dds__LowCmd_()
             for i in range(12):
                 cmd_msg.motor_cmd[i].kp = 0.0
                 cmd_msg.motor_cmd[i].kd = 0.5 # ダンピングだけ残してゆっくり倒れさせる
