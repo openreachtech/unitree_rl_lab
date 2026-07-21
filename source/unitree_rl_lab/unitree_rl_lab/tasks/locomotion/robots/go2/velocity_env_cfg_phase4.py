@@ -82,6 +82,32 @@ class RobotPlayEnvCfgPhase4(RobotEnvCfgPhase4):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 32
-        self.scene.terrain.terrain_generator.num_rows = 3
-        self.scene.terrain.terrain_generator.num_cols = 5
+        # Play-only terrain: drop "flat" and use exactly 2 columns (one per
+        # wall type) x 5 rows (5 difficulty levels) so each row shows one
+        # thin_wall and one floating_thin_wall side by side at that
+        # difficulty -- .replace() here builds a new TerrainGeneratorCfg
+        # rather than mutating PHASE4_TERRAIN_CFG's sub_terrains dict in
+        # place, which is a module-level object shared with the training cfg.
+        self.scene.terrain.terrain_generator = self.scene.terrain.terrain_generator.replace(
+            num_rows=5,
+            num_cols=2,
+            sub_terrains={
+                "thin_wall": terrains.MeshThinWallTerrainCfg(
+                    proportion=0.5,
+                    wall_height_range=(0.05, 0.25),
+                    wall_thickness_range=(0.15, 0.05),
+                    wall_spacing=0.60,
+                    platform_width=2.0,
+                    border_width=1.0,
+                ),
+                "floating_thin_wall": terrains.MeshFloatingThinWallTerrainCfg(
+                    proportion=0.5,
+                    wall_height_range=(0.05, 0.25),
+                    wall_thickness_range=(0.15, 0.05),
+                    wall_spacing=0.60,
+                    platform_width=2.0,
+                    border_width=1.0,
+                ),
+            },
+        )
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
