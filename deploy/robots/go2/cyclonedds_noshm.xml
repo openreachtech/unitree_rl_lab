@@ -7,5 +7,8 @@
         <SharedMemory>
             <Enable>false</Enable>
         </SharedMemory>
+        <Iceoryx>
+            <Enable>false</Enable>
+        </Iceoryx>
     </Domain>
 </CycloneDDS>
