@@ -490,6 +490,41 @@ def quiet_standing_reward(
     return reward
 
 
+def idle_joint_vel_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    command_name: str = "base_velocity",
+    max_cmd_norm: float = 0.1,
+) -> torch.Tensor:
+    """Smooth penalty on joint velocity, active only near zero command.
+
+    quiet_standing_reward tried to fix flat-ground idle flutter with a
+    positive bonus behind a hard "all 4 feet planted" gate -- a binary AND
+    across four contact sensors that can flicker to zero from ordinary
+    contact-sensor noise even while genuinely standing still. A policy
+    optimizing expected reward against a signal that flickers like that has
+    an incentive to actively probe/correct trying to recapture it, which is a
+    plausible explanation for why quiet_standing sometimes made the flutter
+    *worse*, not better, across several weight/gate variants.
+
+    This term is deliberately not that: it's a plain, continuous quadratic
+    penalty (``sum(joint_vel^2)``, same kernel as the always-on
+    ``joint_vel_l2``) with no contact dependency at all, so there is no
+    discontinuity anywhere for the policy to chase or destabilize around --
+    the gradient just always points toward lower joint velocity. Masked to 0
+    whenever ``|command| > max_cmd_norm``, so it only ever competes with "do
+    nothing" alternatives, never with actual gaits.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    joint_vel = asset.data.joint_vel
+    penalty = torch.sum(torch.square(joint_vel), dim=1)
+
+    cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
+    penalty = penalty * (cmd_norm <= max_cmd_norm)
+
+    return penalty
+
+
 def feet_too_near(
     env: ManagerBasedRLEnv, threshold: float = 0.2, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:
