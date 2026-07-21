@@ -41,11 +41,12 @@ except ImportError:
         exit(1)
 
 class RealGo2Controller:
-    def __init__(self, interface: str, lidar_topic: str, state_topic: str, cmd_topic: str, policy_path: str):
+    def __init__(self, interface: str, lidar_topic: str, state_topic: str, cmd_topic: str, policy_path: str, bypass_publish: bool = False):
         self.interface = interface
         self.lidar_topic = lidar_topic
         self.state_topic = state_topic
         self.cmd_topic = cmd_topic
+        self.bypass_publish = bypass_publish
         
         # 1. 仕様書のロード
         yaml_path = os.path.join(HEIGHTMAP_SRC_DIR, "heightmap_spec.yaml")
@@ -367,8 +368,9 @@ class RealGo2Controller:
                     cmd_msg.motor_cmd[i].kp = float(kp)
                     cmd_msg.motor_cmd[i].kd = float(kd)
 
-                # コマンド送信
-                self.cmd_pub.Write(cmd_msg)
+                # コマンド送信 (デバッグ時はスキップ可能)
+                if not self.bypass_publish:
+                    self.cmd_pub.Write(cmd_msg)
 
                 # デバッグ画面 (no-guiモード) の表示更新 (20サイクルに1回 ＝ 10Hz)
                 if no_gui and cycle_count % 20 == 0:
@@ -401,7 +403,8 @@ class RealGo2Controller:
                 cmd_msg.motor_cmd[i].q = 0.0
                 cmd_msg.motor_cmd[i].dq = 0.0
                 cmd_msg.motor_cmd[i].tau = 0.0
-            self.cmd_pub.Write(cmd_msg)
+            if not self.bypass_publish:
+                self.cmd_pub.Write(cmd_msg)
             time.sleep(1.0)
 
 if __name__ == "__main__":
@@ -409,6 +412,7 @@ if __name__ == "__main__":
     parser.add_argument("--interface", type=str, required=True, help="DDS通信に使うネットワークインターフェース名 (例: eth0)")
     parser.add_argument("--policy", type=str, required=True, help="エクスポートした TorchScript ポリシーファイル (.pt) へのパス")
     parser.add_argument("--no-gui", action="store_true", default=True, help="GUIなしでコンソールログデバッグを表示する")
+    parser.add_argument("--bypass-publish", action="store_true", help="DDSコマンドの送信(Write)をスキップして未接続環境でデバッグする")
     
     args = parser.parse_args()
 
@@ -422,7 +426,8 @@ if __name__ == "__main__":
         lidar_topic=LIDAR_TOPIC,
         state_topic=STATE_TOPIC,
         cmd_topic=CMD_TOPIC,
-        policy_path=args.policy
+        policy_path=args.policy,
+        bypass_publish=args.bypass_publish
     )
 
     # 制御ループの実行
