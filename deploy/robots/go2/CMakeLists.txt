@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.12)
 project(go2_controller)
 
+add_definitions(-D_GLIBCXX_USE_CXX11_ABI=1)
+
 find_package(Boost REQUIRED COMPONENTS program_options)
 find_package(yaml-cpp REQUIRED)
 
