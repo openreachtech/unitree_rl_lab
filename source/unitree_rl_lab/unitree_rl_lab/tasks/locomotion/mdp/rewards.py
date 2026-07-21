@@ -111,7 +111,14 @@ def base_height_climb_reward(
     ray_hits_w = sensor.data.ray_hits_w  # (N, R, 3)
     ray_xy = ray_hits_w[:, :, :2]
     ray_z = ray_hits_w[:, :, 2]
+    # RayCaster reports +-inf for rays that miss the terrain mesh entirely.
+    # Masking those out of the nearest-ray search below avoids picking an
+    # invalid ray when a valid one exists, but if a whole scan misses the
+    # mesh (e.g. robot toppled off a terrain edge) the gather would still
+    # return a raw +-inf. Sanitize the source so local_terrain_h is always
+    # finite, and zero the reward outright when there is no valid ray at all.
     valid_rays = torch.isfinite(ray_z)
+    ray_z = torch.nan_to_num(ray_z, nan=-1e3, posinf=-1e3, neginf=-1e3)
 
     dist = torch.norm(base_xy.unsqueeze(1) - ray_xy, dim=-1)  # (N, R)
     dist = torch.where(valid_rays, dist, torch.full_like(dist, 1e9))
@@ -121,6 +128,7 @@ def base_height_climb_reward(
     target_z = local_terrain_h + nominal_clearance
     height_error = base_z - target_z
     reward = torch.exp(-torch.square(height_error) / std**2)
+    reward = reward * valid_rays.any(dim=1).float()
 
     if command_name is not None:
         cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
@@ -293,9 +301,17 @@ def foot_clearance_terrain_adaptive(
     ray_hits_w = sensor.data.ray_hits_w                             # (N, R, 3)
     ray_xy_w   = ray_hits_w[:, :, :2]                               # (N, R, 2)
     ray_z_w    = ray_hits_w[:, :, 2]                                # (N, R)
+    # RayCaster reports +-inf for rays that miss the terrain mesh. This
+    # function previously didn't exclude invalid rays at all (it could pick
+    # one as "nearest" even with a valid ray close by). Mask them out of the
+    # search and sanitize the source so terrain_z is always finite; the reward
+    # is zeroed below when a scan has no valid ray at all.
+    valid_rays = torch.isfinite(ray_z_w)                            # (N, R)
+    ray_z_w = torch.nan_to_num(ray_z_w, nan=-1e3, posinf=-1e3, neginf=-1e3)
 
-    # Nearest height-scan point to each foot: (N, F, R) -> argmin -> (N, F)
+    # Nearest *valid* height-scan point to each foot: (N, F, R) -> argmin -> (N, F)
     dist = torch.norm(foot_xy_w.unsqueeze(2) - ray_xy_w.unsqueeze(1), dim=-1)
+    dist = torch.where(valid_rays.unsqueeze(1), dist, torch.full_like(dist, 1e9))
     nearest = dist.argmin(dim=-1)                                    # (N, F)
 
     terrain_z = torch.gather(
@@ -314,6 +330,7 @@ def foot_clearance_terrain_adaptive(
     swing = (~in_contact).float()                                   # (N, F)
 
     reward = torch.sum(achieved * swing, dim=1)                     # (N,)
+    reward = reward * valid_rays.any(dim=1).float()
 
     # Only while motion is commanded: standing envs must not be pushed to step.
     cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)  # (N,)
@@ -381,6 +398,14 @@ def adaptive_foot_clearance_reward(
     ray_xy_w = ray_hits_w[:, :, :2]
     ray_z_w = ray_hits_w[:, :, 2]
     valid_rays = torch.isfinite(ray_z_w)  # (N, R)
+    # local_h/ahead_h below are two *independently* nearest-ray-selected
+    # heights that get differenced in obstacle_height. The argmin masking
+    # avoids invalid rays when a valid one exists, but if a whole scan misses
+    # the terrain mesh (e.g. robot toppled off a stair edge) the gather would
+    # return raw +inf and inf - inf = NaN, which then propagates into PPO's
+    # returns/advantages and corrupts the value function. Sanitize the source
+    # so the gather is always finite, and zero the reward for all-invalid scans.
+    ray_z_w = torch.nan_to_num(ray_z_w, nan=-1e3, posinf=-1e3, neginf=-1e3)
 
     def _nearest_height(query_xy: torch.Tensor) -> torch.Tensor:
         # query_xy: (N, F, 2) -> nearest scanned height per foot: (N, F)
@@ -418,7 +443,7 @@ def adaptive_foot_clearance_reward(
     phases = _cpg_leg_phases_rad(env, period, offset)
     is_swing = phases < torch.pi
     reward = reward * is_swing.float()
-    reward = torch.sum(reward, dim=-1)
+    reward = torch.sum(reward, dim=-1) * valid_rays.any(dim=1).float()
 
     if command_name is not None:
         cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
@@ -696,7 +721,12 @@ def stair_commit_reward(
     ray_hits_w = sensor.data.ray_hits_w  # (N, R, 3)
     ray_xy = ray_hits_w[:, :, :2]
     ray_z = ray_hits_w[:, :, 2]
+    # front_terrain_h - hind_terrain_h below differences two independent
+    # nearest-ray lookups; inf - inf = NaN if a scan misses the terrain mesh
+    # entirely. Sanitize the source so the gather is always finite, and zero
+    # the reward for all-invalid scans (see adaptive_foot_clearance_reward).
     valid_rays = torch.isfinite(ray_z)
+    ray_z = torch.nan_to_num(ray_z, nan=-1e3, posinf=-1e3, neginf=-1e3)
 
     def _nearest_height(query_xy: torch.Tensor) -> torch.Tensor:
         dist = torch.norm(query_xy.unsqueeze(2) - ray_xy.unsqueeze(1), dim=-1)  # (N, 2, R)
@@ -713,6 +743,10 @@ def stair_commit_reward(
     front_planted = in_contact[:, :2].any(dim=1)
     hind_down = in_contact[:, 2:].any(dim=1)
     straddling = front_planted & hind_down & ((front_terrain_h - hind_terrain_h) > height_gap_threshold)
+
+    # A scan that misses the terrain mesh entirely can't establish a valid
+    # front/hind height gap, so it must not count as straddling.
+    straddling = straddling & valid_rays.any(dim=1)
 
     forward_speed = torch.clamp(asset.data.root_lin_vel_b[:, 0], min=0.0, max=max_forward_speed)
     climb_speed = torch.clamp(asset.data.root_lin_vel_w[:, 2], min=0.0, max=max_climb_speed)
