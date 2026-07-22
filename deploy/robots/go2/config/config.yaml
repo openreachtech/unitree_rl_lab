@@ -7,6 +7,9 @@ FSM:
     Velocity:
       id: 3
       type: RLBase
+    Dynamic:
+      id: 4
+      type: Flip
   Passive:
     transitions:
       FixStand: LT + A.on_pressed
@@ -18,9 +21,11 @@ FSM:
     transitions:
       Passive: LT + B.on_pressed
       Velocity: start.on_pressed
+      Dynamic: LT + up.on_pressed
     keyboard_transitions:
       Passive: "0"
       Velocity: enter
+      Dynamic: "2"
     kp: [60, 80, 80, 60, 80, 80, 60, 80, 80, 60, 80, 80]
     kd: [5, 4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4]
     ts: [0, 1, 2]
@@ -35,3 +40,40 @@ FSM:
     keyboard_transitions:
       Passive: "0"
     policy_dir: ../../../logs/rsl_rl/unitree_go2_velocity_v1
+
+  # --- Dynamic motions (State_Flip, manual multi-motion mode) ------------
+  # A single re-armable state: enter it from FixStand, then press a motion key
+  # to fire jump / backflip / sideflip *on demand and repeatedly* without
+  # leaving the state. After each motion the command drops to zero (policy
+  # holds a stand) and re-arms after `rearm_delay_s`, so you can chain e.g.
+  # jump -> backflip -> sideflip by pressing 3, 4, 5 in turn.
+  #
+  #   [3] jump   [4] backflip   [5] sideflip      [0]/LT+B Passive   [1]/LT+A FixStand
+  #
+  # IMPORTANT: this one state runs ONE policy, so `policy_dir` must point at a
+  # UNIFIED policy trained with jump + backflip + sideflip all enabled
+  # (JumpCommand conditions the policy on [enabled, height, pitch, roll]).
+  # It must contain `<run>/exported/policy.onnx` and `<run>/params/deploy.yaml`.
+  # (If you only have separate per-motion policies, tell me and I'll switch this
+  #  to a multi-policy variant that loads/swaps one ONNX per motion.)
+  Dynamic:
+    transitions:
+      Passive: LT + B.on_pressed
+      FixStand: LT + A.on_pressed
+    keyboard_transitions:
+      Passive: "0"
+      FixStand: "1"
+    policy_dir: ../../../logs/rsl_rl/unitree_go2_jump_all
+    command_duration_s: 0.5
+    time_scale: 1.0
+    rearm_delay_s: 0.3
+    motions:
+      - key: "3"
+        motion: jump
+        target_height: 0.20
+      - key: "4"
+        motion: backflip
+        target_pitch_turns: -1.0
+      - key: "5"
+        motion: sideflip
+        target_roll_turns: 1.0
