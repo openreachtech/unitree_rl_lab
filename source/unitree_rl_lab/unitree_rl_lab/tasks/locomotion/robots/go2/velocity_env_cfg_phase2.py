@@ -22,14 +22,14 @@ PHASE2_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
         "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.10),
         "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
             proportion=0.40,
-            noise_range=(0.01, 0.06),
+            noise_range=(-0.10, 0.10),
             noise_step=0.01,
             border_width=0.25,
         ),
         "boxes": terrain_gen.MeshRandomGridTerrainCfg(
             proportion=0.50,
             grid_width=0.45,
-            grid_height_range=(0.05, 0.15),
+            grid_height_range=(0.05, 0.25),
             platform_width=2.0,
         ),
     },
@@ -69,6 +69,6 @@ class RobotPlayEnvCfgPhase2(RobotEnvCfgPhase2):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 32
-        self.scene.terrain.terrain_generator.num_rows = 3
-        self.scene.terrain.terrain_generator.num_cols = 5
+        self.scene.terrain.terrain_generator.num_rows = 5
+        self.scene.terrain.terrain_generator.num_cols = 3
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
