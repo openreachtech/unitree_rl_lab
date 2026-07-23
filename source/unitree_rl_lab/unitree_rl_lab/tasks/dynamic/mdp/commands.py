@@ -301,17 +301,51 @@ class JumpCommand(CommandTerm):
 
     def _apply_assistance(self):
         elapsed = self.elapsed_since_trigger
+        delay = self.cfg.assist_delay_s
+        ramp = self.cfg.assist_ramp_s
         assist_active = (
             self.enabled
             & (self.trigger_step >= 0)
-            & (elapsed >= 0.0)
-            & (elapsed < self.cfg.assist_duration_s)
+            & (elapsed >= delay)
+            & (elapsed < delay + ramp + self.cfg.assist_duration_s)
             & (self.assist_scale > 0.0)
         )
+        # Smooth 0->1 ramp over `assist_ramp_s` (measured from the end of the delay), instead
+        # of a hard step onset. With ramp == 0.0 (default) this is identically 1.0 whenever
+        # active, matching prior step-function behavior.
+        if ramp > 0.0:
+            ramp_progress = ((elapsed - delay) / ramp).clamp(0.0, 1.0)
+        else:
+            ramp_progress = torch.ones_like(elapsed)
 
         forces = torch.zeros(
             self.num_envs, len(self.body_ids), 3, dtype=torch.float, device=self.device
         )
+
+        # Crouch-assist: a brief downward pulse on all assist bodies, right at trigger,
+        # before the launch force -- physically teaches a genuine crouch-load instead of
+        # relying on reward shaping alone to elicit correct timing. Shaped as a linear
+        # triangular envelope (0 -> peak -> 0) so it starts and ends at zero force, same
+        # as the launch ramp's continuity, and `assist_delay_s` is expected to be set to
+        # `crouch_assist_duration_s` so the launch ramp begins exactly as this ends --
+        # both sides of that handoff are at ~0 force, so there's no discontinuity there
+        # either. Disabled by default (crouch_assist_duration_s == 0.0).
+        crouch_duration = self.cfg.crouch_assist_duration_s
+        if crouch_duration > 0.0 and self.cfg.crouch_assist_force > 0.0:
+            crouch_active = (
+                (self.trigger_step >= 0)
+                & (elapsed >= 0.0)
+                & (elapsed < crouch_duration)
+                & (self.assist_scale > 0.0)
+            )
+            if torch.any(crouch_active):
+                half = crouch_duration / 2.0
+                envelope = torch.minimum(elapsed / half, (crouch_duration - elapsed) / half).clamp(0.0, 1.0)
+                crouch_force_per_body = (
+                    self.cfg.crouch_assist_force * self.assist_scale * envelope / len(self.body_ids)
+                )
+                for body_index in range(len(self.body_ids)):
+                    forces[crouch_active, body_index, 2] = -crouch_force_per_body[crouch_active]
 
         def apply_profile(
             motion_code: int,
@@ -322,7 +356,7 @@ class JumpCommand(CommandTerm):
             if torch.any(motion_mask):
                 force_per_body = total_force * self.assist_scale / len(force_indices)
                 for force_index in force_indices:
-                    forces[motion_mask, force_index, 2] = force_per_body
+                    forces[motion_mask, force_index, 2] = force_per_body * ramp_progress[motion_mask]
 
         # Jump assist force is derived per-env from projectile motion, following the
         # paper's f_jump(h_target): the average force needed to reach the initial
@@ -338,7 +372,7 @@ class JumpCommand(CommandTerm):
             total_force = self.jump_assist_mass * initial_velocity / self.cfg.assist_duration_s
             force_per_body = total_force * self.assist_scale / len(self.jump_force_indices)
             for force_index in self.jump_force_indices:
-                forces[jump_mask, force_index, 2] = force_per_body
+                forces[jump_mask, force_index, 2] = force_per_body * ramp_progress[jump_mask]
 
         apply_profile(
             self.MOTION_BACKFLIP,
@@ -393,6 +427,27 @@ class JumpCommandCfg(CommandTermCfg):
 
     command_duration_s: float = 0.50
     assist_duration_s: float = 0.10
+    assist_delay_s: float = 0.0
+    """Delay between the trigger rising edge and the start of assist force. Gives the
+    policy a windup window -- already exempt from idle-phase pose penalties since those
+    gate on ``~enabled``, which flips true at the same instant as the trigger -- to crouch
+    and load its legs before the shove lands, mirroring how a real quadruped briefly
+    lowers its body just before push-off. Defaults to 0.0 (assist starts immediately),
+    matching all prior behavior."""
+    assist_ramp_s: float = 0.0
+    """Duration over which assist force ramps linearly from 0 to full, starting once
+    ``assist_delay_s`` has elapsed, instead of turning on as a hard step. Defaults to 0.0
+    (instant full force), matching all prior behavior."""
+    crouch_assist_force: float = 0.0
+    """Downward force (summed across all assist bodies) applied as a brief triangular
+    pulse right at trigger, before the launch assist force. Physically teaches a genuine
+    crouch-load instead of relying on reward shaping alone to elicit correct timing.
+    Defaults to 0.0 (disabled), matching all prior behavior. Set ``assist_delay_s`` to
+    ``crouch_assist_duration_s`` so the launch force begins ramping in exactly as this
+    pulse ends, avoiding a force discontinuity at the handoff."""
+    crouch_assist_duration_s: float = 0.0
+    """Duration of the crouch-assist pulse. Ramps 0 -> peak -> 0 linearly (continuous at
+    both endpoints, same as the launch ramp). Defaults to 0.0 (disabled)."""
     gravity: float = 9.81
     jump_assist_mass: float | None = None
     """Mass (kg) used to derive the jump assist force via projectile motion. If ``None``,

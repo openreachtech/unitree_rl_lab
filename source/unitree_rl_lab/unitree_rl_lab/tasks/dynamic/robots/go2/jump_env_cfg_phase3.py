@@ -24,15 +24,38 @@ class CommandsCfgPhase3(CommandsCfg):
         enable_jump=False,
         enable_backflip=TRAIN_BACKFLIP,
         enable_sideflip=TRAIN_SIDEFLIP,
-        trigger_time_range=(0.8, 1.2),
+        # Widened from (0.8, 1.2): a less predictable trigger time makes an early,
+        # precommitted crouch a worse bet on average, discouraging it alongside
+        # pre_jump_pose's explicit cost below.
+        trigger_time_range=(0.5, 2.0),
         target_height_range=(0.0, 0.0),
         target_pitch_turns_range=(-1.0, -1.0),
         target_roll_turns_range=(-1.0, -1.0),
-        assist_body_names=["FR_hip", "FL_hip", "RR_hip"],
+        # RL_hip added so all 4 legs are resolved -- the crouch-assist pulse below
+        # applies to every resolved body, making it symmetric across all four legs
+        # like a real quadruped crouch. Backflip/sideflip launch forces are
+        # unaffected: they use their own narrower index lists (FR_hip/FL_hip and
+        # FR_hip/RR_hip respectively), so RL_hip never receives launch force.
+        assist_body_names=["FR_hip", "FL_hip", "RR_hip", "RL_hip"],
         backflip_assist_body_names=("FR_hip", "FL_hip"),
         sideflip_assist_body_names=("FR_hip", "RR_hip"),
         command_duration_s=0.50,
         assist_duration_s=0.10,
+        # Crouch-assist: a brief downward pulse on all 4 legs right at trigger, before
+        # the launch force, so the robot physically experiences a genuine crouch-load
+        # instead of relying on reward shaping alone to elicit correct timing. Shaped
+        # as a linear 0->peak->0 envelope (see JumpCommand._apply_assistance) so there's
+        # no force discontinuity at either end.
+        crouch_assist_force=150.0,
+        crouch_assist_duration_s=0.12,
+        # assist_delay_s == crouch_assist_duration_s: the launch force begins ramping
+        # in exactly as the crouch pulse ends, so both sides of that handoff are at
+        # ~0 force -- no discontinuity there either. assist_ramp_s smooths the launch
+        # force's own onset the same way, instead of a hard step (which reliably broke
+        # training from a cold Phase1 resume, regardless of magnitude, when tried
+        # in isolation).
+        assist_delay_s=0.12,
+        assist_ramp_s=0.12,
         backflip_assist_force=350.0,
         sideflip_assist_force=600.0,
         initial_assist_scale=1.0,
@@ -48,7 +71,7 @@ class FlipRewardsCfg(StandingRewardsCfg):
     stillness = None
 
     pre_motion_standing = RewTerm(
-        func=mdp.pre_jump_standing_reward,
+        func=mdp.pre_jump_standing_reward_windup,
         weight=1.0,
         params={"command_name": "jump"},
     )
@@ -69,6 +92,20 @@ class FlipRewardsCfg(StandingRewardsCfg):
             "command_name": "jump",
             "asset_cfg": SceneEntityCfg("robot"),
         },
+    )
+    # Penalizes hip (abduction/adduction) deviation from default so the pre-jump crouch
+    # tucks legs by flexing thigh/calf instead of splaying hips outward.
+    hip_deviation = RewTerm(
+        func=mdp.joint_deviation_l1,
+        weight=-0.4,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_joint"])},
+    )
+    # Cost for holding a non-default joint pose while the jump command is idle, so an
+    # early/anticipatory crouch right after spawn has an actual cost instead of being free.
+    pre_jump_pose = RewTerm(
+        func=mdp.pre_jump_pose_reward,
+        weight=1.0,
+        params={"command_name": "jump"},
     )
 
 

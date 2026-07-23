@@ -48,6 +48,45 @@ def pre_jump_standing_reward(
     return upright_reward(env, asset_cfg) * stillness_reward(env, asset_cfg) * (~command.enabled).float()
 
 
+def pre_jump_standing_reward_windup(
+    env,
+    command_name: str = "jump",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Like ``pre_jump_standing_reward``, but also active during the windup delay
+    (after trigger, before ``assist_delay_s`` elapses and assist force lands).
+
+    ``pre_jump_standing_reward``'s gate (``~enabled``) turns off the instant the
+    command fires -- with ``assist_delay_s > 0`` that leaves a gap where the
+    robot gets zero standing-quality reward and zero motion-progress reward
+    (nothing has started rotating yet), with no signal telling it to simply
+    hold still until the assist force lands. Falls back to identical behavior
+    when ``assist_delay_s == 0`` (the default), since the extra window is then
+    zero-width.
+    """
+    command = env.command_manager.get_term(command_name)
+    still_waiting_for_assist = command.elapsed_since_trigger < command.cfg.assist_delay_s
+    gate = (~command.enabled) | still_waiting_for_assist
+    return upright_reward(env, asset_cfg) * stillness_reward(env, asset_cfg) * gate.float()
+
+
+def pre_jump_pose_reward(
+    env,
+    command_name: str = "jump",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    std: float = 0.5,
+) -> torch.Tensor:
+    """Cost for holding a non-default joint pose whenever the jump command is idle.
+
+    Without this, an anticipatory crouch is free to hold indefinitely before the
+    command fires (and after landing), since ``pre_jump_standing_reward`` only checks
+    upright/stillness, not joint angles. Gated the same way so it only applies while
+    the command is not enabled.
+    """
+    command = env.command_manager.get_term(command_name)
+    return standing_pose_reward(env, asset_cfg, std) * (~command.enabled).float()
+
+
 def jump_progress_reward(
     env,
     command_name: str = "jump",
