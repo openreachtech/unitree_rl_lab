@@ -133,3 +133,127 @@ single run: `assist_force` fully decayed to 0.0 by iteration 1200,
 `base_contact` (failed/crashed landing) dropped to 0.000 by iteration 1700.
 The height ceiling found in Phase2 does not appear to block the backflip
 motion.
+
+## Try 1-8 — natural pre-jump crouch pose (backflip aesthetics fix)
+
+Context: the backflip trained cleanly (above), but play-mode review showed
+an unnatural pre-jump pose — legs splayed outward (hip abduction) instead of
+tucking vertically, and the crouch starting immediately after spawn and
+being held for the entire pre-trigger window instead of only briefly before
+liftoff, since a real robot gets no advance notice of when a command fires.
+Fixed in two independent stages; both are now merged into the default
+`Unitree-Go2-Jump-Phase3` task (`jump_env_cfg_phase3.py`).
+
+**Try 1 — leg-splay fix (promoted).** `.*_hip` joints are abduction/adduction;
+splay is a hip problem, not a thigh/calf one. Added `hip_deviation`
+(`mdp.joint_deviation_l1` restricted to `.*_hip_joint`, weight -0.4) as a
+continuous penalty. Converged cleanly first try: `assist_force` decayed to
+0.0, `success` 0.99. Root cause: `FlipRewardsCfg` never had any joint-pose
+term at all pre-trigger (`pre_jump_standing_reward` only checks
+upright/stillness), so hip splay was free.
+
+**Try 2 — anticipation-timing fix, first attempt (not viable as tried).**
+Widened `trigger_time_range` (0.8,1.2)->(0.5,2.5) and added
+`pre_jump_pose_reward` (new function, penalizes joint-pose deviation from
+default whenever the jump command is idle) to make holding an early crouch
+costly. Result: unstable, oscillating success (0.44 up to 0.6 down to 0.006
+repeatedly), never converged. Diagnosis (confirmed later by Try 8): the
+policy still needed to *self-discover* a crouch-load to launch well, so the
+new pose penalty fought a real dependency instead of just removing a free
+exploit.
+
+**Try 3-6 — external-force windup delay (dead end, but informative).**
+Hypothesis: give the assist-force launch a delay after trigger
+(`assist_delay_s`, new field on `JumpCommandCfg`) so the policy has a legal,
+reward-gate-exempt window to crouch-load before the shove lands. Every
+variant collapsed totally (100% `base_contact`, 0% success from the very
+first logged iteration) regardless of delay length (0.12s or 0.04s
+identically) or a reward-gate fix for the resulting dead zone
+(`pre_jump_standing_reward_windup`, new function -- kept, later reused by
+Try 8). Root cause: the network resumed from Phase1 has never once seen
+`enabled=1` (Phase1 never triggers it), and a **hard** delay creates an
+abrupt idle -> dead-window -> sudden-full-force discontinuity that a
+never-before-seen-enabled=1 network handles catastrophically, independent of
+window length or reward shaping.
+
+**Try 7 — smooth force ramp fixes the discontinuity (promoted).** Replaced
+the hard delay with `assist_ramp_s` (new field): launch force ramps linearly
+0->full over the window instead of a step, removing the discontinuity
+entirely (no dead window: force starts building immediately at trigger).
+Converged as cleanly as Try 1 (success 0.99-1.00 sustained iterations
+1000-3200). Confirms the lesson: it was never delay *length* or reward
+shaping, purely the hard discontinuity.
+
+**Try 8 — crouch-assist force + wider timing + strong pose penalty
+(promoted, current default).** Combines everything: (1) `crouch_assist_force`
++ `crouch_assist_duration_s` (new fields) -- a brief downward pulse on all 4
+legs (added `RL_hip` to `assist_body_names`, previously only 3 legs were
+resolved since Phase3's launch profiles only ever needed FR/FL/RR) right at
+trigger, shaped as a linear 0->peak->0 envelope so it starts and ends at
+zero force; `assist_delay_s` set equal to `crouch_assist_duration_s` so the
+(already-ramped, from Try 7) launch force begins exactly as the crouch pulse
+ends -- both sides of that handoff are at ~0 force too, so the whole
+timeline is discontinuity-free. (2) `trigger_time_range` widened to
+(0.5, 2.0). (3) `pre_jump_pose_reward` at weight 1.0 (vs Try 2's 0.5).
+Physically supplying the crouch-load removed the tension that broke Try 2:
+the pose penalty no longer fights a real dependency. Converged cleanly:
+success climbs smoothly through iterations 600-1000 (0 -> 0.56 -> 0.83 ->
+0.97) then holds 0.99+ through 3200 with no oscillation; `pre_jump_pose`
+reward climbs steadily to ~0.80 and holds (vs Try 2's plateau at 0.35-0.37);
+`base_contact` 0.000.
+
+Backflip launch force remains 2 front legs only (`FR_hip`, `FL_hip`) as
+before -- only the new crouch-assist pulse uses all 4.
+
+## Try 1 (new investigation) — sim2sim gap: MuJoCo backflip transfer (promoted)
+
+Context: Try 8's backflip worked great in Isaac Lab (99%+ success) but sim2sim
+testing in MuJoCo (via `State_Flip`/`go2_ctrl`) mostly failed -- the robot
+didn't complete a full 360 deg rotation and landed on its back. Root-caused
+via two rounds of investigation, both now promoted into the default task.
+
+**Friction randomization.** Raising MuJoCo's foot friction to match
+IsaacLab's fixed training value (1.0) made things *worse*, not better --
+ruled out a simple "match the friction number" fix. Closer observation
+showed successful (low-friction, 0.4) MuJoCo runs involved the hind legs
+briefly sliding forward during push-off, a behavior never seen in IsaacLab,
+suggesting contact dynamics (not just the nominal friction coefficient)
+differ enough between PhysX and MuJoCo that no single friction value
+reliably transfers -- especially significant here since a crouch-then-launch
+is a short, high-force, impulsive contact event. Added `physics_material`
+randomization (`mdp.randomize_rigid_body_material`, static/dynamic friction
+0.4-1.2, matching the pattern already used in the locomotion task) so the
+policy doesn't overfit to one assumed grip level. Trained cleanly (success
+0.99+ by iteration ~1100). Sim2sim result: "a bit improved" over the
+non-randomized policy, but still mostly failed at both 0.4 and 1.0 --
+friction was a real but minor contributor, not the dominant cause.
+
+**Actuator armature (dominant cause, fixed).** Added telemetry logging to
+both the deploy-side `State_Flip` (new `telemetry.csv`, logging
+accumulated pitch/tilt/joint velocity+torque) and `play.py` (new
+`--telemetry-csv`/`--telemetry-steps` flags) to get directly comparable
+traces. Isaac Sim: `RL_thigh_tau`/`RR_thigh_tau` hit and *sustain* their
+20.2 N*m torque ceiling for ~0.18-0.20s straight during push-off, reaching a
+full -360 deg rotation. MuJoCo (same policy): the same joints reach a
+comparable *peak* torque (~22.8 N*m) for essentially one sample before
+dropping away, reaching only ~-125 deg before completely stalling (residual
+angular velocity ~0). Sustained-vs-momentary torque saturation at the same
+peak is the signature of an effective-inertia mismatch: `armature` was unset
+(defaulting to 0) on `UnitreeActuatorCfg_Go2HV` in
+`assets/robots/unitree_actuators.py`, unlike every sibling actuator class in
+that file (M107_15/24, N7520_*, N5010_16, N5020_16, W4010_25), which all
+have an explicit, physically-derived armature from real rotor+gearbox
+specs. A real geared motor's reflected rotor inertia is never exactly zero
+-- this was almost certainly an oversight specific to Go2, making the
+simulated joint "lighter"/quicker to track a fast target than reality, which
+MuJoCo (and presumably real hardware) can't reproduce. Fixed with
+`armature = 0.0122` (empirical standard for the real GO-M8010-6 actuator,
+6.33:1 reduction -- close to but more targeted than MuJoCo's own generic
+`armature="0.01"` default). This is a **shared asset change affecting every
+Go2 task**, not sandbox-scoped.
+
+Retrained with both fixes together (friction randomization + armature):
+converged even faster than the friction-only run (success 0.99+ by
+iteration ~900 vs ~1100-1400). Confirmed working in MuJoCo. Promoted into
+the default `Unitree-Go2-Jump-Phase3` task (`events.physics_material` in
+`jump_env_cfg_phase3.py`; armature fix lives in the shared actuator config).
