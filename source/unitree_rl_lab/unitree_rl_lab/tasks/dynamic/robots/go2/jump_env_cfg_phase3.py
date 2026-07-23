@@ -1,4 +1,5 @@
 from isaaclab.managers import CurriculumTermCfg as CurrTerm
+from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
@@ -7,6 +8,7 @@ from unitree_rl_lab.tasks.dynamic import mdp
 from unitree_rl_lab.tasks.dynamic.robots.go2.jump_env_cfg import (
     CommandsCfg,
     CurriculumCfg,
+    EventCfg,
     RobotEnvCfg,
     StandingRewardsCfg,
     TerminationsCfg,
@@ -128,6 +130,26 @@ class CurriculumCfgPhase3(CurriculumCfg):
 
 
 @configclass
+class EventCfgPhase3(EventCfg):
+    # Randomizes ground friction per-environment (sampled once at startup) so the policy
+    # doesn't overfit to one assumed grip level -- sim2sim testing in MuJoCo showed a
+    # backflip trained only at a single fixed friction value transferred poorly (mostly
+    # under-rotating and landing on its back) regardless of which single MuJoCo friction
+    # value was tried. Range brackets a smooth tile floor with margin on both sides.
+    physics_material = EventTerm(
+        func=mdp.randomize_rigid_body_material,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
+            "static_friction_range": (0.4, 1.2),
+            "dynamic_friction_range": (0.4, 1.2),
+            "restitution_range": (0.0, 0.0),
+            "num_buckets": 64,
+        },
+    )
+
+
+@configclass
 class RobotEnvCfgPhase3(RobotEnvCfg):
     """Phase 3: assisted backflip, optionally mixed with sideflip."""
 
@@ -135,6 +157,7 @@ class RobotEnvCfgPhase3(RobotEnvCfg):
     rewards: FlipRewardsCfg = FlipRewardsCfg()
     terminations: FlipTerminationsCfg = FlipTerminationsCfg()
     curriculum: CurriculumCfgPhase3 = CurriculumCfgPhase3()
+    events: EventCfgPhase3 = EventCfgPhase3()
 
     def __post_init__(self):
         super().__post_init__()

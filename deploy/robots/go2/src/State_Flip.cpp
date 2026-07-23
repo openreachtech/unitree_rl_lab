@@ -211,6 +211,19 @@ void State_Flip::enter()
 
     env->robot->update();
 
+    // --- open diagnostic telemetry log ---
+    telemetry_step_ = 0;
+    accumulated_pitch_deg_ = 0.0f;
+    telemetry_log_.open("telemetry.csv", std::ios::out | std::ios::trunc);
+    telemetry_log_ << "t,enabled,elapsed_since_trigger,accumulated_pitch_deg,"
+                   << "grav_x,grav_y,grav_z,"
+                   << "FL_hip_vel,FR_hip_vel,RL_hip_vel,RR_hip_vel,"
+                   << "FL_thigh_vel,FR_thigh_vel,RL_thigh_vel,RR_thigh_vel,"
+                   << "FL_calf_vel,FR_calf_vel,RL_calf_vel,RR_calf_vel,"
+                   << "FL_hip_tau,FR_hip_tau,RL_hip_tau,RR_hip_tau,"
+                   << "FL_thigh_tau,FR_thigh_tau,RL_thigh_tau,RR_thigh_tau,"
+                   << "FL_calf_tau,FR_calf_tau,RL_calf_tau,RR_calf_tau\n";
+
     // Start policy thread
     policy_thread_running = true;
     policy_thread = std::thread([this]{
@@ -228,11 +241,43 @@ void State_Flip::enter()
             // jump_command / jump_time terms reflect the current step.
             command_->step();
             env->step();
+            log_telemetry_row();
 
             std::this_thread::sleep_until(sleepTill);
             sleepTill += dt;
         }
     });
+}
+
+void State_Flip::log_telemetry_row()
+{
+    // Mirrors the training-side accumulated_pitch computation (commands.py) so this
+    // number is directly comparable to IsaacLab's Metrics/jump/max_height play-mode
+    // trace, rather than relying on visual observation alone.
+    const float pitch_rate = env->robot->data.root_ang_vel_b.y();
+    accumulated_pitch_deg_ += pitch_rate * env->step_dt * 180.0f / static_cast<float>(M_PI);
+
+    telemetry_log_ << (telemetry_step_ * env->step_dt) << ","
+                   << (command_->enabled ? 1 : 0) << ","
+                   << command_->elapsed() << ","
+                   << accumulated_pitch_deg_ << ","
+                   << env->robot->data.projected_gravity_b.x() << ","
+                   << env->robot->data.projected_gravity_b.y() << ","
+                   << env->robot->data.projected_gravity_b.z();
+
+    for (int i = 0; i < 12; ++i)
+    {
+        telemetry_log_ << "," << env->robot->data.joint_vel[i];
+    }
+    for (int i = 0; i < 12; ++i)
+    {
+        const int sdk_index = static_cast<int>(env->robot->data.joint_ids_map[i]);
+        telemetry_log_ << "," << lowstate->msg_.motor_state()[sdk_index].tau_est();
+    }
+    telemetry_log_ << "\n";
+    telemetry_log_.flush();
+
+    telemetry_step_ += 1;
 }
 
 void State_Flip::run()

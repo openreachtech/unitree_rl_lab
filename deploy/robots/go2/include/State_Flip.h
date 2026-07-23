@@ -22,6 +22,7 @@
 #include "isaaclab/envs/mdp/terminations.h"
 
 #include <atomic>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <thread>
@@ -163,6 +164,10 @@ public:
         {
             policy_thread.join();
         }
+        if (telemetry_log_.is_open())
+        {
+            telemetry_log_.close();
+        }
     }
 
     // Shared with the observation terms (jump_command / jump_time) of the
@@ -181,6 +186,18 @@ private:
 
     std::thread policy_thread;
     bool policy_thread_running = false;
+
+    // --- diagnostic telemetry (sim2sim gap investigation) -------------------
+    // Logs one row per policy step while this state is active: pitch rotation
+    // (integrated from root_ang_vel_b, mirroring the training-side
+    // accumulated_pitch computation so it's directly comparable to IsaacLab's
+    // Metrics/jump numbers), tilt, and per-joint velocity/torque, so a MuJoCo
+    // run can be quantitatively compared against Isaac Sim's play-mode trace
+    // instead of relying on visual observation alone.
+    std::ofstream telemetry_log_;
+    long telemetry_step_ = 0;
+    float accumulated_pitch_deg_ = 0.0f;
+    void log_telemetry_row();
 };
 
 REGISTER_FSM(State_Flip)
