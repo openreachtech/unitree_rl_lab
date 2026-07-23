@@ -11,13 +11,15 @@
 namespace go2
 {
 
-// Isaac Lab GridPatternCfg(resolution=0.1, size=[1.6, 1.0]) → 17×11 = 187
-inline constexpr int kHeightScanGridNx = 17;
-inline constexpr int kHeightScanGridNy = 11;
-inline constexpr int kHeightScanSize = kHeightScanGridNx * kHeightScanGridNy;
-inline constexpr float kHeightScanSizeX = 1.6f;
+// Isaac Lab GridPatternCfg(resolution=0.05, size=[1.0, 1.0]) → 21×21 = 441 raw cells.
+// The 10×7 cells under the body are removed before policy inference.
+inline constexpr int kHeightScanGridNx = 21;
+inline constexpr int kHeightScanGridNy = 21;
+inline constexpr int kHeightScanRawSize = kHeightScanGridNx * kHeightScanGridNy;
+inline constexpr int kHeightScanSize = kHeightScanRawSize - 10 * 7;
+inline constexpr float kHeightScanSizeX = 1.0f;
 inline constexpr float kHeightScanSizeY = 1.0f;
-inline constexpr float kHeightScanResolution = 0.1f;
+inline constexpr float kHeightScanResolution = 0.05f;
 // Matches velocity_env_cfg_go2.GO2_HEIGHT_SCAN_OFFSET
 // (= GO2_NOMINAL_BASE_Z + GO2_LIDAR_OFFSET_Z = 0.32 - 0.046825).
 inline constexpr float kHeightScanOffset = 0.273175f;
@@ -29,13 +31,17 @@ inline constexpr const char* kHeightScanTopic = "rt/height_scan";
 // Matches POLICY_HEIGHT_SCAN_CFG / height_scan_excluding_body.
 inline constexpr float kLidarOffsetX = 0.28945f;
 inline constexpr float kLidarOffsetY = 0.0f;
-inline constexpr float kExcludeHalfExtentX = 0.22f;
-inline constexpr float kExcludeHalfExtentY = 0.12f;
-inline constexpr float kExcludeFillValue = 0.0f;
+inline constexpr float kExcludeHalfExtentX = 0.25f;
+inline constexpr float kExcludeHalfExtentY = 0.15f;
 
 inline std::vector<float> make_default_height_scan()
 {
     return std::vector<float>(kHeightScanSize, kHeightScanEmpty);
+}
+
+inline std::vector<float> make_default_raw_height_scan()
+{
+    return std::vector<float>(kHeightScanRawSize, kHeightScanEmpty);
 }
 
 inline constexpr float kHeightScanFlatDefault = 0.0f;
@@ -46,7 +52,7 @@ inline std::vector<float> make_flat_height_scan(float value = kHeightScanFlatDef
 }
 
 // Consumes a ready-made height map (e.g. MuJoCo HeightMapSimulator on rt/height_scan).
-// get() applies under-body masking to match training height_scan_excluding_body.
+// get() removes under-body cells to match training height_scan_excluding_body.
 class HeightScanUpdater
 {
 public:
@@ -54,7 +60,7 @@ public:
 
     void init();
 
-    // Policy observation: raw map with under-body cells filled.
+    // Policy observation with under-body cells removed.
     std::vector<float> get() const;
 
 private:
@@ -70,7 +76,7 @@ private:
         height_scan_sub_;
 
     mutable std::mutex mutex_;
-    std::vector<float> height_scan_ = make_default_height_scan();
+    std::vector<float> height_scan_ = make_default_raw_height_scan();
 };
 
 } // namespace go2

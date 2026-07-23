@@ -33,16 +33,18 @@ std::vector<float> HeightScanUpdater::get() const
 
 std::vector<float> HeightScanUpdater::exclude_under_body(const std::vector<float>& scan)
 {
-    // Grid is centered at the LiDAR; convert cell xy → base frame, then mask
-    // the same rectangle as height_scan_excluding_body.
-    std::vector<float> out = scan;
-    if (static_cast<int>(out.size()) != kHeightScanSize)
+    // Grid is centered at the LiDAR; convert cell xy → base frame and keep
+    // only cells outside the same rectangle as height_scan_excluding_body.
+    if (static_cast<int>(scan.size()) != kHeightScanRawSize)
     {
-        return out;
+        return make_default_height_scan();
     }
 
+    std::vector<float> out;
+    out.reserve(kHeightScanSize);
     const float half_x = 0.5f * kHeightScanSizeX;
     const float half_y = 0.5f * kHeightScanSizeY;
+    const float eps = kHeightScanResolution * 1.0e-4f;
 
     for (int ix = 0; ix < kHeightScanGridNx; ++ix)
     {
@@ -52,12 +54,18 @@ std::vector<float> HeightScanUpdater::exclude_under_body(const std::vector<float
             const float y_cell = -half_y + static_cast<float>(iy) * kHeightScanResolution;
             const float x_base = kLidarOffsetX + x_cell;
             const float y_base = kLidarOffsetY + y_cell;
-            if (std::abs(x_base) <= kExcludeHalfExtentX
-                && std::abs(y_base) <= kExcludeHalfExtentY)
+            const bool under_body =
+                std::abs(x_base) <= kExcludeHalfExtentX + eps
+                && std::abs(y_base) <= kExcludeHalfExtentY + eps;
+            if (!under_body)
             {
-                out[ix * kHeightScanGridNy + iy] = kExcludeFillValue;
+                out.push_back(scan[ix * kHeightScanGridNy + iy]);
             }
         }
+    }
+    if (static_cast<int>(out.size()) != kHeightScanSize)
+    {
+        return make_default_height_scan();
     }
     return out;
 }
@@ -86,7 +94,7 @@ bool HeightScanUpdater::parse_height_scan(
 
     const uint32_t point_step = msg.point_step();
     if (point_step < sizeof(float)
-        || msg.data().size() < static_cast<size_t>(kHeightScanSize) * point_step)
+        || msg.data().size() < static_cast<size_t>(kHeightScanRawSize) * point_step)
     {
         return false;
     }
@@ -101,9 +109,9 @@ bool HeightScanUpdater::parse_height_scan(
         }
     }
 
-    out.resize(kHeightScanSize);
+    out.resize(kHeightScanRawSize);
     const uint8_t* buffer = msg.data().data();
-    for (int i = 0; i < kHeightScanSize; ++i)
+    for (int i = 0; i < kHeightScanRawSize; ++i)
     {
         std::memcpy(
             &out[i],

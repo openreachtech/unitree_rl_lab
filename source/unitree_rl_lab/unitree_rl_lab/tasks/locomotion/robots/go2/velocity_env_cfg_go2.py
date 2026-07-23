@@ -21,21 +21,34 @@ from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import (
 POLICY_HISTORY_LENGTH = 3
 CRITIC_HISTORY_LENGTH = 3
 
-# Must match RobotSceneCfg.height_scanner.pattern_cfg (velocity_env_cfg.py):
-# patterns.GridPatternCfg(resolution=HEIGHT_SCAN_RESOLUTION, size=HEIGHT_SCAN_SIZE).
-HEIGHT_SCAN_RESOLUTION = 0.1
-HEIGHT_SCAN_SIZE = (1.6, 1.0)
+# Applied to RobotSceneCfg.height_scanner.pattern_cfg in RobotEnvCfgGo2.__post_init__.
+HEIGHT_SCAN_RESOLUTION = 0.05
+HEIGHT_SCAN_SIZE = (1.0, 1.0)
+GO2_BODY_HALF_EXTENT_X = 0.25
+GO2_BODY_HALF_EXTENT_Y = 0.15
 
 
-def _grid_pattern_num_points(resolution: float, size: tuple[float, float]) -> int:
-    """Ray count produced by isaaclab.sensors.ray_caster.patterns.GridPatternCfg.
-
-    Mirrors isaaclab's grid_pattern(): arange(-size/2, size/2 + eps, resolution) includes both
-    endpoints, so each axis has round(size / resolution) + 1 points, not size / resolution.
-    """
+def _cropped_grid_pattern_num_points(
+    resolution: float,
+    size: tuple[float, float],
+    scanner_offset_xy: tuple[float, float],
+    exclude_half_extent_xy: tuple[float, float],
+) -> int:
+    """Grid ray count after removing the fixed body-footprint rectangle."""
     num_x = round(size[0] / resolution) + 1
     num_y = round(size[1] / resolution) + 1
-    return num_x * num_y
+    eps = resolution * 1.0e-4
+    removed_x = sum(
+        abs(-size[0] / 2 + i * resolution + scanner_offset_xy[0])
+        <= exclude_half_extent_xy[0] + eps
+        for i in range(num_x)
+    )
+    removed_y = sum(
+        abs(-size[1] / 2 + i * resolution + scanner_offset_xy[1])
+        <= exclude_half_extent_xy[1] + eps
+        for i in range(num_y)
+    )
+    return num_x * num_y - removed_x * removed_y
 
 
 # LiDAR mount in base frame (LiDAR -> base translation). Matches deploy height_scan_pipeline.
@@ -58,17 +71,21 @@ GO2_HEIGHT_SCANNER_OFFSET = (
     GO2_LIDAR_OFFSET_Z,
 )
 
-# 17×11 grid, resolution 0.1m, size [1.6, 1.0]m
+# 21×21 grid with the 10×7 body region removed: 441 - 70 = 371 points.
 POLICY_HEIGHT_SCAN_CFG = ObsTerm(
     func=height_scan_excluding_body,
     params={
         "sensor_cfg": SceneEntityCfg("height_scanner"),
-        "asset_cfg": SceneEntityCfg("robot"),
         "offset": GO2_HEIGHT_SCAN_OFFSET,
-        # Mask points under body footprint (in base xy, meters).
-        "exclude_half_extent_x": 0.22,
-        "exclude_half_extent_y": 0.12,
-        "fill_value": 0.0,
+        "resolution": HEIGHT_SCAN_RESOLUTION,
+        "size": HEIGHT_SCAN_SIZE,
+        "scanner_offset_xy": (GO2_LIDAR_OFFSET_X, GO2_LIDAR_OFFSET_Y),
+        # Remove points under the body footprint (in base xy, meters).
+        "exclude_half_extent_x": GO2_BODY_HALF_EXTENT_X,
+        "exclude_half_extent_y": GO2_BODY_HALF_EXTENT_Y,
+        # Overlay excluded cells in magenta for the first environment.
+        "debug_vis_excluded_body": True,
+        "debug_vis_env_index": 0,
     },
     clip=(-1.0, 5.0),
     # Gaussian, not uniform -- matches "Learning robust perceptive locomotion
@@ -101,10 +118,18 @@ POLICY_HEIGHT_SCAN_CFG = ObsTerm(
     history_length=0,
 )
 
-# Height scan grid matches RobotSceneCfgGo2V2.height_scanner (LiDAR origin, 17×11 @ 0.1 m).
+# Critic uses the same cropped grid and ordering as the policy.
 CRITIC_HEIGHT_SCAN_CFG = ObsTerm(
-    func=mdp.height_scan,
-    params={"sensor_cfg": SceneEntityCfg("height_scanner"), "offset": GO2_HEIGHT_SCAN_OFFSET},
+    func=height_scan_excluding_body,
+    params={
+        "sensor_cfg": SceneEntityCfg("height_scanner"),
+        "offset": GO2_HEIGHT_SCAN_OFFSET,
+        "resolution": HEIGHT_SCAN_RESOLUTION,
+        "size": HEIGHT_SCAN_SIZE,
+        "scanner_offset_xy": (GO2_LIDAR_OFFSET_X, GO2_LIDAR_OFFSET_Y),
+        "exclude_half_extent_x": GO2_BODY_HALF_EXTENT_X,
+        "exclude_half_extent_y": GO2_BODY_HALF_EXTENT_Y,
+    },
     clip=(-1.0, 5.0),
     history_length=0,
 )
@@ -214,6 +239,8 @@ class RobotEnvCfgGo2(RobotEnvCfg):
         # HeightScanUpdater.
         _, _, z = self.scene.height_scanner.offset.pos
         self.scene.height_scanner.offset.pos = (GO2_LIDAR_OFFSET_X, GO2_LIDAR_OFFSET_Y, z)
+        self.scene.height_scanner.pattern_cfg.resolution = HEIGHT_SCAN_RESOLUTION
+        self.scene.height_scanner.pattern_cfg.size = HEIGHT_SCAN_SIZE
         # ordering="yx": inner loop over y, outer loop over x (idx = ix * Ny + iy), matching the
         # flatten order used by unitree_mujoco height_map_simulator and deploy HeightScanUpdater.
         self.scene.height_scanner.pattern_cfg.ordering = "yx"
@@ -228,7 +255,12 @@ def _go2_obs_block_dims() -> tuple[int, int, int]:
       priv:    critic-only base_lin_vel(3)+joint_effort(12)
     """
     proprio = 3 + 3 + 3 + 12 * POLICY_HISTORY_LENGTH * 3
-    extero = _grid_pattern_num_points(HEIGHT_SCAN_RESOLUTION, HEIGHT_SCAN_SIZE)
+    extero = _cropped_grid_pattern_num_points(
+        HEIGHT_SCAN_RESOLUTION,
+        HEIGHT_SCAN_SIZE,
+        (GO2_LIDAR_OFFSET_X, GO2_LIDAR_OFFSET_Y),
+        (GO2_BODY_HALF_EXTENT_X, GO2_BODY_HALF_EXTENT_Y),
+    )
     priv = 3 + 12
     return proprio, extero, priv
 
