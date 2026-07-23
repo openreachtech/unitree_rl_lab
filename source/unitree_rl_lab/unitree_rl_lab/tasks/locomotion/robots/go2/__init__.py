@@ -14,7 +14,7 @@ gym.register(
 )
 
 gym.register(
-    id="Unitree-Go2-Velocity-v2-Phase1",
+    id="Go2-v3-Phase1",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
@@ -25,7 +25,7 @@ gym.register(
 )
 
 gym.register(
-    id="Unitree-Go2-Velocity-v2-Phase2",
+    id="Go2-v3-Phase2",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
@@ -36,7 +36,7 @@ gym.register(
 )
 
 gym.register(
-    id="Unitree-Go2-Velocity-v2-Phase3",
+    id="Go2-v3-Phase3",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
@@ -49,7 +49,7 @@ gym.register(
 # Promoted from sandbox Try-4: terrain-adaptive foot clearance for a natural
 # flat-ground gait, terrain_levels >= 4.5 (reached 4.899).
 gym.register(
-    id="Unitree-Go2-Velocity-v2-Phase3-balance",
+    id="Go2-v3-Phase3-balance",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
@@ -62,7 +62,7 @@ gym.register(
 # Promoted from sandbox Try-1 + Try-2: maximizes terrain_levels (~5.3-5.4),
 # exaggerated flat-ground gait as a tradeoff.
 gym.register(
-    id="Unitree-Go2-Velocity-v2-Phase3-stairfocus",
+    id="Go2-v3-Phase3-stairfocus",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
@@ -86,7 +86,7 @@ gym.register(
 #     compete with stair-climbing behavior; weight settled at 0.5 (Try-7).
 # See velocity_env_cfg_phase3.py for full per-try results and reasoning.
 gym.register(
-    id="Unitree-Go2-Velocity-v2-Phase3-balance-floating",
+    id="Go2-v3-Phase3-balance-floating",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
@@ -104,7 +104,7 @@ gym.register(
 # Rewards/terminations/commands are unchanged from Phase3-balance-floating.
 # Train with --previous-task Unitree-Go2-Velocity-v2-Phase3-balance-floating.
 gym.register(
-    id="Unitree-Go2-Velocity-v2-Phase4",
+    id="Go2-v3-Phase4",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
