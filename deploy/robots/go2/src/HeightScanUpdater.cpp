@@ -52,8 +52,8 @@ std::vector<float> HeightScanUpdater::exclude_under_body(const std::vector<float
         {
             const float x_cell = -half_x + static_cast<float>(ix) * kHeightScanResolution;
             const float y_cell = -half_y + static_cast<float>(iy) * kHeightScanResolution;
-            const float x_base = kLidarOffsetX + x_cell;
-            const float y_base = kLidarOffsetY + y_cell;
+            const float x_base = kGridCenterOffsetX + x_cell;
+            const float y_base = kGridCenterOffsetY + y_cell;
             const bool under_body =
                 std::abs(x_base) <= kExcludeHalfExtentX + eps
                 && std::abs(y_base) <= kExcludeHalfExtentY + eps;

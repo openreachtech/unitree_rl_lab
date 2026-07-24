@@ -145,6 +145,8 @@ class UnitreeActuatorCfg_Go2HV(UnitreeActuatorCfg):
     Y1 = 20.2
     Y2 = 23.4
 
+    armature = 0.0122
+
 
 @configclass
 class UnitreeActuatorCfg_N7520_14p3(UnitreeActuatorCfg):

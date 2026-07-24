@@ -22,7 +22,7 @@ PHASE2_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
         "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.10),
         "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
             proportion=0.40,
-            noise_range=(-0.10, 0.10),
+            noise_range=(0.01, 0.06),
             noise_step=0.01,
             border_width=0.25,
         ),

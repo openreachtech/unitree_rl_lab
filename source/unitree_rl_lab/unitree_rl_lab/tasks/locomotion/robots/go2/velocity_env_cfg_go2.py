@@ -51,7 +51,9 @@ def _cropped_grid_pattern_num_points(
     return num_x * num_y - removed_x * removed_y
 
 
-# LiDAR mount in base frame (LiDAR -> base translation). Matches deploy height_scan_pipeline.
+# LiDAR mount in base frame (LiDAR -> base translation). Only GO2_LIDAR_OFFSET_Z still feeds
+# GO2_HEIGHT_SCAN_OFFSET below; X/Y are no longer used to place the height-scan grid (see
+# GO2_HEIGHT_SCAN_CENTER_X/Y) since a LiDAR-mount-centered grid barely reached behind the robot.
 GO2_LIDAR_OFFSET_X = 0.28945  # m, forward from base
 GO2_LIDAR_OFFSET_Y = 0.0
 GO2_LIDAR_OFFSET_Z = -0.046825  # m
@@ -62,16 +64,15 @@ GO2_NOMINAL_BASE_Z = 0.32  # m
 # Isaac mdp.height_scan offset: ground-to-sensor height at nominal stance (flat terrain -> ~0).
 GO2_HEIGHT_SCAN_OFFSET = GO2_NOMINAL_BASE_Z + GO2_LIDAR_OFFSET_Z  # 0.273175 m
 
-# RayCaster grid xy origin at LiDAR mount (matches unitree_mujoco utlidar site on base_link).
-# Wired into RobotSceneCfg.height_scanner.offset in RobotEnvCfgGo2.__post_init__ below (z there
-# is a fixed ray-start height for raycasting, unrelated to GO2_LIDAR_OFFSET_Z).
-GO2_HEIGHT_SCANNER_OFFSET = (
-    GO2_LIDAR_OFFSET_X,
-    GO2_LIDAR_OFFSET_Y,
-    GO2_LIDAR_OFFSET_Z,
-)
+# RayCaster grid xy origin at the body center (not the LiDAR mount), so the scan reaches equally
+# far in front of and behind the robot. Wired into RobotSceneCfg.height_scanner.offset in
+# RobotEnvCfgGo2.__post_init__ below (z there is a fixed ray-start height for raycasting, unrelated
+# to GO2_LIDAR_OFFSET_Z). Any real/mujoco height-map publisher for deploy HeightScanUpdater must
+# sample its grid centered the same way (base-centered, not LiDAR-mount-centered) to match.
+GO2_HEIGHT_SCAN_CENTER_X = 0.0
+GO2_HEIGHT_SCAN_CENTER_Y = 0.0
 
-# 21×21 grid with the 10×7 body region removed: 441 - 70 = 371 points.
+# 21×21 grid with the 11×7 body region removed: 441 - 77 = 364 points.
 POLICY_HEIGHT_SCAN_CFG = ObsTerm(
     func=height_scan_excluding_body,
     params={
@@ -79,7 +80,7 @@ POLICY_HEIGHT_SCAN_CFG = ObsTerm(
         "offset": GO2_HEIGHT_SCAN_OFFSET,
         "resolution": HEIGHT_SCAN_RESOLUTION,
         "size": HEIGHT_SCAN_SIZE,
-        "scanner_offset_xy": (GO2_LIDAR_OFFSET_X, GO2_LIDAR_OFFSET_Y),
+        "scanner_offset_xy": (GO2_HEIGHT_SCAN_CENTER_X, GO2_HEIGHT_SCAN_CENTER_Y),
         # Remove points under the body footprint (in base xy, meters).
         "exclude_half_extent_x": GO2_BODY_HALF_EXTENT_X,
         "exclude_half_extent_y": GO2_BODY_HALF_EXTENT_Y,
@@ -126,7 +127,7 @@ CRITIC_HEIGHT_SCAN_CFG = ObsTerm(
         "offset": GO2_HEIGHT_SCAN_OFFSET,
         "resolution": HEIGHT_SCAN_RESOLUTION,
         "size": HEIGHT_SCAN_SIZE,
-        "scanner_offset_xy": (GO2_LIDAR_OFFSET_X, GO2_LIDAR_OFFSET_Y),
+        "scanner_offset_xy": (GO2_HEIGHT_SCAN_CENTER_X, GO2_HEIGHT_SCAN_CENTER_Y),
         "exclude_half_extent_x": GO2_BODY_HALF_EXTENT_X,
         "exclude_half_extent_y": GO2_BODY_HALF_EXTENT_Y,
     },
@@ -234,11 +235,10 @@ class RobotEnvCfgGo2(RobotEnvCfg):
         super().__post_init__()
         # Show height-scan rays/hits in Isaac Sim GUI for Go2 tasks.
         self.scene.height_scanner.debug_vis = True
-        # Shift the grid to the LiDAR mount (z is just a fixed ray-start height for raycasting,
-        # unrelated to GO2_LIDAR_OFFSET_Z); matches unitree_mujoco utlidar site / deploy
-        # HeightScanUpdater.
+        # Center the grid on the body origin (z is just a fixed ray-start height for raycasting,
+        # unrelated to GO2_LIDAR_OFFSET_Z); matches deploy HeightScanUpdater.
         _, _, z = self.scene.height_scanner.offset.pos
-        self.scene.height_scanner.offset.pos = (GO2_LIDAR_OFFSET_X, GO2_LIDAR_OFFSET_Y, z)
+        self.scene.height_scanner.offset.pos = (GO2_HEIGHT_SCAN_CENTER_X, GO2_HEIGHT_SCAN_CENTER_Y, z)
         self.scene.height_scanner.pattern_cfg.resolution = HEIGHT_SCAN_RESOLUTION
         self.scene.height_scanner.pattern_cfg.size = HEIGHT_SCAN_SIZE
         # ordering="yx": inner loop over y, outer loop over x (idx = ix * Ny + iy), matching the
@@ -258,7 +258,7 @@ def _go2_obs_block_dims() -> tuple[int, int, int]:
     extero = _cropped_grid_pattern_num_points(
         HEIGHT_SCAN_RESOLUTION,
         HEIGHT_SCAN_SIZE,
-        (GO2_LIDAR_OFFSET_X, GO2_LIDAR_OFFSET_Y),
+        (GO2_HEIGHT_SCAN_CENTER_X, GO2_HEIGHT_SCAN_CENTER_Y),
         (GO2_BODY_HALF_EXTENT_X, GO2_BODY_HALF_EXTENT_Y),
     )
     priv = 3 + 12

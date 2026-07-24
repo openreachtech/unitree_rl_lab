@@ -11,12 +11,13 @@
 namespace go2
 {
 
-// Isaac Lab GridPatternCfg(resolution=0.05, size=[1.0, 1.0]) → 21×21 = 441 raw cells.
-// The 10×7 cells under the body are removed before policy inference.
+// Isaac Lab GridPatternCfg(resolution=0.05, size=[1.0, 1.0]) → 21×21 = 441 raw cells, grid
+// centered on the body origin (not the LiDAR mount). The 11×7 cells under the body are
+// removed before policy inference.
 inline constexpr int kHeightScanGridNx = 21;
 inline constexpr int kHeightScanGridNy = 21;
 inline constexpr int kHeightScanRawSize = kHeightScanGridNx * kHeightScanGridNy;
-inline constexpr int kHeightScanSize = kHeightScanRawSize - 10 * 7;
+inline constexpr int kHeightScanSize = kHeightScanRawSize - 11 * 7;
 inline constexpr float kHeightScanSizeX = 1.0f;
 inline constexpr float kHeightScanSizeY = 1.0f;
 inline constexpr float kHeightScanResolution = 0.05f;
@@ -28,9 +29,11 @@ inline constexpr float kHeightScanClipMax = 5.0f;
 inline constexpr float kHeightScanEmpty = -1.0f;
 inline constexpr const char* kHeightScanTopic = "rt/height_scan";
 
-// Matches POLICY_HEIGHT_SCAN_CFG / height_scan_excluding_body.
-inline constexpr float kLidarOffsetX = 0.28945f;
-inline constexpr float kLidarOffsetY = 0.0f;
+// Matches POLICY_HEIGHT_SCAN_CFG / height_scan_excluding_body. Grid center offset from base
+// origin -- 0 because the grid is body-centered, not LiDAR-mount-centered (a LiDAR-centered
+// grid barely reached behind the robot).
+inline constexpr float kGridCenterOffsetX = 0.0f;
+inline constexpr float kGridCenterOffsetY = 0.0f;
 inline constexpr float kExcludeHalfExtentX = 0.25f;
 inline constexpr float kExcludeHalfExtentY = 0.15f;
 
@@ -51,7 +54,8 @@ inline std::vector<float> make_flat_height_scan(float value = kHeightScanFlatDef
     return std::vector<float>(kHeightScanSize, value);
 }
 
-// Consumes a ready-made height map (e.g. MuJoCo HeightMapSimulator on rt/height_scan).
+// Consumes a ready-made height map (e.g. MuJoCo HeightMapSimulator on rt/height_scan), assumed
+// to be sampled on a grid centered at the base body origin (see kGridCenterOffsetX/Y).
 // get() removes under-body cells to match training height_scan_excluding_body.
 class HeightScanUpdater
 {

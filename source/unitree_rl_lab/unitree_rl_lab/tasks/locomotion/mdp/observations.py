@@ -74,6 +74,8 @@ def _visualize_excluded_height_scan_points(
     env_index = min(max(env_index, 0), sensor.data.ray_hits_w.shape[0] - 1)
     positions = sensor.data.ray_hits_w[env_index].index_select(0, excluded_indices)
     positions = positions[torch.isfinite(positions).all(dim=-1)]
+    if positions.shape[0] == 0:
+        return
     sensor._excluded_body_visualizer.visualize(translations=positions)
 
 
