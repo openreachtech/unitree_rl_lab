@@ -50,13 +50,10 @@ FSM:
   #
   #   [3] jump   [4] backflip   [5] sideflip      [0]/LT+B Passive   [1]/LT+A FixStand
   #
-  # CURRENT STATUS: `Unitree-Go2-Jump-Phase3` (policy_dir below) was only ever
-  # trained with enable_backflip=True (enable_jump=False, enable_sideflip=False)
-  # -- backflip is confirmed working. Firing "3"/"5" right now feeds the policy
-  # command combinations it has never seen in training (undefined behavior) --
-  # kept wired up per request so the keys are ready once jump/sideflip are
-  # trained (either a unified policy with all three motions enabled, or a
-  # multi-policy variant that loads/swaps one ONNX per motion).
+  # CURRENT STATUS: `Unitree-Go2-Jump-Phase3` is now trained with all three
+  # motions enabled (enable_jump=True, enable_backflip=True, enable_sideflip=True)
+  # -- jump, backflip, and sideflip all confirmed working, sim2sim-validated in
+  # MuJoCo.
   Dynamic:
     transitions:
       Passive: LT + B.on_pressed

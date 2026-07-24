@@ -257,3 +257,88 @@ converged even faster than the friction-only run (success 0.99+ by
 iteration ~900 vs ~1100-1400). Confirmed working in MuJoCo. Promoted into
 the default `Unitree-Go2-Jump-Phase3` task (`events.physics_material` in
 `jump_env_cfg_phase3.py`; armature fix lives in the shared actuator config).
+
+## Try 1 (unified jump + backflip + sideflip) -- in progress
+
+Enabling `enable_jump=True, enable_backflip=True, enable_sideflip=True`
+together (plus restoring `target_height_range` to (0.20, 0.20), the
+Phase2-proven achievable jump height) hit two separate issues.
+
+**Crash: PPO numeric divergence at seed 42 (resolved -- not a config bug).**
+Training crashed deterministically (`RuntimeError: normal expects all
+elements of std >= 0.0`) at the exact same point on repeated launches --
+`action_rate` reward exploded to ~-2.4e20 before the policy's action
+distribution produced a negative/NaN std. Traced to `rsl_rl`'s default
+`agent_cfg.seed = 42`, meaning "retries" of an unseeded run are not
+independent trials -- both launches were byte-for-byte identical. Added a
+`--seed` passthrough to `train_and_aggregate.py` (previously had no way to
+override it). A different seed (7) trained the full 3000 iterations without
+crashing, confirming this was a seed-specific instability, not a structural
+problem with the combined config.
+
+**Structural stall: sideflip's assist force was miscalibrated (root-caused
+in Try 2-4 below).** Even without crashing, `assist_force` never decayed
+from 1.0 despite the aggregate success sitting at 65-70% -- the saved
+curriculum state showed `curriculum_success_rate: 0.0` (the *minimum*
+success rate across all three enabled motions), meaning one motion
+essentially never succeeded, which blocks `assist_force_decay` for all
+three since it requires every enabled motion to individually clear the
+60% threshold.
+
+## Try 2-4 -- isolate and fix sideflip_assist_force (resolved)
+
+Sideflip had never been trained even once before this project
+(`TRAIN_SIDEFLIP` was `False` throughout). Isolating it alone (Try 2,
+default 600N) never succeeded once in 3200 iterations: `max_height`
+started very high (0.94-1.13m, far more than backflip's usual 0.1-0.3m)
+and `motion_progress` *declined* over training instead of improving --
+signature of a chaotic, uncontrolled launch rather than a clean in-place
+roll, with the policy learning to tone down the wildness rather than
+complete the rotation.
+
+Bisected the force: Try 3 (200N) never left the ground at all (`max_height`
+~0.000, `motion_progress` flat at the never-attempted baseline the whole
+run). Try 4 (350N, matching backflip's proven value exactly) converged
+cleanly: success climbed to 0.89 by iteration 700, 0.98 by 800, held
+0.99-1.00 through 3200, `assist_force` decayed fully by iteration 900 --
+even faster than backflip's own convergence. Root cause: 600N (near double
+backflip's force) was simply too strong for the roll axis, which likely
+has a smaller moment of inertia than the pitch axis backflip uses, so
+sideflip needed *less* force than backflip, not more.
+
+**Promoted**: `sideflip_assist_force` fixed to 350.0 (was 600.0) in the
+default `jump_env_cfg_phase3.py`. `enable_sideflip` stays `False` in the
+default task -- this only corrects the dormant value for whenever sideflip
+is actually enabled (i.e., the eventual unified-motion retrain in Try 1).
+
+Also found and fixed independently: the deploy-side `config.yaml` commanded
+`target_roll_turns: 1.0` for the `5` (sideflip) key, but training always
+used `target_roll_turns_range=(-1.0, -1.0)` -- an exact sign mismatch that
+made the policy silently not react to the sideflip command at all (an
+out-of-distribution target it had never seen). Fixed to `-1.0` to match
+training.
+
+**Next**: retry Try 1 (unified 3-motion) with the corrected sideflip force
+and an explicit `--seed` override.
+
+## Try 1 retry -- unified jump + backflip + sideflip (promoted, current default)
+
+Retried with sideflip's corrected 350N force and `--seed 7` (avoiding the
+deterministic seed-42 crash from before). Converged cleanly: success climbed
+through iterations 400-1000 (0.31 -> 0.70 -> 0.98), dipped to ~0.77-0.82
+around iterations 1200-1700 as the assist-force curriculum aggressively
+decayed (0.90 -> 0.0 over that window -- a normal, temporary difficulty
+spike during the assist-weaning transition), then recovered to hold
+0.99-1.00 from iteration 2200 through 3200. The saved curriculum state
+confirmed `curriculum_success_rate: 0.998` -- the *minimum* success rate
+across all three motions, meaning jump, backflip, and sideflip are each
+individually near 99.8% success, not just a favorable aggregate. Confirmed
+working in MuJoCo.
+
+Promoted into the default `Unitree-Go2-Jump-Phase3` task:
+`TRAIN_JUMP = TRAIN_BACKFLIP = TRAIN_SIDEFLIP = True`, `target_height_range`
+restored to `(0.20, 0.20)` (previously a backflip-only leftover at
+`(0.0, 0.0)`). One motion is sampled uniformly at random per environment
+per episode reset (`JumpCommand._resample_command`). Checkpoint copied from
+`unitree_go2_jump_phase3_try_1/2026-07-24_13-52-13` (same recipe, no
+retrain needed).

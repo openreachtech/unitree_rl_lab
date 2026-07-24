@@ -14,23 +14,27 @@ from unitree_rl_lab.tasks.dynamic.robots.go2.jump_env_cfg import (
     TerminationsCfg,
 )
 
-# Motion-selection flags. Enable both to sample one motion per environment.
+# Motion-selection flags. Enable multiple to sample one motion per environment
+# (uniformly at random, per env, per episode reset -- see JumpCommand._resample_command).
+TRAIN_JUMP = True
 TRAIN_BACKFLIP = True
-TRAIN_SIDEFLIP = False
+TRAIN_SIDEFLIP = True
 
 
 @configclass
 class CommandsCfgPhase3(CommandsCfg):
     jump = CommandsCfg().jump.replace(
         auto_trigger=True,
-        enable_jump=False,
+        enable_jump=TRAIN_JUMP,
         enable_backflip=TRAIN_BACKFLIP,
         enable_sideflip=TRAIN_SIDEFLIP,
         # Widened from (0.8, 1.2): a less predictable trigger time makes an early,
         # precommitted crouch a worse bet on average, discouraging it alongside
         # pre_jump_pose's explicit cost below.
         trigger_time_range=(0.5, 2.0),
-        target_height_range=(0.0, 0.0),
+        # 0.20m: the Phase2-proven achievable height (plateaus there across multiple
+        # reward-engineering attempts; concluded to be a real actuator limit).
+        target_height_range=(0.20, 0.20),
         target_pitch_turns_range=(-1.0, -1.0),
         target_roll_turns_range=(-1.0, -1.0),
         # RL_hip added so all 4 legs are resolved -- the crouch-assist pulse below
@@ -63,8 +67,7 @@ class CommandsCfgPhase3(CommandsCfg):
         # launch (max_height 0.9-1.1m vs backflip's usual 0.1-0.3m) and never
         # converged in isolated testing. 200.0 was too weak (never left the ground).
         # Matching backflip's proven 350.0 converged cleanly (success 0.99+ by
-        # iteration 900). enable_sideflip stays False here -- this only fixes the
-        # dormant value for whenever sideflip is actually enabled.
+        # iteration 900).
         sideflip_assist_force=350.0,
         initial_assist_scale=1.0,
         minimum_landing_time_s=0.80,
@@ -157,7 +160,7 @@ class EventCfgPhase3(EventCfg):
 
 @configclass
 class RobotEnvCfgPhase3(RobotEnvCfg):
-    """Phase 3: assisted backflip, optionally mixed with sideflip."""
+    """Phase 3: unified assisted jump + backflip + sideflip (one motion sampled per env)."""
 
     commands: CommandsCfgPhase3 = CommandsCfgPhase3()
     rewards: FlipRewardsCfg = FlipRewardsCfg()
