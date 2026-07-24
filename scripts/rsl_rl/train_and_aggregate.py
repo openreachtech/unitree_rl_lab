@@ -31,6 +31,13 @@ def parse_args() -> argparse.Namespace:
         default=100,
         help="Iteration interval for aggregate_tensorboard_logs.py (default: 100).",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Seed passed to train.py. rsl_rl defaults to 42 if unset, so repeated runs of the "
+        "same config are otherwise byte-for-byte identical, not independent trials.",
+    )
     return parser.parse_args()
 
 
@@ -74,6 +81,8 @@ def main() -> None:
     ]
     if args.previous_task:
         train_cmd.extend(["--resume", "--previous-task", args.previous_task])
+    if args.seed is not None:
+        train_cmd.extend(["--seed", str(args.seed)])
 
     run_quiet(train_cmd, "train.py")
 

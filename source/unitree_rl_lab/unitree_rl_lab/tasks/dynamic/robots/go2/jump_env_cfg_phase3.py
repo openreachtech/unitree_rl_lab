@@ -59,7 +59,13 @@ class CommandsCfgPhase3(CommandsCfg):
         assist_delay_s=0.12,
         assist_ramp_s=0.12,
         backflip_assist_force=350.0,
-        sideflip_assist_force=600.0,
+        # Was 600.0 -- nearly double backflip's force, which caused a chaotic, high
+        # launch (max_height 0.9-1.1m vs backflip's usual 0.1-0.3m) and never
+        # converged in isolated testing. 200.0 was too weak (never left the ground).
+        # Matching backflip's proven 350.0 converged cleanly (success 0.99+ by
+        # iteration 900). enable_sideflip stays False here -- this only fixes the
+        # dormant value for whenever sideflip is actually enabled.
+        sideflip_assist_force=350.0,
         initial_assist_scale=1.0,
         minimum_landing_time_s=0.80,
         state_file="logs/rsl_rl/unitree_go2_jump_phase3/jump_curriculum_state.json",
