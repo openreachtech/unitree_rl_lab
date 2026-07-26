@@ -5,9 +5,19 @@ storage, GAE, and the surrogate/value/entropy PPO losses. This subclass adds one
 extra term computed from the same minibatches, so the estimator is optimized by
 the very same gradient steps as the policy/value functions (matching "the
 estimators are trained in parallel with the deep reinforcement learning controller
-using PPO instead of being trained separately", TumblerNet / Xiao et al. 2025):
+using PPO instead of being trained separately", TumblerNet / Xiao et al. 2025).
 
-    L = L_ppo + aux_loss_coef * (MSE(vel_estimate, true_vel) + MSE(com_cop_estimate, true_com_cop))
+Loss is the paper's *convex combination*, not a plain sum (Eq. 16):
+
+    L = beta * loss_reg + (1 - beta) * loss_policy
+    loss_reg    = MSE(vel_estimate, true_vel) + MSE(com_cop_estimate, true_com_cop)
+    loss_policy = surrogate_loss + value_loss_coef * value_loss - entropy_coef * entropy
+
+with beta = ``aux_loss_coef`` = 0.5, i.e. "the regression loss weight is the same
+as the weight of policy loss" (paper, directly below Eq. 16). Note this also
+halves the *effective* weight of ``value_loss_coef`` / ``entropy_coef`` relative
+to vanilla PPO defaults tuned assuming beta=0 -- that is what the paper specifies,
+not an oversight.
 
 ``true_vel`` / ``true_com_cop`` come from the env's privileged ``estimator_target``
 observation group (ground truth, never seen by the actor); ``vel_estimate`` /
@@ -34,6 +44,7 @@ class BipedPPO(RslPPO):
 
     def __init__(self, policy, *args, aux_loss_coef: float = 0.5, **kwargs):
         super().__init__(policy, *args, **kwargs)
+        # Paper's `beta` (Eq. 16): convex-combination weight, not an additive scale.
         self.aux_loss_coef = aux_loss_coef
 
     def update(self) -> dict[str, float]:  # noqa: C901
@@ -136,14 +147,13 @@ class BipedPPO(RslPPO):
             true_com_cop = estimator_target[..., 3:6]
             vel_loss = F.mse_loss(self.policy.last_vel_estimate, true_vel)
             com_cop_loss = F.mse_loss(self.policy.last_com_cop_estimate, true_com_cop)
-            aux_loss = vel_loss + com_cop_loss
-
-            loss = (
-                surrogate_loss
-                + self.value_loss_coef * value_loss
-                - self.entropy_coef * entropy_batch.mean()
-                + self.aux_loss_coef * aux_loss
+            loss_reg = vel_loss + com_cop_loss
+            loss_policy = (
+                surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
             )
+
+            # Eq. 16: convex combination, not `loss_policy + aux_loss_coef * loss_reg`.
+            loss = self.aux_loss_coef * loss_reg + (1.0 - self.aux_loss_coef) * loss_policy
 
             self.optimizer.zero_grad()
             loss.backward()
