@@ -1,0 +1,1 @@
+# register a sandbox environment for the Go2 biped robot
