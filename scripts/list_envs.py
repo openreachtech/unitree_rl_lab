@@ -58,7 +58,7 @@ def _walk_packages(
 
 def import_packages():
     sys.path.insert(0, f"{pathlib.Path(__file__).parent.parent}/source/unitree_rl_lab/unitree_rl_lab/tasks/")
-    for package in ["locomotion.robots", "mimic.robots"]:
+    for package in ["locomotion.robots", "mimic.robots", "biped.robots"]:
         package = importlib.import_module(package)
         for _ in _walk_packages(package.__path__, package.__name__ + "."):
             pass
@@ -87,7 +87,7 @@ def main():
     index = 0
     # acquire all Isaac environments names
     for task_spec in gym.registry.values():
-        if task_spec.kwargs.get("env_cfg_entry_point", "").startswith(("locomotion.", "mimic.")):
+        if task_spec.kwargs.get("env_cfg_entry_point", "").startswith(("locomotion.", "mimic.", "biped.")):
             # add details to table
             table.add_row([index + 1, task_spec.id, task_spec.entry_point, task_spec.kwargs["env_cfg_entry_point"]])
             # increment count
