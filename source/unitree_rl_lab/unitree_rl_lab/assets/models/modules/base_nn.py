@@ -5,7 +5,13 @@ class BaseNet(nn.Module):
     def __init__(self, model_config):
         super(BaseNet, self).__init__()
         self.model_config = model_config
-        self.activation_map = {"relu": nn.ReLU, "tanh": nn.Tanh, "leakyrelu": nn.LeakyReLU, "gelu": nn.GELU}
+        self.activation_map = {
+            "relu": nn.ReLU,
+            "tanh": nn.Tanh,
+            "leakyrelu": nn.LeakyReLU,
+            "gelu": nn.GELU,
+            "elu": nn.ELU,
+        }
 
         used_model_archs = self.model_config.keys()
 
