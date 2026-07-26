@@ -7,14 +7,25 @@ from rsl_rl.runners import DistillationRunner, OnPolicyRunner
 
 def _register_teacher_actor_critic(train_cfg: dict) -> None:
     policy_cfg = train_cfg.get("policy", {})
-    if policy_cfg.get("class_name") != "TeacherActorCritic":
-        return
-
-    from unitree_rl_lab.assets.models.teacher_actor import TeacherActorCritic
+    alg_cfg = train_cfg.get("algorithm", {})
     import rsl_rl.runners.on_policy_runner as on_policy_runner_module
 
-    # rsl-rl resolves policy class_name via eval(...) in on_policy_runner module scope.
-    on_policy_runner_module.TeacherActorCritic = TeacherActorCritic
+    if policy_cfg.get("class_name") == "TeacherActorCritic":
+        from unitree_rl_lab.assets.models.teacher_actor import TeacherActorCritic
+
+        # rsl-rl resolves policy class_name via eval(...) in on_policy_runner module scope.
+        on_policy_runner_module.TeacherActorCritic = TeacherActorCritic
+
+    if policy_cfg.get("class_name") == "BipedActorCritic":
+        from unitree_rl_lab.assets.models.biped_actor import BipedActorCritic
+
+        on_policy_runner_module.BipedActorCritic = BipedActorCritic
+
+    if alg_cfg.get("class_name") == "BipedPPO":
+        from unitree_rl_lab.assets.models.modules.biped_ppo import BipedPPO
+
+        # rsl-rl resolves algorithm class_name via eval(...) in on_policy_runner module scope.
+        on_policy_runner_module.BipedPPO = BipedPPO
 
 
 def _register_distillation_classes(train_cfg: dict) -> None:

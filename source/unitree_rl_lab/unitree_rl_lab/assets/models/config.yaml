@@ -78,3 +78,41 @@ student_model:
         # Reconstructs clean exteroception from GRU output; output = extero_dim
         shape: [ 64, 64 ]
         activation: leakyrelu
+
+biped_model:
+  # Single actor-critic + auxiliary estimator, trained jointly with PPO.
+  # Architecture from: "Learning stable bipedal locomotion skills for quadrupedal
+  # robots on challenging terrains with automatic fall recovery" (TumblerNet,
+  # Xiao et al., 2025) -- an "Estimator Net" predicts base linear velocity and the
+  # CoM-CoP balance vector from a short history of proprioception; its prediction
+  # (not the privileged ground truth) is what the actor actually conditions on, so
+  # the same network can run at deployment time.
+  estimator:
+    MLP:
+      estimator_mlp:
+        # History-of-proprioception -> [lin_vel(3), com_cop(3)].
+        shape: [ 256, 128 ]
+        activation: relu
+        output: 6
+        # input is injected at runtime by BipedPolicy._adapt()
+
+  policy:
+    MLP:
+      base_net:
+        # Takes [vel_estimate | proprio(current step) | com_cop_estimate] -> action.
+        # Paper: "policy network and critic network are both MLPs with the layer
+        # sizes being [512, 256, 128, 12]" -- 12 is the action-dim output layer,
+        # so the hidden shape is [512, 256, 128].
+        shape: [ 512, 256, 128 ]
+        activation: elu
+        # input/output are injected at runtime by BipedPolicy._adapt()
+
+  critic:
+    MLP:
+      base_net:
+        # Takes the full privileged critic observation (includes ground-truth
+        # lin_vel / com_cop) -> value. Never seen by the actor. Same [512, 256, 128]
+        # hidden shape as the policy net (see note above).
+        shape: [ 512, 256, 128 ]
+        activation: elu
+        # input/output are injected at runtime by BipedCritic._adapt()
