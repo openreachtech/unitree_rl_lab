@@ -75,6 +75,7 @@ def main():
         entry_point_key="play_env_cfg_entry_point",
     )
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
+    agent_cfg.device = args_cli.device if args_cli.device is not None else agent_cfg.device
 
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
@@ -149,6 +150,7 @@ def main():
     # export policy to onnx/jit
     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
     from unitree_rl_lab.assets.models.modules.student_teacher import StudentTeacher
+    from unitree_rl_lab.assets.models.biped_actor import BipedActorCritic
 
     if isinstance(policy_nn, StudentTeacher):
         # StudentPolicy is a single fused module (extero encoder -> belief GRU+attention ->
@@ -160,6 +162,15 @@ def main():
             export_model_dir, filename="policy.pt"
         )
         StudentPolicyOnnxExporter(policy_nn.student, normalizer=normalizer).export(
+            export_model_dir, filename="policy.onnx"
+        )
+    elif isinstance(policy_nn, BipedActorCritic):
+        # BipedPolicy fuses the estimator's own prediction into the base net and returns a
+        # dict, so it needs its own export path too (see BipedPolicyJitExporter docstring).
+        from unitree_rl_lab.assets.models.biped_actor import BipedPolicyJitExporter, BipedPolicyOnnxExporter
+
+        BipedPolicyJitExporter(policy_nn.actor, normalizer=normalizer).export(export_model_dir, filename="policy.pt")
+        BipedPolicyOnnxExporter(policy_nn.actor, normalizer=normalizer).export(
             export_model_dir, filename="policy.onnx"
         )
     else:

@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 from torch.distributions import Normal
@@ -287,3 +288,73 @@ class BipedActorCritic(ActorCritic):
 
     def evaluate(self, obs, **kwargs):
         return self.critic(self.get_critic_obs(obs))
+
+
+class BipedPolicyJitExporter(nn.Module):
+    """TorchScript export wrapper for a trained ``BipedPolicy``.
+
+    isaaclab_rl's generic exporter (``isaaclab_rl.rsl_rl.export_policy_as_jit``) assumes
+    a plain ``nn.Sequential`` actor with a tensor-in/tensor-out ``forward`` (it does
+    ``self.actor(x)`` directly). ``BipedPolicy`` fuses the estimator's own [vel, com_cop]
+    prediction into the base net internally and returns a dict (action_mean/action_std/
+    vel_estimate/com_cop_estimate), so it can't be passed through that exporter unmodified
+    (mirrors ``StudentPolicyJitExporter`` in ``student_actor.py``). This wraps
+    ``BipedPolicy`` and extracts just ``action_mean`` -- the deterministic action used at
+    deployment -- matching the plain tensor convention the generic exporter expects.
+    """
+
+    def __init__(self, biped_policy: BipedPolicy, normalizer=None):
+        super().__init__()
+        self.policy = deepcopy(biped_policy)
+        self.policy.eval()
+        self.normalizer = deepcopy(normalizer) if normalizer is not None else nn.Identity()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.normalizer(x)
+        return self.policy(x)["action_mean"]
+
+    @torch.jit.export
+    def reset(self):
+        pass
+
+    def export(self, path, filename="policy.pt"):
+        os.makedirs(path, exist_ok=True)
+        self.to("cpu")
+        self.eval()
+        example = torch.zeros(1, self.policy.proprio_dim + self.policy.history_dim)
+        traced = torch.jit.trace(self, example)
+        traced.save(os.path.join(path, filename))
+
+
+class BipedPolicyOnnxExporter(nn.Module):
+    """ONNX export wrapper for a trained ``BipedPolicy``. See ``BipedPolicyJitExporter``."""
+
+    def __init__(self, biped_policy: BipedPolicy, normalizer=None, verbose=False):
+        super().__init__()
+        self.verbose = verbose
+        self.policy = deepcopy(biped_policy)
+        self.policy.eval()
+        self.obs_dim = biped_policy.proprio_dim + biped_policy.history_dim
+        self.normalizer = deepcopy(normalizer) if normalizer is not None else nn.Identity()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.normalizer(x)
+        return self.policy(x)["action_mean"]
+
+    def export(self, path, filename="policy.onnx"):
+        os.makedirs(path, exist_ok=True)
+        self.to("cpu")
+        self.eval()
+        opset_version = 18  # matches isaaclab_rl's exporter (linux-aarch compatibility)
+        obs = torch.zeros(1, self.obs_dim)
+        torch.onnx.export(
+            self,
+            obs,
+            os.path.join(path, filename),
+            export_params=True,
+            opset_version=opset_version,
+            verbose=self.verbose,
+            input_names=["obs"],
+            output_names=["actions"],
+            dynamic_axes={},
+        )
