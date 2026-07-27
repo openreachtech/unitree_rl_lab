@@ -22,10 +22,13 @@ POLICY_HISTORY_LENGTH = 3
 CRITIC_HISTORY_LENGTH = 3
 
 # Applied to RobotSceneCfg.height_scanner.pattern_cfg in RobotEnvCfgGo2.__post_init__.
+# X is 1.4 m (+0.20 m front and back over a plain 1.0 m square) so the body-centered grid
+# reaches further past the robot's own front/rear footprint.
 HEIGHT_SCAN_RESOLUTION = 0.05
-HEIGHT_SCAN_SIZE = (1.0, 1.0)
-GO2_BODY_HALF_EXTENT_X = 0.25
-GO2_BODY_HALF_EXTENT_Y = 0.15
+HEIGHT_SCAN_SIZE = (1.4, 1.0)
+# Body-footprint exclusion rectangle: 60 cm x 40 cm (half extents below).
+GO2_BODY_HALF_EXTENT_X = 0.30
+GO2_BODY_HALF_EXTENT_Y = 0.20
 
 
 def _cropped_grid_pattern_num_points(
@@ -72,7 +75,7 @@ GO2_HEIGHT_SCAN_OFFSET = GO2_NOMINAL_BASE_Z + GO2_LIDAR_OFFSET_Z  # 0.273175 m
 GO2_HEIGHT_SCAN_CENTER_X = 0.0
 GO2_HEIGHT_SCAN_CENTER_Y = 0.0
 
-# 21×21 grid with the 11×7 body region removed: 441 - 77 = 364 points.
+# 29×21 grid with the 13×9 body region removed: 609 - 117 = 492 points.
 POLICY_HEIGHT_SCAN_CFG = ObsTerm(
     func=height_scan_excluding_body,
     params={

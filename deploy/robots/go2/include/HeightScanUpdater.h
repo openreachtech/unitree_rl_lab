@@ -11,14 +11,14 @@
 namespace go2
 {
 
-// Isaac Lab GridPatternCfg(resolution=0.05, size=[1.0, 1.0]) → 21×21 = 441 raw cells, grid
-// centered on the body origin (not the LiDAR mount). The 11×7 cells under the body are
+// Isaac Lab GridPatternCfg(resolution=0.05, size=[1.4, 1.0]) → 29×21 = 609 raw cells, grid
+// centered on the body origin (not the LiDAR mount). The 13×9 cells under the body are
 // removed before policy inference.
-inline constexpr int kHeightScanGridNx = 21;
+inline constexpr int kHeightScanGridNx = 29;
 inline constexpr int kHeightScanGridNy = 21;
 inline constexpr int kHeightScanRawSize = kHeightScanGridNx * kHeightScanGridNy;
-inline constexpr int kHeightScanSize = kHeightScanRawSize - 11 * 7;
-inline constexpr float kHeightScanSizeX = 1.0f;
+inline constexpr int kHeightScanSize = kHeightScanRawSize - 13 * 9;
+inline constexpr float kHeightScanSizeX = 1.4f;
 inline constexpr float kHeightScanSizeY = 1.0f;
 inline constexpr float kHeightScanResolution = 0.05f;
 // Matches velocity_env_cfg_go2.GO2_HEIGHT_SCAN_OFFSET
@@ -34,8 +34,8 @@ inline constexpr const char* kHeightScanTopic = "rt/height_scan";
 // grid barely reached behind the robot).
 inline constexpr float kGridCenterOffsetX = 0.0f;
 inline constexpr float kGridCenterOffsetY = 0.0f;
-inline constexpr float kExcludeHalfExtentX = 0.25f;
-inline constexpr float kExcludeHalfExtentY = 0.15f;
+inline constexpr float kExcludeHalfExtentX = 0.30f;
+inline constexpr float kExcludeHalfExtentY = 0.20f;
 
 inline std::vector<float> make_default_height_scan()
 {

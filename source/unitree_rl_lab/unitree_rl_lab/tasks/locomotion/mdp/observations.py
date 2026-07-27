@@ -111,6 +111,9 @@ def height_scan_excluding_body(
         exclude_half_extent_y,
         heights.device,
     )
-    if debug_vis_excluded_body and sensor.cfg.debug_vis:
+    # Not gated on sensor.cfg.debug_vis: that flag only controls the raw RayCaster's own
+    # marker drawing, which we may want off (see RobotPlayEnvCfgPhase1/2) so this exclusion
+    # overlay is visible on its own instead of buried among the full raw grid's markers.
+    if debug_vis_excluded_body:
         _visualize_excluded_height_scan_points(sensor, excluded_indices, debug_vis_env_index)
     return heights.index_select(1, keep_indices)
