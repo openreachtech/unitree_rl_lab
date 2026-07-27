@@ -56,9 +56,21 @@ public:
         }
     }
 
-private:
+protected:
+    // Bail-out condition back to Passive. Overridable for policies whose target
+    // posture is itself a large tilt, where a single fixed limit cannot tell the
+    // intended stance from a fall (see go2's State_BipedRL).
+    virtual bool fall_detected() const
+    {
+        return isaaclab::mdp::bad_orientation(env.get(), tilt_limit_);
+    }
+
     std::unique_ptr<isaaclab::ManagerBasedRLEnv> env;
 
+    // Tilt of the base away from vertical [rad] treated as a fall.
+    float tilt_limit_ = 1.0;
+
+private:
     std::thread policy_thread;
     bool policy_thread_running = false;
 };

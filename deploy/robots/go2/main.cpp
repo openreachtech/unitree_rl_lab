@@ -2,6 +2,7 @@
 #include "FSM/State_Passive.h"
 #include "FSM/State_FixStand.h"
 #include "FSM/State_RLBase.h"
+#include "State_BipedRL.h"
 #include "HeightScanUpdater.h"
 
 std::unique_ptr<LowCmd_t> FSMState::lowcmd = nullptr;
@@ -46,10 +47,11 @@ int main(int argc, char** argv)
     auto fsm = std::make_unique<CtrlFSM>(param::config["FSM"]);
     fsm->start();
 
-    std::cout << "Remote: [L2+A] FixStand, [Start] Velocity, [L2+B] Passive\n";
-    std::cout << "Keyboard: [1] FixStand, [Enter] Velocity, [0] Passive\n";
+    std::cout << "Remote: [L2+A] FixStand, [Start] Velocity, [L2+Y] Biped, [L2+B] Passive\n";
+    std::cout << "Keyboard: [1] FixStand, [Enter] Velocity, [2] Biped, [0] Passive\n";
     std::cout << "          [F/B/L/R/Y/U] velocity forward/back/left/right/yaw (latched, diagonal OK)\n";
     std::cout << "          [Space] zero velocity cmd; [0] Passive FSM\n";
+    std::cout << "Biped gait: [Up]/[Left]/[Right] or [Q]/[H]/[J] = quadruped / hind legs / front legs\n";
 
     while (true)
     {

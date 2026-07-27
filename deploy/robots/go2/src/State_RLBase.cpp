@@ -4,6 +4,7 @@
 #include "isaaclab/envs/mdp/observations/observations.h"
 #include "isaaclab/envs/mdp/actions/joint_actions.h"
 #include "HeightScanUpdater.h"
+#include "KeyboardVelocityCommand.h"
 #include "param.h"
 
 #include <array>
@@ -98,83 +99,10 @@ std::vector<float> apply_height_scan_noise(
 
 } // namespace
 
-// deploy.yaml:
-//   observations: keyboard_velocity_commands  (not velocity_commands)
-//   commands.base_velocity:
-//     keyboard_vel_scale: 0.8   # optional, default 0.8
-//     keyboard_alpha: 0.15      # optional low-pass; higher = smoother / slower
-
 REGISTER_OBSERVATION(keyboard_velocity_commands)
 {
-    if (!FSMState::keyboard)
-    {
-        FSMState::keyboard = std::make_shared<Keyboard>();
-    }
-
-    auto keyboard = FSMState::keyboard;
-    const auto cmd_cfg = env->cfg["commands"]["base_velocity"];
-    const auto ranges = cmd_cfg["ranges"];
-
-    float vel_scale = 0.8f;
-    if (cmd_cfg["keyboard_vel_scale"].IsDefined())
-    {
-        vel_scale = cmd_cfg["keyboard_vel_scale"].as<float>();
-    }
-
-    float alpha = 0.15f;
-    if (cmd_cfg["keyboard_alpha"].IsDefined())
-    {
-        alpha = cmd_cfg["keyboard_alpha"].as<float>();
-    }
-
-    const auto sx = [&](int idx) { return vel_scale * ranges["lin_vel_x"][idx].as<float>(); };
-    const auto sy = [&](int idx) { return vel_scale * ranges["lin_vel_y"][idx].as<float>(); };
-    const auto sz = [&](int idx) { return vel_scale * ranges["ang_vel_z"][idx].as<float>(); };
-
-    static std::array<float, 3> cmd = {0.0f, 0.0f, 0.0f};
-    std::array<float, 3> target = {0.0f, 0.0f, 0.0f};
-
-    if (keyboard->consume_velocity_stop())
-    {
-        cmd = {0.0f, 0.0f, 0.0f};
-        return std::vector<float>(cmd.begin(), cmd.end());
-    }
-
-    if (keyboard->pressed("f"))
-    {
-        target[0] += sx(1);
-    }
-    if (keyboard->pressed("b"))
-    {
-        target[0] += sx(0);
-    }
-    if (keyboard->pressed("l"))
-    {
-        target[1] += sy(1);
-    }
-    if (keyboard->pressed("r"))
-    {
-        target[1] += sy(0);
-    }
-    if (keyboard->pressed("y"))
-    {
-        target[2] += sz(1);
-    }
-    if (keyboard->pressed("u"))
-    {
-        target[2] += sz(0);
-    }
-
-    for (int i = 0; i < 3; ++i)
-    {
-        cmd[i] = (1.0f - alpha) * cmd[i] + alpha * target[i];
-    }
-
-    cmd[0] = std::clamp(cmd[0], sx(0), sx(1));
-    cmd[1] = std::clamp(cmd[1], sy(0), sy(1));
-    cmd[2] = std::clamp(cmd[2], sz(0), sz(1));
-
-    return std::vector<float>(cmd.begin(), cmd.end());
+    (void)params;
+    return go2::keyboard_velocity_command(env);
 }
 
 // deploy.yaml must list observations.height_scan (exported from policy training).
@@ -247,9 +175,14 @@ State_RLBase::State_RLBase(int state_mode, std::string state_string)
     );
     env->alg = std::make_unique<isaaclab::OrtRunner>(policy_dir / "exported" / "policy.onnx");
 
+    if (cfg["tilt_limit"].IsDefined())
+    {
+        tilt_limit_ = cfg["tilt_limit"].as<float>();
+    }
+
     this->registered_checks.emplace_back(
         std::make_pair(
-            [&]()->bool{ return isaaclab::mdp::bad_orientation(env.get(), 1.0); },
+            [this]()->bool{ return this->fall_detected(); },
             FSMStringMap.right.at("Passive")
         )
     );

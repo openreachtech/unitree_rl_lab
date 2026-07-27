@@ -242,7 +242,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
     observation_renames = None
     if args_cli.deploy_keyboard_commands:
-        observation_renames = {"velocity_commands": "keyboard_velocity_commands"}
+        # The biped tasks also carry a "velocity_commands_hist" term for the estimator's
+        # stacked history, which has to switch to the keyboard source along with it.
+        observation_renames = {
+            name: f"keyboard_{name}"
+            for name in env.unwrapped.observation_manager.active_terms["policy"]
+            if name.startswith("velocity_commands")
+        }
     export_deploy_cfg(env.unwrapped, log_dir, observation_renames=observation_renames)
     # copy the environment configuration file to the log directory
     shutil.copy(

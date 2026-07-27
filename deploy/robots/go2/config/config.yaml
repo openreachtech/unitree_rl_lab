@@ -7,6 +7,9 @@ FSM:
     Velocity:
       id: 3
       type: RLBase
+    Biped:
+      id: 4
+      type: BipedRL
   Passive:
     transitions:
       FixStand: LT + A.on_pressed
@@ -18,9 +21,11 @@ FSM:
     transitions:
       Passive: LT + B.on_pressed
       Velocity: start.on_pressed
+      Biped: LT + Y.on_pressed
     keyboard_transitions:
       Passive: "0"
       Velocity: enter
+      Biped: "2"
     kp: [60, 80, 80, 60, 80, 80, 60, 80, 80, 60, 80, 80]
     kd: [5, 4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4]
     ts: [0, 1, 2]
@@ -51,3 +56,24 @@ FSM:
         bias_std: 0.05
         seed: 0
     policy_dir: ../../../logs/rsl_rl/unitree_go2_velocity_v1
+  Biped:
+    transitions:
+      Passive: LT + B.on_pressed
+    keyboard_transitions:
+      Passive: "0"
+    # Stance the multimode policy is asked to hold. The state always starts in quad,
+    # like every training episode does, so these only switch it while it is running.
+    gait_modes:
+      quad: up.on_pressed
+      hind_biped: left.on_pressed
+      front_biped: right.on_pressed
+    keyboard_gait_modes:
+      quad: "q"
+      hind_biped: "h"
+      front_biped: "j"
+    # Tilt of the base away from vertical [rad] that drops the FSM back to Passive.
+    # In the biped stances that tilt is the intended posture (~70-90 degrees), so
+    # they use the wider limit, which only catches a full flip.
+    tilt_limit: 1.0
+    biped_tilt_limit: 2.6
+    policy_dir: ../../../logs/rsl_rl/unitree_go2_multimode
