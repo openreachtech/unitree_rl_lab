@@ -5,9 +5,19 @@
 #include "KeyboardVelocityCommand.h"
 #include "param.h"
 
+#include <algorithm>
 #include <map>
 #include <utility>
 #include <spdlog/spdlog.h>
+
+namespace
+{
+
+// Margin below tilt_limit_ the base has to reach before the strict quadruped limit is
+// armed, so that arming right on the boundary cannot trip on sensor noise alone [rad].
+constexpr float kQuadTiltArmMargin = 0.1f;
+
+} // namespace
 
 namespace isaaclab
 {
@@ -141,6 +151,7 @@ void State_BipedRL::enter()
     // switches once the policy is already running, so entry mirrors that.
     go2::GaitModeSelector::instance().set(go2::GaitMode::kQuad);
     spdlog::info("Gait mode: {}", go2::gait_mode_name(go2::GaitMode::kQuad));
+    quad_tilt_limit_armed_ = false;
 
     State_RLBase::enter();
 }
@@ -155,17 +166,45 @@ void State_BipedRL::run()
             if (trigger.mode != selector.get())
             {
                 selector.set(trigger.mode);
+                quad_tilt_limit_armed_ = false;
                 spdlog::info("Gait mode: {}", go2::gait_mode_name(trigger.mode));
             }
             break;
         }
     }
 
+    // Runs before the FSM evaluates registered_checks on this tick, so fall_detected()
+    // always sees an up-to-date arming decision.
+    update_tilt_limit_arming();
+
     State_RLBase::run();
+}
+
+void State_BipedRL::update_tilt_limit_arming()
+{
+    if (quad_tilt_limit_armed_
+        || go2::GaitModeSelector::instance().get() != go2::GaitMode::kQuad)
+    {
+        return;
+    }
+
+    // Commanding quad from a biped stance only asks the policy to start lowering the
+    // robot; it stays pitched well past tilt_limit_ for the seconds that takes, so
+    // arming the strict limit on the command alone would report a fall on every
+    // biped->quad switch. Wait for the pose itself to settle instead of guessing how
+    // long the descent needs. Until then biped_tilt_limit_ stays in force, which still
+    // catches a flip -- a fall part-way through the descent is indistinguishable from
+    // the descent itself by tilt magnitude alone.
+    const float arm_below = std::max(0.0f, tilt_limit_ - kQuadTiltArmMargin);
+    if (!isaaclab::mdp::bad_orientation(env.get(), arm_below))
+    {
+        quad_tilt_limit_armed_ = true;
+    }
 }
 
 bool State_BipedRL::fall_detected() const
 {
     const bool is_quad = go2::GaitModeSelector::instance().get() == go2::GaitMode::kQuad;
-    return isaaclab::mdp::bad_orientation(env.get(), is_quad ? tilt_limit_ : biped_tilt_limit_);
+    const bool strict = is_quad && quad_tilt_limit_armed_;
+    return isaaclab::mdp::bad_orientation(env.get(), strict ? tilt_limit_ : biped_tilt_limit_);
 }

@@ -72,8 +72,11 @@ FSM:
       hind_biped: "h"
       front_biped: "j"
     # Tilt of the base away from vertical [rad] that drops the FSM back to Passive.
-    # In the biped stances that tilt is the intended posture (~70-90 degrees), so
-    # they use the wider limit, which only catches a full flip.
+    # In the biped stances that tilt is the intended posture (~70-90 degrees), so they
+    # use the wider limit, which only catches a full flip. The strict limit takes over
+    # once the robot has actually settled back onto four legs, not the moment quad is
+    # commanded -- lowering itself takes seconds, and it stays past tilt_limit for all
+    # of them.
     tilt_limit: 1.0
     biped_tilt_limit: 2.6
     policy_dir: ../../../logs/rsl_rl/unitree_go2_multimode

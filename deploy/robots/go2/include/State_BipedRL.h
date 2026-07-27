@@ -26,7 +26,8 @@ public:
 
 protected:
     // The biped stances hold the base pitched ~70-90 degrees off flat, which the
-    // quadruped tilt limit reads as a fall, so that limit only applies in quad mode.
+    // quadruped tilt limit reads as a fall, so that limit only applies once the robot
+    // is actually standing on four legs again -- see update_tilt_limit_arming().
     bool fall_detected() const override;
 
 private:
@@ -37,11 +38,16 @@ private:
     };
 
     void load_mode_triggers(YAML::Node cfg, const std::string& state_string);
+    void update_tilt_limit_arming();
 
     std::vector<ModeTrigger> mode_triggers_;
 
     // Only meant to catch a full flip; see fall_detected().
     float biped_tilt_limit_ = 2.6;
+
+    // Whether the strict quadruped tilt limit is in force. Commanding quad only starts
+    // the robot lowering itself; the limit is armed when it has actually settled.
+    bool quad_tilt_limit_armed_ = false;
 };
 
 REGISTER_FSM(State_BipedRL)
