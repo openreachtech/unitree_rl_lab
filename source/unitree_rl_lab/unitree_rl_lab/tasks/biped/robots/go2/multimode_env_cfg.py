@@ -74,7 +74,11 @@ class CommandsCfg(BipedCommandsCfg):
     gait_mode = mdp.GaitModeCommandCfg(
         asset_name="robot",
         resampling_time_range=(8.0, 12.0),
-        mode_probs=(0.5, 0.25, 0.25),
+        # More training weight on the two biped stances than on quad -- quad is
+        # still the guaranteed episode-start default (see GaitModeCommand), but
+        # in-episode resamples should spend most of their time on the harder
+        # biped skills.
+        mode_probs=(0.2, 0.4, 0.4),
         debug_vis=False,
     )
 
