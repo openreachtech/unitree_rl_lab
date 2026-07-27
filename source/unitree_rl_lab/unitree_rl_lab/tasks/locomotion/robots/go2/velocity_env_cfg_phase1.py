@@ -41,6 +41,16 @@ class CommandsCfgPhase1(CommandsCfgGo2):
         limit_ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
             lin_vel_x=(-1.5, 1.5), lin_vel_y=(-0.8, 0.8), ang_vel_z=(-1.2, 1.2)
         ),
+        # CommandsCfgGo2 drops rel_standing_envs to 0.01 for every Go2 v3 task -- only 1%
+        # of envs ever get a near-zero command, so "stand still" was almost never
+        # practiced. MuJoCo deploy testing showed this checkpoint flattening/flapping its
+        # legs on flat ground at zero command (not seen on the older blind v1 policy,
+        # which trains at the un-touched base CommandsCfg's rel_standing_envs=0.1).
+        # Promoted from sandbox/try1.py after MuJoCo confirmed the flat-idle flapping is
+        # resolved with this alone -- Phase1 has no active terrain-height reward term to
+        # also gate (see RewardsCfgGo2: wild_foot_clearance / foot_clearance_terrain_adaptive
+        # / forward_command_progress are all weight=0.0 by default and untouched here).
+        rel_standing_envs=0.1,
     )
 
 
