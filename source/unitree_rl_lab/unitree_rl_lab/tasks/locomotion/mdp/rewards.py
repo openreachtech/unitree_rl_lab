@@ -515,6 +515,171 @@ def quiet_standing_reward(
     return reward
 
 
+def joint_deviation_flat_gated_l1(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    sensor_cfg: SceneEntityCfg,
+    roughness_ref: float = 0.05,
+) -> torch.Tensor:
+    """Penalize joint deviation from default pose, scaled by how flat the terrain is.
+
+    Plain ``joint_deviation_l1`` applied to hip joints (to stop an unforced wide/
+    side-swinging gait on flat ground) turned out to also suppress the hip
+    abduction a policy legitimately needs to balance while crossing a thin wall
+    -- MuJoCo testing on a wall-climbing task showed continued training under a
+    flat, ungated hip penalty trading away climbing ability entirely in
+    exchange for a cleaner flat-ground gait, rather than converging to a
+    policy that has both.
+
+    This reuses the same height-range-over-``roughness_ref`` gate
+    ``adaptive_foot_clearance_reward``/``quiet_standing_reward`` use: full
+    penalty on genuinely flat terrain, fading to ~0 as the scanned patch under
+    the robot gets rougher (i.e. near/on an obstacle), so the constraint only
+    applies where there's no climbing-related reason to violate it.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    angle = asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+    deviation = torch.sum(torch.abs(angle), dim=1)
+
+    sensor = env.scene[sensor_cfg.name]
+    ray_z = sensor.data.ray_hits_w[:, :, 2]
+    valid_rays = torch.isfinite(ray_z)
+    z_for_max = torch.where(valid_rays, ray_z, torch.full_like(ray_z, -1e9))
+    z_for_min = torch.where(valid_rays, ray_z, torch.full_like(ray_z, 1e9))
+    roughness = (z_for_max.amax(dim=1) - z_for_min.amin(dim=1)).clamp(min=0.0)
+    flatness_gate = torch.clamp(1.0 - roughness / roughness_ref, 0.0, 1.0)
+
+    return deviation * flatness_gate
+
+
+def joint_deviation_swing_gated_l1(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    period: float,
+    offset: list[float],
+) -> torch.Tensor:
+    """Penalize joint deviation from default pose, but only while that leg is
+    in its open-loop swing phase (reuses ``adaptive_foot_clearance_reward``'s
+    ``_cpg_leg_phases_rad`` gate).
+
+    ``joint_deviation_flat_gated_l1`` gates a hip-deviation penalty by terrain
+    flatness, which turned out to be the wrong axis for a "stop using hip to
+    lift the foot" goal: it relaxes exactly during obstacle crossing, which is
+    precisely where MuJoCo testing showed the unwanted hip-swing motion also
+    happening (not just on flat ground). Swing phase is what's actually common
+    to both cases -- the foot is being lifted -- so gating on that instead
+    penalizes hip motion whenever a lift is underway, on flat ground *and*
+    while crossing an obstacle, while leaving stance-phase hip position
+    (support/balance, unrelated to the lifting motion) untaxed.
+
+    ``asset_cfg``: joints in FR/FL/RR/RL order, matching ``offset``'s leg
+    order convention (same as ``adaptive_foot_clearance_reward``'s feet).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    joint_ids = asset_cfg.joint_ids
+    deviation = torch.abs(
+        asset.data.joint_pos[:, joint_ids] - asset.data.default_joint_pos[:, joint_ids]
+    )  # (N, 4)
+
+    phases = _cpg_leg_phases_rad(env, period, offset)
+    is_swing = (phases < torch.pi).float()
+
+    return torch.sum(deviation * is_swing, dim=-1)
+
+
+def calf_flexion_clearance_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    calf_asset_cfg: SceneEntityCfg,
+    sensor_cfg: SceneEntityCfg,
+    period: float,
+    offset: list[float],
+    lookahead_distance: float = 0.15,
+    natural_flex: float = 0.05,
+    max_flex: float = 0.4,
+    max_obstacle_height: float = 0.25,
+    roughness_ref: float = 0.05,
+) -> torch.Tensor:
+    """Positive reward for clearing an approaching obstacle via calf/knee
+    flexion specifically -- the "bend the elbow" motion -- as an explicit,
+    rewarded alternative to hip abduction.
+
+    A hip-deviation penalty alone gives no signal about *which* joint should
+    take over the lifting motion instead. MuJoCo testing found the robot kept
+    using hip-swing for both the ordinary flat-ground gait and obstacle
+    crossing even once hip motion was taxed, because nothing rewarded the
+    substitute strategy directly.
+
+    Reuses ``adaptive_foot_clearance_reward``'s exact obstacle-lookahead
+    (height-scan point ``lookahead_distance`` ahead of each foot, along the
+    base's current travel direction, minus the height directly under the
+    foot) and terrain-roughness gate (so the target collapses to
+    ``natural_flex`` on flat ground, not a full high-step every stride), but
+    both the *target* and the *achieved* quantity here are calf-joint flexion
+    angle (radians), not foot world-height -- rewarding actual knee bend,
+    not clearance however it was achieved. ``obstacle_height`` (meters) is
+    converted to a unitless 0-1 ratio via ``max_obstacle_height`` before
+    scaling the radian target range, since the two are different units.
+    Swing detection reuses the same open-loop CPG gate as the other
+    foot-clearance rewards.
+
+    ``asset_cfg``: feet, FR/FL/RR/RL order (for the lookahead/roughness
+    geometry). ``calf_asset_cfg``: the matching calf joints, same order --
+    this is a per-leg reward, so the two lists must correspond 1:1.
+    """
+    robot: Articulation = env.scene[asset_cfg.name]
+    sensor = env.scene[sensor_cfg.name]
+
+    foot_ids = asset_cfg.body_ids
+    foot_pos_w = robot.data.body_pos_w[:, foot_ids, :]  # (N, F, 3)
+    foot_xy_w = foot_pos_w[:, :, :2]
+
+    ray_hits_w = sensor.data.ray_hits_w  # (N, R, 3)
+    ray_xy_w = ray_hits_w[:, :, :2]
+    ray_z_w = ray_hits_w[:, :, 2]
+    valid_rays = torch.isfinite(ray_z_w)
+    ray_z_w = torch.nan_to_num(ray_z_w, nan=-1e3, posinf=-1e3, neginf=-1e3)
+
+    def _nearest_height(query_xy: torch.Tensor) -> torch.Tensor:
+        dist = torch.norm(query_xy.unsqueeze(2) - ray_xy_w.unsqueeze(1), dim=-1)
+        dist = torch.where(valid_rays.unsqueeze(1), dist, torch.full_like(dist, 1e9))
+        nearest = dist.argmin(dim=-1)
+        return torch.gather(
+            ray_z_w.unsqueeze(1).expand(-1, query_xy.shape[1], -1), dim=2, index=nearest.unsqueeze(-1)
+        ).squeeze(-1)
+
+    local_h = _nearest_height(foot_xy_w)  # (N, F)
+
+    base_vel_xy = robot.data.root_lin_vel_w[:, :2]
+    base_speed = torch.norm(base_vel_xy, dim=1)
+    moving = (base_speed > 0.05).float().view(-1, 1, 1)
+    unit_dir = (base_vel_xy / base_speed.clamp(min=1e-3).unsqueeze(1)).unsqueeze(1)
+    ahead_xy = foot_xy_w + unit_dir * lookahead_distance * moving
+    ahead_h = _nearest_height(ahead_xy)  # (N, F)
+    obstacle_height = torch.clamp(ahead_h - local_h, min=0.0)  # (N, F), meters
+
+    z_for_max = torch.where(valid_rays, ray_z_w, torch.full_like(ray_z_w, -1e9))
+    z_for_min = torch.where(valid_rays, ray_z_w, torch.full_like(ray_z_w, 1e9))
+    roughness = (z_for_max.amax(dim=1) - z_for_min.amin(dim=1)).clamp(min=0.0)
+    roughness_gate = torch.clamp(roughness / roughness_ref, 0.0, 1.0).unsqueeze(1)  # (N, 1)
+
+    obstacle_ratio = torch.clamp(obstacle_height / max_obstacle_height, 0.0, 1.0)  # (N, F), unitless
+    target_flex = natural_flex + roughness_gate * obstacle_ratio * (max_flex - natural_flex)  # (N, F), rad
+
+    calf: Articulation = env.scene[calf_asset_cfg.name]
+    calf_ids = calf_asset_cfg.joint_ids
+    calf_flex = torch.abs(
+        calf.data.joint_pos[:, calf_ids] - calf.data.default_joint_pos[:, calf_ids]
+    )  # (N, F), rad
+
+    achieved = torch.clamp(calf_flex / target_flex.clamp(min=1e-3), 0.0, 1.0)
+
+    phases = _cpg_leg_phases_rad(env, period, offset)
+    is_swing = phases < torch.pi
+    reward = achieved * is_swing.float()
+    return torch.sum(reward, dim=-1) * valid_rays.any(dim=1).float()
+
+
 def idle_joint_vel_penalty(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg,
