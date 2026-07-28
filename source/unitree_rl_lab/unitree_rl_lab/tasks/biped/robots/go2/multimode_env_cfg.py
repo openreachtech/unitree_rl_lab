@@ -334,12 +334,17 @@ class RewardsCfg:
     )
 
     # -- other (mode-independent) --
+    # Includes the hips (unlike the single-stance biped tasks, where hip contact is a
+    # hard termination instead -- see TerminationsCfg.hip_contact_biped below): in quad
+    # mode the hips sit close to the ground by design and can graze it during ordinary
+    # exploration, so this only needs to softly discourage it there, matching the
+    # reference quadruped task's own ``undesired_contacts`` (which also includes hip).
     undesired_contacts = RewTerm(
         func=mdp.undesired_contacts,
         weight=-1.0,
         params={
             "threshold": 1.0,
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[".*_thigh", ".*_calf"]),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[".*_hip", ".*_thigh", ".*_calf"]),
         },
     )
 
@@ -349,9 +354,21 @@ class TerminationsCfg:
     """Termination terms for the MDP."""
 
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
+    # Base/trunk contact is an unambiguous fall in any mode.
     base_contact = DoneTerm(
         func=mdp.illegal_contact,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=["base", ".*_hip"]), "threshold": 1.0},
+        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=["base"]), "threshold": 1.0},
+    )
+    # Hip contact only hard-terminates in the biped modes -- see
+    # mdp.terminations.hip_contact_biped_only for why quad mode needs the softer
+    # reward-only penalty (undesired_contacts above) instead.
+    hip_contact_biped = DoneTerm(
+        func=mdp.hip_contact_biped_only,
+        params={
+            "command_name": "gait_mode",
+            "threshold": 1.0,
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_hip"),
+        },
     )
     collapsed = DoneTerm(func=mdp.root_height_below_minimum, params={"minimum_height": 0.15})
     # Hard tilt-limit termination, but only in quad mode -- biped modes need to
