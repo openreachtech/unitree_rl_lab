@@ -119,6 +119,10 @@ def export_deploy_cfg(
             term_cfg.history_length = 1
 
         # clean cfg
+        # Noise models (e.g. NoiseModelWithAdditiveBiasCfg) get their `.func` mutated in place
+        # by the observation manager into a live NoiseModel instance, which isn't serializable
+        # via to_dict() (no __name__). Drop it before converting rather than after.
+        term_cfg.noise = None
         term_cfg = term_cfg.to_dict()
         for _ in ["func", "modifiers", "noise", "flatten_history_dim"]:
             del term_cfg[_]

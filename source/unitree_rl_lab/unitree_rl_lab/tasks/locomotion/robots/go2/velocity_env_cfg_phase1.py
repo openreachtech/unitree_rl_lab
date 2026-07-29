@@ -70,5 +70,9 @@ class RobotPlayEnvCfgPhase1(RobotEnvCfgPhase1):
         self.scene.terrain.terrain_generator.num_rows = 3
         self.scene.terrain.terrain_generator.num_cols = 5
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
-        # Show the height-scan rays/hits while evaluating the noisy policy observations.
-        self.scene.height_scanner.debug_vis = True
+        # Raw ray-hit markers (red) show true sensor geometry, never the noise applied
+        # downstream to the policy's observation -- off so only the noisy overlay is visible.
+        self.scene.height_scanner.debug_vis = False
+        # Temporary: overlay a noisy-height sample (orange) so the configured height-scan
+        # noise applied to the policy's observation is visible in the viewport.
+        self.observations.policy.height_scan.params["debug_vis_noise"] = True

@@ -79,6 +79,57 @@ def _visualize_excluded_height_scan_points(
     sensor._excluded_body_visualizer.visualize(translations=positions)
 
 
+def _visualize_noisy_height_scan_points(
+    sensor,
+    keep_indices: torch.Tensor,
+    per_step_std: float,
+    bias_std: float,
+    env_index: int,
+) -> None:
+    """Overlay a noisy height-scan sample so the observation noise magnitude is visible.
+
+    Sampled independently here (fresh per-step draw + a bias resampled every ~200 calls as
+    a stand-in for a per-episode reset), rather than reading back the actual noise applied by
+    the observation manager's ``NoiseModelWithAdditiveBias`` -- that state lives inside the
+    manager's noise model instance, not per-cell here. So this is representative of the
+    configured noise distribution, not bit-identical to what the policy network receives on
+    a given step.
+    """
+    import isaaclab.sim as sim_utils
+    from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+
+    if not hasattr(sensor, "_noisy_height_visualizer"):
+        marker_cfg = VisualizationMarkersCfg(
+            prim_path="/Visuals/Go2HeightScan/NoisyPreview",
+            markers={
+                "noisy_point": sim_utils.SphereCfg(
+                    radius=0.015,
+                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.5, 0.0)),
+                )
+            },
+        )
+        sensor._noisy_height_visualizer = VisualizationMarkers(marker_cfg)
+        sensor._noisy_height_bias = 0.0
+        sensor._noisy_height_bias_counter = 0
+
+    env_index = min(max(env_index, 0), sensor.data.ray_hits_w.shape[0] - 1)
+    positions = sensor.data.ray_hits_w[env_index].index_select(0, keep_indices).clone()
+    finite = torch.isfinite(positions).all(dim=-1)
+    positions = positions[finite]
+    if positions.shape[0] == 0:
+        return
+
+    if sensor._noisy_height_bias_counter % 200 == 0:
+        sensor._noisy_height_bias = float(torch.randn(1).item()) * bias_std
+    sensor._noisy_height_bias_counter += 1
+
+    per_step_noise = torch.randn(positions.shape[0], device=positions.device) * per_step_std
+    total_noise = per_step_noise + sensor._noisy_height_bias
+    # heights = pos_w.z - ray_hit.z - offset, so a +noise on heights == -noise on ray_hit.z.
+    positions[:, 2] -= total_noise
+    sensor._noisy_height_visualizer.visualize(translations=positions)
+
+
 def height_scan_excluding_body(
     env: ManagerBasedRLEnv,
     sensor_cfg: SceneEntityCfg,
@@ -90,6 +141,9 @@ def height_scan_excluding_body(
     exclude_half_extent_y: float = 0.15,
     debug_vis_excluded_body: bool = False,
     debug_vis_env_index: int = 0,
+    debug_vis_noise: bool = False,
+    debug_vis_noise_std: float = 0.071,
+    debug_vis_noise_bias_std: float = 0.05,
 ) -> torch.Tensor:
     """Height scan with cells under the robot body removed from the observation.
 
@@ -116,4 +170,8 @@ def height_scan_excluding_body(
     # overlay is visible on its own instead of buried among the full raw grid's markers.
     if debug_vis_excluded_body:
         _visualize_excluded_height_scan_points(sensor, excluded_indices, debug_vis_env_index)
+    if debug_vis_noise:
+        _visualize_noisy_height_scan_points(
+            sensor, keep_indices, debug_vis_noise_std, debug_vis_noise_bias_std, debug_vis_env_index
+        )
     return heights.index_select(1, keep_indices)
