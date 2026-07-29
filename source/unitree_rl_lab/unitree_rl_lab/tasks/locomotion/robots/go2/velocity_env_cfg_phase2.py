@@ -168,7 +168,12 @@ class RobotPlayEnvCfgPhase2(RobotEnvCfgPhase2):
         super().__post_init__()
         self.scene.num_envs = 32
         self.scene.terrain.terrain_generator.num_rows = 5
-        self.scene.terrain.terrain_generator.num_cols = 3
+        self.scene.terrain.terrain_generator.num_cols = 1
+        # Boxes only, one row per difficulty level (0..1 over 5 rows), so play mode
+        # shows just the box-climbing terrain instead of the full flat/rough/box mix.
+        self.scene.terrain.terrain_generator.sub_terrains = {
+            "boxes": PHASE2_TERRAIN_CFG.sub_terrains["boxes"].replace(proportion=1.0),
+        }
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
         # Raw ray-hit markers (red) show true sensor geometry, never the noise applied
         # downstream to the policy's observation -- off so only the noisy overlay is visible.
