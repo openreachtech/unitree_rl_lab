@@ -3,7 +3,7 @@ import gymnasium as gym
 from . import sandbox  # noqa: F401
 
 gym.register(
-    id="Unitree-Go2-Biped",
+    id="Go2-Biped",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
@@ -14,7 +14,7 @@ gym.register(
 )
 
 gym.register(
-    id="Unitree-Go2-Biped-Front",
+    id="Go2-Biped-Front",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
@@ -25,7 +25,7 @@ gym.register(
 )
 
 gym.register(
-    id="Unitree-Go2-Multimode",
+    id="Go2-Multimode",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={

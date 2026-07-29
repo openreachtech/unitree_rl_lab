@@ -4,8 +4,9 @@ Script to print all the available environments in Isaac Lab.
 The script iterates over all registered environments and stores the details in a table.
 It prints the name of the environment, the entry point and the config file.
 
-All the environments are registered in the `unitree_rl_lab` extension. They start
-with `Unitree` in their name.
+All the environments are registered in the `unitree_rl_lab` extension. Discovery
+here filters by `env_cfg_entry_point` module prefix, not by task ID naming --
+not every task ID starts with `Unitree`.
 """
 
 """Launch Isaac Sim Simulator first."""
