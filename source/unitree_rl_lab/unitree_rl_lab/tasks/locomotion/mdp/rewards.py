@@ -623,6 +623,11 @@ def calf_flexion_clearance_reward(
     Swing detection reuses the same open-loop CPG gate as the other
     foot-clearance rewards.
 
+    Only rewards flexion in the direction that actually lifts the foot (calf
+    joint angle decreasing below its default, for Go2's convention) -- not
+    absolute deviation, which would also pay for straightening the leg past
+    default.
+
     ``asset_cfg``: feet, FR/FL/RR/RL order (for the lookahead/roughness
     geometry). ``calf_asset_cfg``: the matching calf joints, same order --
     this is a per-leg reward, so the two lists must correspond 1:1.
@@ -668,8 +673,12 @@ def calf_flexion_clearance_reward(
 
     calf: Articulation = env.scene[calf_asset_cfg.name]
     calf_ids = calf_asset_cfg.joint_ids
-    calf_flex = torch.abs(
-        calf.data.joint_pos[:, calf_ids] - calf.data.default_joint_pos[:, calf_ids]
+    # Go2's calf joint angle *decreases* (more negative) as the knee bends/flexes
+    # further -- that's the direction that actually lifts the foot. Using
+    # torch.abs() here would also reward straightening the leg past default,
+    # which doesn't clear anything; clamp to only the flexing direction.
+    calf_flex = torch.clamp(
+        calf.data.default_joint_pos[:, calf_ids] - calf.data.joint_pos[:, calf_ids], min=0.0
     )  # (N, F), rad
 
     achieved = torch.clamp(calf_flex / target_flex.clamp(min=1e-3), 0.0, 1.0)

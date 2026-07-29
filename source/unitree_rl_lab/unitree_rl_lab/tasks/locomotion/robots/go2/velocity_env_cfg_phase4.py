@@ -106,12 +106,31 @@ class RobotSceneCfgPhase4(RobotSceneCfgPhase3Balance):
 # A further try (flat_orientation_l2/base_linear_velocity tightened toward
 # Phase3's own values, for a still-more-natural flat gait) made things worse
 # and was not promoted -- left at RewardsCfgPhase3BalanceFloating's values.
+#
+# Second fix, promoted from sandbox/try1.py: MuJoCo testing found the robot
+# would hit its legs (thigh/calf/hip) on the wall while crossing. undesired_contacts
+# already penalizes exactly this (any contact force > 1N on Head_.*/.*_hip/
+# .*_thigh/.*_calf) but had been relaxed all the way down the Phase3 lineage
+# to -0.3 (from the Go2 default -1.0) specifically so the robot could "brush
+# stair edges" without heavy penalty while climbing -- Phase4 inherited that
+# unchanged even though walls (thin, max 0.25m) don't need the same brushing
+# tolerance. Restored to the Go2 default -1.0; MuJoCo confirmed legs no
+# longer hit the wall.
+#
+# Trade-off: terrain_levels settled at a stable ~3.9 after 5000 iterations
+# (peaked at 5.02 early, dipped to ~3.5 as the stricter penalty took hold,
+# partially recovered), down from 6.3+ on the contact-tolerant version this
+# replaced. A follow-up try (undesired_contacts eased to -0.6 + calf_flexion_clearance's
+# max_flex raised 0.4->0.6 rad, aiming to recover terrain_levels) tested
+# worse in MuJoCo and was not promoted.
 # =============================================================================
 
 
 @configclass
 class RewardsCfgPhase4(RewardsCfgPhase3BalanceFloating):
     joint_pos = RewardsCfgPhase3BalanceFloating().joint_pos.replace(weight=-0.7)
+
+    undesired_contacts = RewardsCfgPhase3BalanceFloating().undesired_contacts.replace(weight=-1.0)
 
     joint_deviation_hips = RewTerm(
         func=mdp.joint_deviation_swing_gated_l1,
