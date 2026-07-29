@@ -145,6 +145,11 @@ class UnitreeActuatorCfg_Go2HV(UnitreeActuatorCfg):
     Y1 = 20.2
     Y2 = 23.4
 
+    # Empirical standard for Unitree's GO-M8010-6 actuator (6.33:1 reduction), used across
+    # all of Go2's hip/thigh/calf joints. Previously unset (defaulting to 0), which is not
+    # physically plausible for any real geared motor -- every sibling actuator class in this
+    # file (M107_15, M107_24, N7520_*, N5010_16, N5020_16, W4010_25) has an explicit,
+    # physically-derived armature; Go2HV was the one exception.
     armature = 0.0122
 
 
