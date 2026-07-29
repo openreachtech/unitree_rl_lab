@@ -70,6 +70,5 @@ class RobotPlayEnvCfgPhase1(RobotEnvCfgPhase1):
         self.scene.terrain.terrain_generator.num_rows = 3
         self.scene.terrain.terrain_generator.num_cols = 5
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
-        # Raw grid markers duplicate the magenta excluded-cell overlay and hide its shape.
-        # Off here so only the exclusion coverage is visible; flip back on to see the full grid.
-        self.scene.height_scanner.debug_vis = False
+        # Show the height-scan rays/hits while evaluating the noisy policy observations.
+        self.scene.height_scanner.debug_vis = True

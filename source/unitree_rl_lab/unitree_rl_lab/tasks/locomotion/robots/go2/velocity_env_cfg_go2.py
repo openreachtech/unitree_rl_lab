@@ -114,11 +114,11 @@ POLICY_HEIGHT_SCAN_CFG = ObsTerm(
     # Per-foot noise and intermittent outlier injection (also in the paper)
     # aren't included -- both are structurally tied to per-foot height
     # samples, which this body-centered grid doesn't have.
-    # noise=NoiseModelWithAdditiveBiasCfg(
-    #     noise_cfg=GaussianNoiseCfg(mean=0.0, std=0.071),
-    #     bias_noise_cfg=GaussianNoiseCfg(mean=0.0, std=0.05),
-    #     sample_bias_per_component=False,
-    # ),
+    noise=NoiseModelWithAdditiveBiasCfg(
+        noise_cfg=GaussianNoiseCfg(mean=0.0, std=0.071),
+        bias_noise_cfg=GaussianNoiseCfg(mean=0.0, std=0.05),
+        sample_bias_per_component=False,
+    ),
     history_length=0,
 )
 
