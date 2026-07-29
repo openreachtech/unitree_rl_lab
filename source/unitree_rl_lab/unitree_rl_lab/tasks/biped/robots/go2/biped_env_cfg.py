@@ -43,6 +43,8 @@ from unitree_rl_lab.tasks.biped.agents.rsl_rl_ppo_cfg import PROPRIO_HISTORY_LEN
 # Front legs swing/tuck (lifted); hind legs are the stance/support legs.
 FRONT_CALF_JOINT_NAMES = ["FR_calf_joint", "FL_calf_joint"]
 STANCE_FOOT_NAMES = ["RR_foot", "RL_foot"]
+FRONT_FOOT_NAMES = ["FR_foot", "FL_foot"]
+ALL_FOOT_NAMES = [".*_foot"]
 
 # Well above Go2's normal quadruped stance height (~0.32-0.34 m), so this term
 # pulls the robot to rise up onto its hind legs. Matches the reference's
@@ -69,7 +71,7 @@ class RobotSceneCfg(InteractiveSceneCfg):
     )
     robot: ArticulationCfg = ROBOT_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
-    contact_forces = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=False)
+    contact_forces = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True)
 
     sky_light = AssetBaseCfg(
         prim_path="/World/skyLight",
@@ -157,7 +159,7 @@ class CommandsCfg:
         heading_command=False,
         debug_vis=True,
         ranges=mdp.UniformVelocityCommandCfg.Ranges(
-            lin_vel_x=(-0.4, 0.4), lin_vel_y=(-0.2, 0.2), ang_vel_z=(-0.4, 0.4)
+            lin_vel_x=(-1.0, 1.0), lin_vel_y=(-0.5, 0.5), ang_vel_z=(-1.0, 1.0)
         ),
     )
 
@@ -335,9 +337,18 @@ class RewardsCfg:
     )
 
     # -- CoM-CoP balance (TumblerNet); stance = hind feet --
+    # Weights relaxed from the naive paper-derived starting point (-0.3/-0.01/-0.5)
+    # down to the reference's own actual validated config (outputs/random_dog/Imi/
+    # test_reward/train_cfg_robot.py, paired with a real deployed rear-leg-biped
+    # checkpoint): inv_pendulum -0.1, inv_pendulum_acc -0.0001, cart_table_len_xy
+    # -0.1. Real single-hind-leg-support walking necessarily involves CoM-CoP
+    # swing; the original weights over-penalized it relative to what actually
+    # worked on hardware, biasing PPO toward a static, balanced freeze instead of
+    # a dynamic gait (sandbox try1 confirmed this: near-max tilt_reward but the
+    # robot only ever lifted one leg and froze).
     pendulum_angle = RewTerm(
         func=mdp.pendulum_angle_penalty,
-        weight=-0.3,
+        weight=-0.1,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=STANCE_FOOT_NAMES),
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=STANCE_FOOT_NAMES),
@@ -345,7 +356,7 @@ class RewardsCfg:
     )
     pendulum_instability = RewTerm(
         func=mdp.pendulum_instability_penalty,
-        weight=-0.01,
+        weight=-0.0001,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=STANCE_FOOT_NAMES),
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=STANCE_FOOT_NAMES),
@@ -353,7 +364,7 @@ class RewardsCfg:
     )
     handle_length = RewTerm(
         func=mdp.handle_length_penalty,
-        weight=-0.5,
+        weight=-0.1,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=STANCE_FOOT_NAMES),
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=STANCE_FOOT_NAMES),
@@ -375,6 +386,37 @@ class RewardsCfg:
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[".*_thigh", ".*_calf"]),
         },
     )
+
+    # -- bipedal encouragement (TumblerNet r4): actually get the front feet off
+    # the ground and walking, not just leaning -- neither is substituted by the
+    # front_hip/thigh/calf_motion joint-deviation terms above (a different,
+    # smoothness-group mechanism in the reference). Ported from sandbox try2/
+    # try6 after finding these two terms entirely missing was why earlier
+    # attempts either stayed flat (tilt_reward alone, no lift) or lifted one leg
+    # and froze (tilt_reward increased, still no force/air-time incentive).
+    front_contact_force = RewTerm(
+        func=mdp.front_foot_contact_force,
+        weight=-0.6,
+        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=FRONT_FOOT_NAMES)},
+    )
+    feet_air_time = RewTerm(
+        func=mdp.feet_air_time_reward,
+        weight=1.0,
+        params={
+            "command_name": "base_velocity",
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=ALL_FOOT_NAMES),
+            "threshold": 0.5,
+        },
+    )
+    # Isaac Lab's RewardManager sums weighted terms with no clamp (unlike the
+    # reference, which sets `only_positive_rewards=True` to clip each step's
+    # total reward to >= 0). Without this, front_contact_force alone made
+    # ending the episode immediately cheaper than enduring ~1000 steps of it --
+    # confirmed empirically (sandbox try2/try4: every episode collapsed to ~5-8
+    # steps within 100 iterations). This counteracts that regardless of which
+    # term would otherwise make death attractive. Weight matches isaaclab_tasks'
+    # own h1/g1/cassie rough_env_cfg.py (all -200.0, all sharing our step_dt).
+    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
 
 
 @configclass

@@ -1,5 +1,7 @@
 import gymnasium as gym
 
+from . import sandbox  # noqa: F401
+
 gym.register(
     id="Unitree-Go2-Biped",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",

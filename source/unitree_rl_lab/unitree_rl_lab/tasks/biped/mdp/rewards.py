@@ -259,3 +259,51 @@ def mode_gated_joint_position_penalty(
 
     is_quad = _mode_ids(env, command_name) == MODE_QUAD
     return torch.where(is_quad, reward, torch.zeros_like(reward))
+
+
+def front_foot_contact_force(
+    env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, threshold: float = 1.0
+) -> torch.Tensor:
+    """Count of front feet currently in ground contact above ``threshold``.
+
+    Fills the TumblerNet paper's r4 front-foot contact-force term (Xiao et al.
+    2025). The reference's own implementation uses raw continuous force
+    magnitude, which only works there because that codebase sets
+    `only_positive_rewards=True` (clips each step's *total* reward to >= 0,
+    capping how much any one term can dominate). Isaac Lab's RewardManager has
+    no such clamp: at raw-force scale this term dominated the whole reward sum
+    over a 1000-step episode and made ending the episode early cheaper than
+    enduring it (confirmed empirically -- every episode collapsed to ~5-8
+    steps within 100 iterations, regardless of the CoM-CoP penalty weights).
+
+    Reworked to a bounded 0/1-per-foot threshold count, matching every other
+    contact reward/termination in this codebase (`undesired_contacts`,
+    `illegal_contact`, `pendulum_angle_penalty`, etc.).
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    forces = contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids, :]
+    in_contact = torch.norm(forces, dim=-1) > threshold
+    return torch.sum(in_contact.float(), dim=1)
+
+
+def feet_air_time_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    threshold: float = 0.5,
+) -> torch.Tensor:
+    """Reward proper step cadence; zero reward (not just no penalty) for standing still.
+
+    Reference: `_reward_feet_air_time` in the TumblerNet reference's
+    legged_gym/envs/base/legged_robot.py. Rewards `(air_time - threshold)` at
+    the moment each tracked foot makes a new contact after time in the air,
+    summed over feet, gated to zero when the commanded velocity is ~zero.
+    Requires `track_air_time=True` on the contact sensor.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    first_contact = contact_sensor.compute_first_contact(env.step_dt)[:, sensor_cfg.body_ids]
+    last_air_time = contact_sensor.data.last_air_time[:, sensor_cfg.body_ids]
+    reward = torch.sum((last_air_time - threshold) * first_contact, dim=1)
+    cmd = env.command_manager.get_command(command_name)
+    reward = reward * (torch.norm(cmd[:, :2], dim=1) > 0.1)
+    return reward
