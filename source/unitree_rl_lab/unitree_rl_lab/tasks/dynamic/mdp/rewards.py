@@ -5,6 +5,7 @@ import math
 import torch
 from isaaclab.assets import Articulation
 from isaaclab.managers import SceneEntityCfg
+from isaaclab.sensors import ContactSensor
 
 
 def upright_reward(
@@ -162,6 +163,38 @@ def motion_progress_standing_reward(
     joint_error = torch.sum(torch.square(asset.data.joint_pos - asset.data.default_joint_pos), dim=1)
     pose_term = torch.exp(-joint_error / joint_scale)
     return task_progress * (height_term + pose_term)
+
+
+def landing_impact_penalty(
+    env,
+    command_name: str = "jump",
+    sensor_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=".*_foot"),
+    landing_window: float = 0.05,
+    force_scale: float = 100.0,
+) -> torch.Tensor:
+    """Penalize hard-touchdown foot contact forces right after a commanded jump/flip.
+
+    ``motion_progress_standing_reward`` only rewards the pose/height *after* landing,
+    with nothing discouraging a landing that gets there via a hard slam -- a policy
+    that looks fine in rigid-body sim can still produce a real-world touchdown force
+    well past what the robot's onboard safety cutoff tolerates. Gated to freshly
+    touched-down feet (``current_contact_time`` within ``landing_window`` of zero) so
+    it doesn't penalize normal standing/idle contact or the push-off itself, which is
+    one continuous contact from before ``trigger_step`` and never resets to zero.
+    """
+    command = env.command_manager.get_term(command_name)
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+
+    current_contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
+    just_landed = (current_contact_time > 0.0) & (current_contact_time <= landing_window)
+
+    forces = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :]
+    peak_force = torch.norm(forces, dim=-1).amax(dim=1)  # (N, num_feet) peak over the force history
+
+    impact = torch.where(just_landed, peak_force, torch.zeros_like(peak_force)).amax(dim=1)
+
+    attempted = command.trigger_step >= 0
+    return torch.square(impact / force_scale) * attempted.float()
 
 
 def non_target_angular_velocity_penalty(
