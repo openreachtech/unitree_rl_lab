@@ -113,3 +113,31 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{__name__}.velocity_env_cfg_go2:TeacherPPORunnerCfg",
     },
 )
+
+# Belief-encoder student distillation, split the way the paper schedules it
+# (see velocity_env_cfg_student.py): flat terrain and a clean height scan first,
+# then the deployment terrain mix with the height-scan noise ramping in.
+# Phase1 distills the Phase4 teacher; Phase2 continues from the Phase1 student:
+#   --task Go2-v3-Student-Phase1 --resume --previous-task Go2-v3-Phase4
+#   --task Go2-v3-Student-Phase2 --resume --previous-task Go2-v3-Student-Phase1
+gym.register(
+    id="Go2-v3-Student-Phase1",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_student:RobotEnvCfgStudentPhase1",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_student:RobotPlayEnvCfgStudentPhase1",
+        "rsl_rl_cfg_entry_point": f"{__name__}.velocity_env_cfg_go2:StudentDistillationRunnerCfg",
+    },
+)
+
+gym.register(
+    id="Go2-v3-Student-Phase2",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_student:RobotEnvCfgStudentPhase2",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_student:RobotPlayEnvCfgStudentPhase2",
+        "rsl_rl_cfg_entry_point": f"{__name__}.velocity_env_cfg_go2:StudentDistillationRunnerCfg",
+    },
+)
