@@ -506,6 +506,64 @@ def feet_gait(
     return reward
 
 
+def gait_tracking_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    sensor_cfg: SceneEntityCfg,
+    command_name: str = "gait_command",
+    kappa: float = 6.0,
+    force_scale: float = 0.01,
+) -> torch.Tensor:
+    """Command-conditioned gait tracking (Margolis & Agrawal, "Walk These Ways", 2022).
+
+    ``command_name`` names a :class:`~unitree_rl_lab.tasks.locomotion.mdp.GaitCommand` term,
+    which supplies a target frequency/phase-offset/duty-cycle per env. Rather than a hard 0/1
+    stance/swing split, the "should this foot be planted right now" state is a smooth function
+    of phase -- a von Mises stance/swing ratio, which collapses to the closed form
+    ``sigmoid(2*kappa*cos(phase))`` -- so gradient stays informative through the transition
+    instead of being flat almost everywhere. The raw per-foot phase is first duty-cycle-warped
+    so the commanded stance fraction (not always 50/50) maps onto that closed form.
+
+    Feet that are in contact are penalized for horizontal slip in proportion to how strongly
+    they're expected to be planted (``p_stance``), and penalized on contact force in proportion
+    to how strongly they're expected to have already lifted off (``1 - p_stance``) -- i.e.
+    lingering ground contact past the commanded liftoff time costs more the later it happens.
+    Both terms are gated on actual contact: a foot that is correctly airborne during its
+    expected swing window costs nothing.
+
+    ``asset_cfg``/``sensor_cfg`` must list feet in ``[FL, FR, RL, RR]`` order, matching
+    ``GaitCommand``'s leg ordering (FL is its phase-0 reference leg) -- note this is the
+    opposite convention from ``stair_commit_reward``/``adaptive_foot_clearance_reward``, which
+    want front-pair-first ``[FR, FL, RR, RL]``.
+    """
+    gait_term = env.command_manager.get_term(command_name)
+    phases = gait_term.leg_phases()  # (N, 4), in [0, 1)
+    duty = gait_term.duty_cycle().unsqueeze(1).clamp(min=0.05, max=0.95)  # (N, 1)
+
+    # Warp phase so commanded stance spans [0, pi) and swing spans [pi, 2pi), each rescaled by
+    # the duty cycle instead of a fixed 50/50 split.
+    in_stance = phases < duty
+    warped = torch.where(
+        in_stance,
+        (phases / duty) * torch.pi,
+        torch.pi + ((phases - duty) / (1.0 - duty)) * torch.pi,
+    )
+    p_stance = torch.sigmoid(2.0 * kappa * torch.cos(warped))  # (N, 4)
+
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    is_contact = (
+        contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :].norm(dim=-1).max(dim=1)[0] > 1.0
+    )  # (N, 4)
+    contact_force = contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids, :].norm(dim=-1)  # (N, 4)
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    foot_speed = asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2].norm(dim=-1)  # (N, 4)
+
+    stance_slip = p_stance * is_contact.float() * foot_speed
+    lingering_contact = (1.0 - p_stance) * is_contact.float() * contact_force * force_scale
+    return torch.sum(stance_slip + lingering_contact, dim=-1)
+
+
 """
 Other rewards.
 """

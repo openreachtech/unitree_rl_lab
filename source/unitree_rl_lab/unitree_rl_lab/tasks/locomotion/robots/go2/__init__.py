@@ -84,6 +84,30 @@ gym.register(
     },
 )
 
+gym.register(
+    id="Go2-Run",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_run:RobotEnvCfgGo2Run",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_run:RobotPlayEnvCfgGo2Run",
+        "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
+    },
+)
+
+# Same as Go2-Run, but gait_command is narrowed to a jitter band around the rotary gallop
+# instead of covering the full trot/pace/bound/gallop space -- a policy specialized on one gait.
+gym.register(
+    id="Go2-Gallop",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_run:RobotEnvCfgGo2GallopRotary",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_run:RobotPlayEnvCfgGo2GallopRotary",
+        "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
+    },
+)
+
 # Continual learning on top of Phase3-balance-floating: dedicated terrain mix
 # for stepping over short free-standing walls (10% flat, 90% thin_wall --
 # height 0.05 -> 0.25 m and thickness 0.15 -> 0.03 m, both narrowing/rising

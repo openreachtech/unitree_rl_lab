@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import torch
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
@@ -97,3 +99,77 @@ def custom_terrain_levels_climb(
     move_down = (distance < 0.5) & (~move_up)
     terrain.update_env_origins(env_ids, move_up, move_down)
     return torch.mean(terrain.terrain_levels.float())
+
+
+def _save_tow_assist_state(command) -> None:
+    """Persist the tow-assist EFGCL curriculum state so it survives a training restart."""
+    if command.cfg.state_file is None:
+        return
+    state = {
+        "assist_scale": command.assist_scale,
+        "curriculum_success_rate": command.curriculum_success_rate,
+        "curriculum_episode_count": command.curriculum_episode_count,
+        "curriculum_success_count": command.curriculum_success_count,
+    }
+    os.makedirs(os.path.dirname(command.cfg.state_file), exist_ok=True)
+    tmp_path = command.cfg.state_file + ".tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(state, f)
+    os.replace(tmp_path, command.cfg.state_file)
+
+
+def tow_assist_decay(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    tow_command_name: str = "tow_assist",
+    velocity_command_name: str = "base_velocity",
+    error_threshold: float = 0.4,
+    success_threshold: float = 0.6,
+    decay_step: float = 0.01,
+    minimum_episodes: int = 1024,
+    min_episode_duration_s: float = 2.0,
+) -> torch.Tensor:
+    """EFGCL-style success-rate-gated decay of :class:`TowAssistCommand`'s assist force,
+    following the same ``assist_scale = max(0, assist_scale - decay_step)`` schedule used for
+    the jump/backflip/sideflip assist (see ``feat/jump``'s ``assist_force_decay``), but
+    triggered by continuous velocity-tracking success instead of a one-shot landing check.
+
+    Reuses ``velocity_command_name``'s own per-env running tracking-error metric
+    (``UniformVelocityCommand._update_metrics`` accumulates this every step and it is only
+    reset -- by ``CommandManager.reset()`` -- *after* the curriculum manager's ``compute()``
+    runs for the same ``env_ids``, so it is still valid here) rather than duplicating that
+    bookkeeping inside the tow-assist command itself.
+
+    That metric is a running sum pre-divided by a *fixed* window
+    (``resampling_time_range[1] / step_dt``), meant to approximate a mean error over a full
+    command window -- but an episode that ends after only a few steps (e.g. the robot falls
+    almost immediately) has barely accumulated anything, so it reads as a tiny, "good" error
+    regardless of how badly tracking actually went. Left uncorrected, early failures under a
+    random initial policy get miscounted as tracking successes, decaying the assist force
+    before it's earned (confirmed via smoke test: assist_scale dropped from 1.0 to ~0.95
+    within 3 iterations). Episodes shorter than ``min_episode_duration_s`` are still counted
+    toward ``curriculum_episode_count`` (a fall is a real failure, not a no-op) but are never
+    counted as a success, regardless of what the under-accumulated metric reads.
+    """
+    tow_command = env.command_manager.get_term(tow_command_name)
+    if len(env_ids) == 0:
+        return torch.tensor(tow_command.assist_scale, device=env.device)
+
+    tracking_error = env.command_manager.get_term(velocity_command_name).metrics["error_vel_xy"][env_ids]
+    elapsed_s = env.episode_length_buf[env_ids].float() * env.step_dt
+    ran_long_enough = elapsed_s >= min_episode_duration_s
+    successes = int(((tracking_error < error_threshold) & ran_long_enough).sum().item())
+
+    tow_command.curriculum_episode_count += len(env_ids)
+    tow_command.curriculum_success_count += successes
+
+    if tow_command.curriculum_episode_count >= minimum_episodes:
+        success_rate = tow_command.curriculum_success_count / tow_command.curriculum_episode_count
+        tow_command.curriculum_success_rate = success_rate
+        if success_rate >= success_threshold:
+            tow_command.assist_scale = max(0.0, tow_command.assist_scale - decay_step)
+        tow_command.curriculum_episode_count = 0
+        tow_command.curriculum_success_count = 0
+        _save_tow_assist_state(tow_command)
+
+    return torch.tensor(tow_command.assist_scale, device=env.device)
