@@ -155,6 +155,7 @@ from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 import unitree_rl_lab.tasks  # noqa: F401
+from unitree_rl_lab.assets.models.biped_actor import BipedPolicy, BipedPolicyJitExporter, BipedPolicyOnnxExporter
 from unitree_rl_lab.utils.export_deploy_cfg import export_deploy_cfg
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -281,8 +282,19 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             normalizer = None
 
         export_model_dir = os.path.join(log_dir, "exported")
-        export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
-        export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
+        if isinstance(getattr(policy_nn, "actor", None), BipedPolicy):
+            # BipedPolicy fuses the estimator's output internally and returns a dict, so it
+            # can't go through the generic exporters (they assume a plain nn.Sequential
+            # actor with tensor-in/tensor-out forward). Use the dedicated wrappers instead.
+            BipedPolicyJitExporter(policy_nn.actor, normalizer=normalizer).export(
+                export_model_dir, filename="policy.pt"
+            )
+            BipedPolicyOnnxExporter(policy_nn.actor, normalizer=normalizer).export(
+                export_model_dir, filename="policy.onnx"
+            )
+        else:
+            export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
+            export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
         print(f"[INFO] Exported final policy to: {export_model_dir}")
 
     # close the simulator
