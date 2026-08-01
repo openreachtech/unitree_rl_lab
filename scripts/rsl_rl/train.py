@@ -8,19 +8,17 @@
 """Launch Isaac Sim Simulator first."""
 
 
-import gymnasium as gym
 import pathlib
 import sys
 
 sys.path.insert(0, f"{pathlib.Path(__file__).parent.parent}")
-from list_envs import import_packages  # noqa: F401
+# Importing list_envs also registers this repo's environments as a side effect,
+# which is what populates the task list below.
+from list_envs import get_task_ids
 
 sys.path.pop(0)
 
-tasks = []
-for task_spec in gym.registry.values():
-    if "Unitree" in task_spec.id and "Isaac" not in task_spec.id:
-        tasks.append(task_spec.id)
+tasks = get_task_ids()
 
 import argparse
 

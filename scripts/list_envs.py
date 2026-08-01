@@ -4,8 +4,8 @@ Script to print all the available environments in Isaac Lab.
 The script iterates over all registered environments and stores the details in a table.
 It prints the name of the environment, the entry point and the config file.
 
-All the environments are registered in the `unitree_rl_lab` extension. They start
-with `Unitree` in their name.
+All the environments are registered in the `unitree_rl_lab` extension. Their task
+IDs are recognised by the prefixes in `TASK_ID_PREFIXES`.
 """
 
 """Launch Isaac Sim Simulator first."""
@@ -72,6 +72,17 @@ import_packages()
 import gymnasium as gym
 from prettytable import PrettyTable
 
+# The gym registry also holds gymnasium's own environments and the isaaclab_tasks
+# ones (several of which contain "Unitree" in their name), and our task IDs share
+# no single common prefix, so the accepted prefixes are enumerated here. train.py
+# imports get_task_ids() so that renaming a task only needs a change in one place.
+TASK_ID_PREFIXES = ("Unitree-", "Go2W-")
+
+
+def get_task_ids() -> list[str]:
+    """Task IDs registered by this repo, in registration order."""
+    return [spec.id for spec in gym.registry.values() if spec.id.startswith(TASK_ID_PREFIXES)]
+
 
 def main():
     """Print all environments registered in `unitree_rl_lab` extension."""
@@ -83,15 +94,9 @@ def main():
     table.align["Entry Point"] = "l"
     table.align["Config"] = "l"
 
-    # count of environments
-    index = 0
-    # acquire all Isaac environments names
-    for task_spec in gym.registry.values():
-        if "Unitree" in task_spec.id and "Isaac" not in task_spec.id:
-            # add details to table
-            table.add_row([index + 1, task_spec.id, task_spec.entry_point, task_spec.kwargs["env_cfg_entry_point"]])
-            # increment count
-            index += 1
+    for index, task_id in enumerate(get_task_ids()):
+        task_spec = gym.registry[task_id]
+        table.add_row([index + 1, task_spec.id, task_spec.entry_point, task_spec.kwargs["env_cfg_entry_point"]])
 
     print(table)
 

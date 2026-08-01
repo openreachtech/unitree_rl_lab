@@ -1,7 +1,7 @@
 import gymnasium as gym
 
 gym.register(
-    id="Unitree-Go2W-Velocity-v1-Phase1",
+    id="Go2W-v1-Phase1",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
@@ -12,7 +12,7 @@ gym.register(
 )
 
 gym.register(
-    id="Unitree-Go2W-Velocity-v1-Phase2",
+    id="Go2W-v1-Phase2",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
