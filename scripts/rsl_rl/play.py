@@ -150,7 +150,8 @@ def main():
     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
     from unitree_rl_lab.assets.models.modules.student_teacher import StudentTeacher
 
-    if isinstance(policy_nn, StudentTeacher):
+    is_student_teacher = isinstance(policy_nn, StudentTeacher)
+    if is_student_teacher:
         # StudentPolicy is a single fused module (extero encoder -> belief GRU+attention ->
         # base net); it doesn't decompose into isaaclab_rl's generic `memory.rnn` + stateless
         # MLP split, so it needs its own export path (see StudentPolicyJitExporter docstring).
@@ -168,6 +169,15 @@ def main():
 
     dt = env.unwrapped.step_dt
 
+    # StudentPolicy skips the belief decoder during normal rollouts (act_inference's
+    # use_decoder defaults False -- the reconstruction is only needed for the
+    # distillation loss). Play wants to see it, so re-run this env step's forward with
+    # use_decoder=True instead of the generic `policy(obs)` and draw the result as
+    # yellow markers (see HeightScanExcludingBodyNoisy.visualize_estimate).
+    noise_term = None
+    if is_student_teacher and "height_scanner" in env.unwrapped.scene.sensors:
+        noise_term = getattr(env.unwrapped.scene.sensors["height_scanner"], "_height_scan_noise_term", None)
+
     # reset environment
     obs = env.get_observations()
     if version("rsl-rl-lib").startswith("2.3."):
@@ -179,7 +189,11 @@ def main():
         # run everything in inference mode
         with torch.inference_mode():
             # agent stepping
-            actions = policy(obs)
+            if noise_term is not None:
+                actions, estimated_extero = policy_nn.act_inference(obs, use_decoder=True)
+                noise_term.visualize_estimate(env.unwrapped, estimated_extero)
+            else:
+                actions = policy(obs)
             # env stepping
             obs, _, _, _ = env.step(actions)
         if args_cli.video:

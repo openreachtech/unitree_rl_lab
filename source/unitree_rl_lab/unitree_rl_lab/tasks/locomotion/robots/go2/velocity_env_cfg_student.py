@@ -53,9 +53,9 @@ from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_phase4 import (
 # ---------------------------------------------------------------------------
 # Noise schedule. The only two numbers to touch when re-timing the ramp.
 # ---------------------------------------------------------------------------
-NOISE_START_ITERATION = 500
+NOISE_START_ITERATION = 100
 """Phase 2 iterations with a clean height scan before any noise is added."""
-NOISE_FULL_ITERATION = 1000
+NOISE_FULL_ITERATION = 500
 """Phase 2 iteration at which the conditions below reach full magnitude."""
 
 # Iterations are derived from env steps, so this has to track the runner.
@@ -78,33 +78,41 @@ NUM_STEPS_PER_ENV = BeliefDistillationRunnerCfg().num_steps_per_env
 #                     paper's per-foot figure
 #   per_episode_offset stand-in for the paper's per-foot, per-episode w_z, whose
 #                     z entry did not survive into the published vector
+#
+# All magnitude terms (everything but probability/outlier_prob) are then
+# halved from those paper-derived numbers: on this project's terrain (wall/box
+# heights 5-25 cm), the paper's per-point std alone (7.1 cm, resampled on every
+# point every control step) was already close to the terrain's own relief, and
+# looked like noise dominating signal in play-mode visualization rather than a
+# usable-but-imprecise scan. See visualize_estimate's markers before tuning
+# further -- these are a starting point, not a re-derivation from a real sensor.
 # ---------------------------------------------------------------------------
 NOMINAL_MAPPING = HeightScanNoiseConditionCfg(
     probability=0.60,
-    per_point_std=0.071,
-    per_step_offset_std=0.02,
-    per_episode_offset_std=0.05,
-    outlier_std=0.173,
+    per_point_std=0.0355,
+    per_step_offset_std=0.01,
+    per_episode_offset_std=0.025,
+    outlier_std=0.0865,
     outlier_prob=0.05,
 )
 """Normal mapping conditions: the scan is usable, just imprecise."""
 
 LARGE_OFFSET_MAPPING = HeightScanNoiseConditionCfg(
     probability=0.30,
-    per_point_std=0.071,
-    per_step_offset_std=0.05,
-    per_episode_offset_std=0.20,
-    outlier_std=0.316,
+    per_point_std=0.0355,
+    per_step_offset_std=0.025,
+    per_episode_offset_std=0.10,
+    outlier_std=0.158,
     outlier_prob=0.02,
 )
 """Pose-estimation drift / deformable ground: the scan is coherent but displaced."""
 
 LARGE_NOISE_MAPPING = HeightScanNoiseConditionCfg(
     probability=0.10,
-    per_point_std=0.316,
-    per_step_offset_std=0.10,
-    per_episode_offset_std=0.20,
-    outlier_std=0.548,
+    per_point_std=0.158,
+    per_step_offset_std=0.05,
+    per_episode_offset_std=0.10,
+    outlier_std=0.274,
     outlier_prob=0.30,
 )
 """Occlusion / sensor failure: the scan carries essentially no terrain information."""
@@ -119,7 +127,11 @@ STUDENT_HEIGHT_SCAN_NOISE_CFG = HeightScanNoiseCfg(
 )
 
 
-def _noisy_height_scan(noise_cfg: HeightScanNoiseCfg, debug_vis: bool = False) -> ObsTerm:
+def _noisy_height_scan(
+    noise_cfg: HeightScanNoiseCfg,
+    debug_vis: bool = False,
+    debug_vis_env_index: int | None = 0,
+) -> ObsTerm:
     """The policy height-scan term, swapped onto the noisy class-based implementation.
 
     Built by copy rather than ``ObsTerm.replace`` because ``replace`` type-checks
@@ -130,6 +142,7 @@ def _noisy_height_scan(noise_cfg: HeightScanNoiseCfg, debug_vis: bool = False) -
     term.func = HeightScanExcludingBodyNoisy
     term.params["scan_noise"] = noise_cfg
     term.params["debug_vis_noisy_scan"] = debug_vis
+    term.params["debug_vis_env_index"] = debug_vis_env_index
     return term
 
 
@@ -139,11 +152,13 @@ NOISY_HEIGHT_SCAN_CFG = _noisy_height_scan(STUDENT_HEIGHT_SCAN_NOISE_CFG)
 # a whole play session; this variant is already at full magnitude on step 0. It also
 # draws the corrupted scan in cyan next to the RayCaster's own markers, so the
 # difference between the true terrain and what the student sees is visible.
+# debug_vis_env_index=None draws every env (cheap enough at play's 32 envs; training
+# keeps the default single index since marking all 4096 envs every step is not).
 PLAY_NOISY_HEIGHT_SCAN_CFG = _noisy_height_scan(
     STUDENT_HEIGHT_SCAN_NOISE_CFG.replace(start_iteration=0, full_iteration=0),
     debug_vis=True,
+    debug_vis_env_index=None,
 )
-
 
 # ---------------------------------------------------------------------------
 # Phase 2 terrain: what the student is expected to handle on deployment. No
@@ -193,6 +208,17 @@ STUDENT_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
         ),
     },
 )
+
+PLAY_TERRAIN_CFG = STUDENT_TERRAIN_CFG.replace(
+    num_cols=3,
+    num_rows=5,
+    sub_terrains={
+        name: cfg
+        for name, cfg in STUDENT_TERRAIN_CFG.sub_terrains.items()
+        if name in ("boxes", "thin_wall", "floating_thin_wall")
+    },
+)
+"""Play-only terrain: obstacles only (no flat/random_rough), 3 cols x 5 rows."""
 
 
 @configclass
@@ -290,7 +316,9 @@ class RobotPlayEnvCfgStudentPhase2(RobotEnvCfgStudentPhase2):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 32
-        self.scene.terrain.terrain_generator.num_rows = 3
-        self.scene.terrain.terrain_generator.num_cols = 5
+        self.scene.terrain.terrain_generator = copy.deepcopy(PLAY_TERRAIN_CFG)
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
         self.observations.policy.height_scan = copy.deepcopy(PLAY_NOISY_HEIGHT_SCAN_CFG)
+        # Raw RayCaster markers show the clean terrain; off here so only the noisy
+        # cyan scan (what the student actually sees) is visible.
+        self.scene.height_scanner.debug_vis = False

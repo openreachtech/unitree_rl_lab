@@ -976,3 +976,96 @@ def joint_mirror(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, mirror_joint
         )
     reward *= 1 / len(mirror_joints) if len(mirror_joints) > 0 else 0
     return reward
+
+
+def wall_approach_commit_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    sensor_cfg: SceneEntityCfg,
+    command_name: str,
+    period: float,
+    offset: list[float],
+    lookahead_distance: float = 0.15,
+    obstacle_height_threshold: float = 0.08,
+    max_obstacle_height: float = 0.25,
+    target_clearance: float = 0.15,
+    min_cmd_norm: float = 0.1,
+) -> torch.Tensor:
+    """Positive reward for a swing foot reaching toward a wall ahead in the
+    *commanded* direction, even from a dead stop.
+
+    ``adaptive_foot_clearance_reward``/``calf_flexion_clearance_reward`` both
+    derive their obstacle lookahead from the base's *current* velocity
+    direction, deliberately zeroed below 0.05 m/s ("no obstacle to see" for a
+    standing robot -- see their comments). That's correct for a robot that's
+    genuinely supposed to be standing still, but it also means the one signal
+    telling the policy "there's a wall, lift for it" switches itself off the
+    moment the robot hesitates and stalls in front of a tall wall -- which is
+    exactly the failure mode this term targets: Play observation was that the
+    robot freezes completely *before* contact walking forward into a tall
+    wall (low walls cross fine), but crosses tall walls fine walking
+    backward, where it doesn't stall first and instead reactively lifts
+    higher right after its foot bumps the wall. Using the *commanded*
+    direction instead of actual velocity keeps the lookahead live through a
+    stall, as long as the command still asks to move that way -- it can't
+    self-disable in the one state (stalled, but still commanded) it's needed
+    most for.
+
+    Otherwise the same shape as ``foot_clearance_terrain_adaptive``: strictly
+    positive, capped at 1.0 per foot, swing-gated and command-gated -- except
+    it only pays out when a real wall is detected ahead
+    (``obstacle_height_threshold``, set above ordinary height-scan noise), so
+    it doesn't compete with the ordinary flat-ground gait the other clearance
+    rewards already shape.
+    """
+    from isaaclab.utils.math import quat_apply, yaw_quat
+
+    robot: Articulation = env.scene[asset_cfg.name]
+    sensor = env.scene[sensor_cfg.name]
+
+    foot_ids = asset_cfg.body_ids
+    foot_pos_w = robot.data.body_pos_w[:, foot_ids, :]  # (N, F, 3)
+    foot_xy_w = foot_pos_w[:, :, :2]
+    foot_z_w = foot_pos_w[:, :, 2]
+
+    ray_hits_w = sensor.data.ray_hits_w  # (N, R, 3)
+    ray_xy_w = ray_hits_w[:, :, :2]
+    ray_z_w = ray_hits_w[:, :, 2]
+    valid_rays = torch.isfinite(ray_z_w)
+    ray_z_w = torch.nan_to_num(ray_z_w, nan=-1e3, posinf=-1e3, neginf=-1e3)
+
+    def _nearest_height(query_xy: torch.Tensor) -> torch.Tensor:
+        dist = torch.norm(query_xy.unsqueeze(2) - ray_xy_w.unsqueeze(1), dim=-1)
+        dist = torch.where(valid_rays.unsqueeze(1), dist, torch.full_like(dist, 1e9))
+        nearest = dist.argmin(dim=-1)
+        return torch.gather(
+            ray_z_w.unsqueeze(1).expand(-1, query_xy.shape[1], -1), dim=2, index=nearest.unsqueeze(-1)
+        ).squeeze(-1)
+
+    local_h = _nearest_height(foot_xy_w)  # (N, F)
+
+    # Commanded lin_vel_x/y is in the base frame; rotate by current heading
+    # (yaw only) to get a world-frame direction comparable to foot_xy_w/ray_xy_w.
+    command_b = env.command_manager.get_command(command_name)  # (N, 3): vx, vy, wz
+    cmd_norm = torch.norm(command_b[:, :2], dim=1)  # (N,)
+    heading_quat = yaw_quat(robot.data.root_quat_w)  # (N, 4)
+    command_vec_b = torch.cat([command_b[:, :2], torch.zeros_like(command_b[:, :1])], dim=-1)  # (N, 3)
+    command_dir_w = quat_apply(heading_quat, command_vec_b)[:, :2]  # (N, 2)
+    unit_dir = (command_dir_w / cmd_norm.clamp(min=1e-3).unsqueeze(1)).unsqueeze(1)  # (N, 1, 2)
+
+    ahead_xy = foot_xy_w + unit_dir * lookahead_distance  # (N, F, 2)
+    ahead_h = _nearest_height(ahead_xy)  # (N, F)
+    obstacle_height = torch.clamp(ahead_h - local_h, min=0.0, max=max_obstacle_height)  # (N, F)
+    is_wall = (obstacle_height > obstacle_height_threshold).float()
+
+    target = (target_clearance * obstacle_height / max_obstacle_height).clamp(min=1e-3)
+    clearance = torch.clamp(foot_z_w - local_h, min=0.0)
+    achieved = torch.clamp(clearance / target, 0.0, 1.0)
+
+    phases = _cpg_leg_phases_rad(env, period, offset)
+    is_swing = (phases < torch.pi).float()
+
+    reward = achieved * is_swing * is_wall
+    reward = torch.sum(reward, dim=-1) * valid_rays.any(dim=1).float()
+    return reward * (cmd_norm > min_cmd_norm).float()
+    return reward

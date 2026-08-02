@@ -92,6 +92,10 @@ class HeightScanExcludingBodyNoisy(ManagerTermBase):
 
     def __init__(self, cfg: ObservationTermCfg, env: ManagerBasedRLEnv):
         super().__init__(cfg, env)
+        # Lets play.py find this term from the sensor to visualize the belief decoder's
+        # reconstruction (see ``visualize_estimate``), which isn't produced by this term
+        # itself -- ``act_inference(use_decoder=True)`` only runs when explicitly asked.
+        env.scene.sensors[cfg.params["sensor_cfg"].name]._height_scan_noise_term = self
         self._noise_cfg: HeightScanNoiseCfg = cfg.params["scan_noise"]
         conditions = [self._noise_cfg.nominal, self._noise_cfg.large_offset, self._noise_cfg.large_noise]
 
@@ -130,7 +134,7 @@ class HeightScanExcludingBodyNoisy(ManagerTermBase):
         exclude_half_extent_x: float = 0.25,
         exclude_half_extent_y: float = 0.15,
         debug_vis_excluded_body: bool = False,
-        debug_vis_env_index: int = 0,
+        debug_vis_env_index: int | None = 0,
         debug_vis_noisy_scan: bool = False,
     ) -> torch.Tensor:
         heights = height_scan_excluding_body(
@@ -191,31 +195,102 @@ class HeightScanExcludingBodyNoisy(ManagerTermBase):
         scanner_offset_xy: tuple[float, float],
         exclude_half_extent_x: float,
         exclude_half_extent_y: float,
-        env_index: int,
+        env_index: int | None,
     ) -> None:
         """Draw the corrupted scan as cyan spheres, over the raw ray hits.
 
         The raw RayCaster markers show the terrain as it actually is; these show the
         same cells as the policy receives them, so the gap between the two is the
-        noise. ``ObservationTermCfg.clip`` is applied here as well, because the
-        observation manager clips after this term returns.
+        noise. ``env_index=None`` draws every environment (play-sized envs only;
+        training keeps a single index).
+        """
+        self._draw_scan_markers(
+            env,
+            sensor_cfg,
+            heights,
+            offset,
+            resolution,
+            size,
+            scanner_offset_xy,
+            exclude_half_extent_x,
+            exclude_half_extent_y,
+            env_index,
+            visualizer_attr="_noisy_scan_visualizer",
+            prim_path="/Visuals/Go2HeightScan/NoisyScan",
+            color=(0.0, 1.0, 1.0),  # cyan
+        )
+
+    def visualize_estimate(self, env: ManagerBasedRLEnv, estimated_heights: torch.Tensor) -> None:
+        """Draw the belief decoder's reconstructed height map as yellow spheres.
+
+        Unlike ``_visualize``, this isn't wired into ``__call__`` -- the decoder only
+        runs when the caller explicitly requests it (``StudentTeacher.act_inference``
+        with ``use_decoder=True``), since it's dead weight during normal rollouts
+        (training's PPO-style action sampling never needs the reconstruction, only the
+        distillation loss does). ``estimated_heights`` must already be in this term's
+        kept-grid ordering and units (i.e. exactly what ``act_inference`` returns as
+        ``estimated_extero_state`` for this sensor).
+        """
+        p = self.cfg.params
+        self._draw_scan_markers(
+            env,
+            p["sensor_cfg"],
+            estimated_heights,
+            p.get("offset", 0.0),
+            p.get("resolution", 0.05),
+            p.get("size", (1.0, 1.0)),
+            p.get("scanner_offset_xy", (0.0, 0.0)),
+            p.get("exclude_half_extent_x", 0.25),
+            p.get("exclude_half_extent_y", 0.15),
+            p.get("debug_vis_env_index", 0),
+            visualizer_attr="_estimated_scan_visualizer",
+            prim_path="/Visuals/Go2HeightScan/EstimatedScan",
+            color=(1.0, 1.0, 0.0),  # yellow
+        )
+
+    def _draw_scan_markers(
+        self,
+        env: ManagerBasedRLEnv,
+        sensor_cfg: SceneEntityCfg,
+        heights: torch.Tensor,
+        offset: float,
+        resolution: float,
+        size: tuple[float, float],
+        scanner_offset_xy: tuple[float, float],
+        exclude_half_extent_x: float,
+        exclude_half_extent_y: float,
+        env_index: int | None,
+        visualizer_attr: str,
+        prim_path: str,
+        color: tuple[float, float, float],
+    ) -> None:
+        """Shared marker-drawing code for ``_visualize`` / ``visualize_estimate``.
+
+        ``ObservationTermCfg.clip`` is applied here too, because the observation
+        manager clips after this term returns, and we want the markers to show what
+        the policy actually saw/produced, clipped range included.
         """
         import isaaclab.sim as sim_utils
         from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 
         sensor = env.scene.sensors[sensor_cfg.name]
-        if not hasattr(sensor, "_noisy_scan_visualizer"):
-            sensor._noisy_scan_visualizer = VisualizationMarkers(
-                VisualizationMarkersCfg(
-                    prim_path="/Visuals/Go2HeightScan/NoisyScan",
-                    markers={
-                        "noisy_scan": sim_utils.SphereCfg(
-                            radius=0.02,
-                            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 1.0)),
-                        )
-                    },
-                )
+        if not hasattr(sensor, visualizer_attr):
+            setattr(
+                sensor,
+                visualizer_attr,
+                VisualizationMarkers(
+                    VisualizationMarkersCfg(
+                        prim_path=prim_path,
+                        markers={
+                            "points": sim_utils.SphereCfg(
+                                radius=0.02,
+                                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=color),
+                            )
+                        },
+                    )
+                ),
             )
+        visualizer = getattr(sensor, visualizer_attr)
 
         keep_indices, _ = _height_scan_indices(
             resolution,
@@ -227,18 +302,26 @@ class HeightScanExcludingBodyNoisy(ManagerTermBase):
             exclude_half_extent_y,
             heights.device,
         )
-        env_index = min(max(env_index, 0), heights.shape[0] - 1)
-        shown = heights[env_index]
-        if self.cfg.clip is not None:
-            shown = shown.clamp(min=self.cfg.clip[0], max=self.cfg.clip[1])
 
-        # height = sensor_z - hit_z - offset, so the corrupted hit sits at sensor_z - height - offset.
-        positions = sensor.data.ray_hits_w[env_index].index_select(0, keep_indices).clone()
-        positions[:, 2] = sensor.data.pos_w[env_index, 2] - shown - offset
+        # height = sensor_z - hit_z - offset, so the hit sits at sensor_z - height - offset.
+        if env_index is None:
+            shown = heights
+            if self.cfg.clip is not None:
+                shown = shown.clamp(min=self.cfg.clip[0], max=self.cfg.clip[1])
+            positions = sensor.data.ray_hits_w.index_select(1, keep_indices).clone()
+            positions[..., 2] = sensor.data.pos_w[:, 2].unsqueeze(-1) - shown - offset
+            positions = positions.reshape(-1, 3)
+        else:
+            env_index = min(max(env_index, 0), heights.shape[0] - 1)
+            shown = heights[env_index]
+            if self.cfg.clip is not None:
+                shown = shown.clamp(min=self.cfg.clip[0], max=self.cfg.clip[1])
+            positions = sensor.data.ray_hits_w[env_index].index_select(0, keep_indices).clone()
+            positions[:, 2] = sensor.data.pos_w[env_index, 2] - shown - offset
         positions = positions[torch.isfinite(positions).all(dim=-1)]
         if positions.shape[0] == 0:
             return
-        sensor._noisy_scan_visualizer.visualize(translations=positions)
+        visualizer.visualize(translations=positions)
 
     def _as_env_ids(self, env_ids: Sequence[int] | slice | None) -> torch.Tensor:
         if env_ids is None or isinstance(env_ids, slice):

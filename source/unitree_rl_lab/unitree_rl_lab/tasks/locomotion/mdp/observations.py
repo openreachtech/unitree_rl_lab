@@ -53,9 +53,13 @@ def _height_scan_indices(
 def _visualize_excluded_height_scan_points(
     sensor,
     excluded_indices: torch.Tensor,
-    env_index: int,
+    env_index: int | None,
 ) -> None:
-    """Overlay excluded ray-hit points with magenta spheres in Isaac Sim."""
+    """Overlay excluded ray-hit points with magenta spheres in Isaac Sim.
+
+    ``env_index=None`` draws every environment (only cheap enough for play-sized
+    envs; training leaves this at a single index to avoid the marker overhead).
+    """
     import isaaclab.sim as sim_utils
     from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 
@@ -71,8 +75,11 @@ def _visualize_excluded_height_scan_points(
         )
         sensor._excluded_body_visualizer = VisualizationMarkers(marker_cfg)
 
-    env_index = min(max(env_index, 0), sensor.data.ray_hits_w.shape[0] - 1)
-    positions = sensor.data.ray_hits_w[env_index].index_select(0, excluded_indices)
+    if env_index is None:
+        positions = sensor.data.ray_hits_w.index_select(1, excluded_indices).reshape(-1, 3)
+    else:
+        env_index = min(max(env_index, 0), sensor.data.ray_hits_w.shape[0] - 1)
+        positions = sensor.data.ray_hits_w[env_index].index_select(0, excluded_indices)
     positions = positions[torch.isfinite(positions).all(dim=-1)]
     if positions.shape[0] == 0:
         return
@@ -89,7 +96,7 @@ def height_scan_excluding_body(
     exclude_half_extent_x: float = 0.25,
     exclude_half_extent_y: float = 0.15,
     debug_vis_excluded_body: bool = False,
-    debug_vis_env_index: int = 0,
+    debug_vis_env_index: int | None = 0,
 ) -> torch.Tensor:
     """Height scan with cells under the robot body removed from the observation.
 
