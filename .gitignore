@@ -73,3 +73,8 @@ datasets
 
 # Mimic
 *.npz
+*.bak
+*.bak?
+*.bak_*
+*.now
+deploy/robots/go2/log/
