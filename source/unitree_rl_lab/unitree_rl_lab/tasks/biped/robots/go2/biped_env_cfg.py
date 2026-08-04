@@ -1,6 +1,19 @@
 """Bipedal (2-leg stance) locomotion task for Go2: the quadruped walks on its hind
 legs only, front legs lifted/tucked.
 
+Also carries a ``gait_mode`` one-hot observation, permanently pinned to hind-biped
+(see ``mdp.PinnedGaitModeCommand``) -- the reward/termination set below is
+otherwise completely unchanged from the original single-stance design (still
+unconditionally biped-seeking, correct since the mode never actually varies
+here). This is a deliberate foundation stage for a *future* mode-switching task:
+several earlier attempts at learning "stand on two legs" and "switch modes based
+on gait_mode" simultaneously, from scratch, in one step, all converged to a
+policy that received the gait_mode observation correctly but never produced any
+visible mode-dependent behavior change. Carrying a real (if constant) gait_mode
+input through Phase1's own proven training lets a later task swap in an actually
+varying gait-mode command and resume from this checkpoint -- same observation
+shape, no architecture change -- instead of learning both problems at once.
+
 Trains a single actor-critic with a jointly-trained TumblerNet-style state
 estimator (see ``unitree_rl_lab.assets.models.biped_actor``), rather than the
 Wild-style teacher/student distillation used by the locomotion velocity task.
@@ -163,6 +176,8 @@ class CommandsCfg:
         ),
     )
 
+    gait_mode = mdp.PinnedGaitModeCommandCfg(asset_name="robot", pinned_mode=mdp.MODE_HIND_BIPED)
+
 
 @configclass
 class ActionsCfg:
@@ -187,12 +202,13 @@ class ObservationsCfg:
         values, matching what is available at deployment time.
         """
 
-        # -- current step (order preserved; must match PROPRIO_TERM_DIM = 45) --
+        # -- current step (order preserved; must match PROPRIO_TERM_DIM = 48) --
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=0.2, clip=(-100, 100), noise=Unoise(n_min=-0.2, n_max=0.2))
         projected_gravity = ObsTerm(func=mdp.projected_gravity, clip=(-100, 100), noise=Unoise(n_min=-0.05, n_max=0.05))
         velocity_commands = ObsTerm(
             func=mdp.generated_commands, clip=(-100, 100), params={"command_name": "base_velocity"}
         )
+        gait_mode = ObsTerm(func=mdp.generated_commands, clip=(-100, 100), params={"command_name": "gait_mode"})
         joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel, clip=(-100, 100), noise=Unoise(n_min=-0.01, n_max=0.01))
         joint_vel_rel = ObsTerm(
             func=mdp.joint_vel_rel, scale=0.05, clip=(-100, 100), noise=Unoise(n_min=-1.5, n_max=1.5)
@@ -219,6 +235,12 @@ class ObservationsCfg:
             func=mdp.generated_commands,
             clip=(-100, 100),
             params={"command_name": "base_velocity"},
+            history_length=PROPRIO_HISTORY_LENGTH,
+        )
+        gait_mode_hist = ObsTerm(
+            func=mdp.generated_commands,
+            clip=(-100, 100),
+            params={"command_name": "gait_mode"},
             history_length=PROPRIO_HISTORY_LENGTH,
         )
         joint_pos_rel_hist = ObsTerm(
@@ -252,6 +274,7 @@ class ObservationsCfg:
         velocity_commands = ObsTerm(
             func=mdp.generated_commands, clip=(-100, 100), params={"command_name": "base_velocity"}
         )
+        gait_mode = ObsTerm(func=mdp.generated_commands, clip=(-100, 100), params={"command_name": "gait_mode"})
         joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel, clip=(-100, 100))
         joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05, clip=(-100, 100))
         last_action = ObsTerm(func=mdp.last_action, clip=(-100, 100))

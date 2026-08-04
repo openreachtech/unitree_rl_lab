@@ -9,10 +9,12 @@ from unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg import BasePPORunnerC
 # ``robots/go2/biped_env_cfg.py`` and the dims declared below can never drift apart.
 PROPRIO_HISTORY_LENGTH = 4
 
-# ang_vel(3) + projected_gravity(3) + velocity_commands(3) + joint_pos_rel(12)
-# + joint_vel_rel(12) + last_action(12) -- current single step, matches the
-# TumblerNet reference's raw 45-dim proprioceptive observation.
-PROPRIO_TERM_DIM = 3 + 3 + 3 + 12 + 12 + 12
+# ang_vel(3) + projected_gravity(3) + velocity_commands(3) + gait_mode(3)
+# + joint_pos_rel(12) + joint_vel_rel(12) + last_action(12) -- current single step.
+# TumblerNet reference's raw proprioceptive observation is 45-dim (no gait_mode);
+# this task now also carries a one-hot gait-mode observation (permanently pinned
+# to hind-biped for now, see ``robots/go2/biped_env_cfg.py``), adding 3 dims.
+PROPRIO_TERM_DIM = 3 + 3 + 3 + 3 + 12 + 12 + 12
 
 # BipedPolicy "policy" obs group layout: [current proprio | stacked history].
 PROPRIO_OBS_DIM = PROPRIO_TERM_DIM
