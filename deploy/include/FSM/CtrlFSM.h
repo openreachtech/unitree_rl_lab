@@ -5,6 +5,7 @@
 
 #include <unitree/common/thread/recurrent_thread.hpp>
 #include "BaseState.h"
+#include <exception>
 #include <spdlog/spdlog.h>
 #include <yaml-cpp/yaml.h>
 
@@ -40,8 +41,25 @@ public:
             if (fsm_class == getFsmMap().end()) {
                 throw std::runtime_error("FSM: Unknown FSM type " + fsm_type);
             }
-            auto state_instance = fsm_class->second(id, fsm_name);
-            add(state_instance);
+            const bool optional = it->second["optional"]
+                ? it->second["optional"].as<bool>()
+                : false;
+            try
+            {
+                auto state_instance = fsm_class->second(id, fsm_name);
+                add(state_instance);
+            }
+            catch (const std::exception &e)
+            {
+                if (!optional)
+                {
+                    throw;
+                }
+                spdlog::warn(
+                    "FSM: Skipping optional state '{}' because initialization failed: {}",
+                    fsm_name,
+                    e.what());
+            }
         }
     }
 

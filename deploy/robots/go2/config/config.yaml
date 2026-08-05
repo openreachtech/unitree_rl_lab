@@ -7,6 +7,7 @@ FSM:
     Velocity:
       id: 3
       type: RLBase
+      optional: true
     Biped:
       id: 4
       type: BipedRL
@@ -61,8 +62,12 @@ FSM:
       Passive: LT + B.on_pressed
     keyboard_transitions:
       Passive: "0"
-    # Stance the multimode policy is asked to hold. The state always starts in quad,
-    # like every training episode does, so these only switch it while it is running.
+    # Go2-Biped-Phase1 is trained with gait_mode pinned to hind_biped for the whole
+    # episode (PinnedGaitModeCommand) -- so that's the only mode this checkpoint has
+    # ever seen, and the state enters in it by default. The bindings below still let
+    # the operator force quad / front_biped live, for exploring how a pinned checkpoint
+    # reacts to an out-of-distribution mode -- not validated behavior.
+    default_gait_mode: hind_biped
     gait_modes:
       quad: up.on_pressed
       hind_biped: left.on_pressed
@@ -79,4 +84,7 @@ FSM:
     # of them.
     tilt_limit: 1.0
     biped_tilt_limit: 2.6
-    policy_dir: ../../../logs/rsl_rl/unitree_go2_multimode
+    # No timestamp -- parser_policy_dir picks the latest run under here with an
+    # `exported/` folder, i.e. whichever Go2-Biped-Phase1 checkpoint was trained most
+    # recently.
+    policy_dir: ../../../logs/rsl_rl/go2_biped_phase1

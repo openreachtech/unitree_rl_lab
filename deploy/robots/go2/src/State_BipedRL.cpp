@@ -89,6 +89,21 @@ State_BipedRL::State_BipedRL(int state_mode, std::string state_string)
         biped_tilt_limit_ = cfg["biped_tilt_limit"].as<float>();
     }
 
+    if (cfg["default_gait_mode"].IsDefined())
+    {
+        go2::GaitMode mode;
+        const auto name = cfg["default_gait_mode"].as<std::string>();
+        if (go2::parse_gait_mode(name, mode))
+        {
+            default_gait_mode_ = mode;
+        }
+        else
+        {
+            spdlog::warn("FSM: State_{} unknown default_gait_mode '{}', keeping {}",
+                state_string, name, go2::gait_mode_name(default_gait_mode_));
+        }
+    }
+
     load_mode_triggers(cfg, state_string);
 
     if (mode_triggers_.empty())
@@ -97,7 +112,7 @@ State_BipedRL::State_BipedRL(int state_mode, std::string state_string)
             "FSM: State_{} has no gait_modes / keyboard_gait_modes bindings; "
             "the policy will stay in {} mode.",
             state_string,
-            go2::gait_mode_name(go2::GaitMode::kQuad));
+            go2::gait_mode_name(default_gait_mode_));
     }
 }
 
@@ -147,10 +162,11 @@ void State_BipedRL::load_mode_triggers(YAML::Node cfg, const std::string& state_
 
 void State_BipedRL::enter()
 {
-    // GaitModeCommand forces the first mode of every training episode to quad and only
-    // switches once the policy is already running, so entry mirrors that.
-    go2::GaitModeSelector::instance().set(go2::GaitMode::kQuad);
-    spdlog::info("Gait mode: {}", go2::gait_mode_name(go2::GaitMode::kQuad));
+    // The current pinned-gait_mode checkpoints (e.g. Go2-Biped-Phase1) only ever see
+    // one mode for the entire episode, so entry mirrors that fixed mode instead of the
+    // old resampling-command's "always starts quad" behavior.
+    go2::GaitModeSelector::instance().set(default_gait_mode_);
+    spdlog::info("Gait mode: {}", go2::gait_mode_name(default_gait_mode_));
     quad_tilt_limit_armed_ = false;
 
     State_RLBase::enter();

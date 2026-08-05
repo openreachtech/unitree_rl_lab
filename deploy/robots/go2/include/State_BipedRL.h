@@ -8,13 +8,16 @@
 #include <vector>
 
 /**
- * @brief RL state for the Go2 multimode policy (Isaac Lab task `Unitree-Go2-Multimode`).
+ * @brief RL state for a Go2 gait_mode-aware policy (e.g. Isaac Lab task `Go2-Biped-Phase1`).
  *
- * One network walks the robot either as a quadruped or on a single leg pair. Training
- * drives that choice with a discrete `gait_mode` command that resamples mid-episode;
- * here the operator drives it instead, through the joystick / keyboard bindings under
- * `FSM.<state>.gait_modes` and `FSM.<state>.keyboard_gait_modes`, and the selection is
- * handed to the policy as the same one-hot observation.
+ * The network takes a discrete `gait_mode` one-hot observation alongside the usual
+ * proprioception. Training currently pins that input to a single mode for the whole
+ * episode (see `PinnedGaitModeCommand`) rather than resampling it, so the policy has
+ * only ever seen `default_gait_mode` (hind_biped unless overridden in config.yaml).
+ * The operator can still switch modes live -- through the joystick / keyboard bindings
+ * under `FSM.<state>.gait_modes` and `FSM.<state>.keyboard_gait_modes` -- for exploring
+ * how a pinned-mode checkpoint responds to a mode it was never trained to expect, but
+ * only `default_gait_mode` is validated behavior.
  */
 class State_BipedRL : public State_RLBase
 {
@@ -41,6 +44,10 @@ private:
     void update_tilt_limit_arming();
 
     std::vector<ModeTrigger> mode_triggers_;
+
+    // Mode commanded to the policy on entry, before any operator trigger fires.
+    // Config key: FSM.<state>.default_gait_mode (name string, e.g. "hind_biped").
+    go2::GaitMode default_gait_mode_ = go2::GaitMode::kHindBiped;
 
     // Only meant to catch a full flip; see fall_detected().
     float biped_tilt_limit_ = 2.6;
