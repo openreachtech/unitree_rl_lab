@@ -196,6 +196,19 @@ class ForwardAssistVelocityCommand(UniformVelocityCommand):
         self.front_contact_steps[env_ids] = 0.0
         self.episode_steps[env_ids] = 0.0
 
+        if self.cfg.lin_vel_x_min_magnitude > 0.0:
+            n = len(env_ids)
+            max_magnitude = max(abs(self.cfg.ranges.lin_vel_x[0]), abs(self.cfg.ranges.lin_vel_x[1]))
+            magnitude = torch.empty(n, device=self.device).uniform_(
+                self.cfg.lin_vel_x_min_magnitude, max_magnitude
+            )
+            sign = torch.where(
+                torch.rand(n, device=self.device) < 0.5,
+                torch.full((n,), -1.0, device=self.device),
+                torch.full((n,), 1.0, device=self.device),
+            )
+            self.vel_command_b[env_ids, 0] = magnitude * sign
+
     def _update_metrics(self):
         super()._update_metrics()
         self.metrics["assist_scale"][:] = self.assist_scale
@@ -213,13 +226,17 @@ class ForwardAssistVelocityCommand(UniformVelocityCommand):
         self.episode_steps += 1.0
 
     def _apply_assist_force(self):
+        # Symmetric: pushes in whichever direction (forward or backward) is
+        # currently commanded, via sign(vel_command_b[:, 0]) -- not forward-only,
+        # since Phase2 now also trains backward walking and the same
+        # weight-shift-over-the-support-legs challenge applies in reverse.
         forces = torch.zeros(self.num_envs, len(self.body_ids), 3, device=self.device)
-        active = (~self.is_standing_env) & (self.vel_command_b[:, 0] > 0.0) & (self.assist_scale > 0.0)
+        active = (~self.is_standing_env) & (self.vel_command_b[:, 0] != 0.0) & (self.assist_scale > 0.0)
         if torch.any(active):
-            forward_local = torch.zeros(int(active.sum()), 3, device=self.device)
-            forward_local[:, 0] = 1.0
-            forward_dir_w = quat_apply(yaw_quat(self.robot.data.root_quat_w[active]), forward_local)
-            forces[active, 0, :2] = forward_dir_w[:, :2] * (self.cfg.assist_force_forward * self.assist_scale)
+            direction_local = torch.zeros(int(active.sum()), 3, device=self.device)
+            direction_local[:, 0] = torch.sign(self.vel_command_b[active, 0])
+            direction_w = quat_apply(yaw_quat(self.robot.data.root_quat_w[active]), direction_local)
+            forces[active, 0, :2] = direction_w[:, :2] * (self.cfg.assist_force_forward * self.assist_scale)
             forces[active, 0, 2] = self.cfg.assist_force_up * self.assist_scale
         self.robot.set_external_force_and_torque(
             forces=forces,
@@ -246,6 +263,16 @@ class ForwardAssistVelocityCommandCfg(UniformVelocityCommandCfg):
     """Path used to persist/restore the EFGCL assist-scale + success-rate across process
     restarts -- rsl_rl checkpoints only save network weights, so without this, a
     ``--resume`` would silently restart the decay from ``initial_assist_scale``."""
+
+    lin_vel_x_min_magnitude: float = 0.0
+    """If > 0, ``lin_vel_x`` is resampled as ``sign * magnitude`` with ``magnitude``
+    drawn uniformly from ``[lin_vel_x_min_magnitude, max(abs(ranges.lin_vel_x))]``
+    and ``sign`` a coin flip -- excludes the near-zero band from both directions,
+    instead of ``ranges.lin_vel_x`` alone (a single continuous interval, which
+    can't express "no near-zero speed" without also excluding one whole sign).
+    Matches this task's own established lesson (try16): a demanded pace slow
+    enough that a tripod can satisfy it removes the pressure to commit to a
+    genuine 2-leg gait. Default 0.0 leaves ``ranges.lin_vel_x`` sampling as-is."""
 
 
 class PinnedGaitModeCommand(CommandTerm):

@@ -25,12 +25,23 @@ gym.register(
 )
 
 gym.register(
-    id="Go2-Biped-Front",
+    id="Go2-Biped-Front-Phase1",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.biped_env_cfg_front:RobotEnvCfgFront",
         "play_env_cfg_entry_point": f"{__name__}.biped_env_cfg_front:RobotPlayEnvCfgFront",
+        "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.biped.agents.rsl_rl_ppo_cfg:BipedPPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Go2-Biped-Front-Phase2",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.biped_env_cfg_front_phase2:RobotEnvCfgFrontPhase2",
+        "play_env_cfg_entry_point": f"{__name__}.biped_env_cfg_front_phase2:RobotPlayEnvCfgFrontPhase2",
         "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.biped.agents.rsl_rl_ppo_cfg:BipedPPORunnerCfg",
     },
 )

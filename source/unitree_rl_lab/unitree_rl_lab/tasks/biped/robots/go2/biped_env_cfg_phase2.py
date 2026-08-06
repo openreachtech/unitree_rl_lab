@@ -1,4 +1,4 @@
-"""Phase 2: forward-only 2-leg walking, without leaning on a front foot.
+"""Phase 2: forward/backward 2-leg walking, without leaning on a front foot.
 
 Phase 1 (``biped_env_cfg.py``) achieves genuine 2-leg standing/walking in any
 direction, but forward walking specifically kept touching a front foot down --
@@ -36,6 +36,34 @@ the assist force alone:
 validated value) -- safe here because Phase 1 already carries the
 ``termination_penalty`` fix that makes any single penalty non-negotiable-but-
 survivable rather than making early death cheaper than enduring it.
+
+Revised (sandbox new-round Try-1) after the original forward-only, 0.1-0.3 m/s
+version deployed to MuJoCo turned out to completely ignore the velocity
+command. Root cause found in the training log: ``track_lin_vel_xy``'s ``std``
+(``math.sqrt(0.25)`` ~= 0.5 m/s, inherited unchanged from Phase1's own
++-1.0 m/s range) is far wider than that 0.2 m/s-wide command range, so the
+policy got a near-maximal tracking reward (~0.94) regardless of the actual
+(much larger, ~0.4 m/s average) tracking error -- there was never a real
+gradient pushing it to track the *specific* commanded speed, only to walk
+forward at *some* pace. Rather than just narrowing ``std`` to match the
+existing tiny range, the task itself was widened -- faster, and backward
+walking added -- then ``std`` fixed to match:
+
+- ``lin_vel_x``: (0.1, 0.3) forward-only -> +-(0.1, 0.4) magnitude, both
+  signs, via ``ForwardAssistVelocityCommandCfg.lin_vel_x_min_magnitude``
+  (samples ``sign * magnitude``, excluding the near-zero band from *both*
+  directions -- a single continuous ``ranges.lin_vel_x`` interval can only
+  exclude one whole sign, which is what forward-only walking did).
+  ``ForwardAssistVelocityCommand._apply_assist_force`` was generalized to push
+  in the *commanded* direction instead of forward-only, since the same
+  front-leg-bracing risk applies symmetrically walking backward.
+- ``lin_vel_y``: (-0.05, 0.05) -> exactly (0.0, 0.0) -- lateral movement
+  disallowed entirely, not just narrowed.
+- ``track_lin_vel_xy``/``track_ang_vel_z`` ``std``: tightened to 0.15 / 0.05,
+  sized to the new (still much narrower than Phase1's +-1.0 m/s) ranges.
+
+MuJoCo-confirmed working (responds to forward/backward commands) after this
+change.
 """
 
 from isaaclab.managers import CurriculumTermCfg as CurrTerm
@@ -58,9 +86,10 @@ def _apply_phase2_overrides(cfg):
         ranges=old.ranges,
         front_foot_body_names=FRONT_FOOT_NAMES,
         state_file="logs/rsl_rl/go2_biped_phase2/assist_curriculum_state.json",
+        lin_vel_x_min_magnitude=0.1,
     )
-    cfg.commands.base_velocity.ranges.lin_vel_x = (0.1, 0.3)
-    cfg.commands.base_velocity.ranges.lin_vel_y = (-0.05, 0.05)
+    cfg.commands.base_velocity.ranges.lin_vel_x = (-0.4, 0.4)
+    cfg.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
     cfg.commands.base_velocity.ranges.ang_vel_z = (-0.1, 0.1)
 
     cfg.rewards.front_contact_force = RewTerm(
@@ -68,6 +97,8 @@ def _apply_phase2_overrides(cfg):
         weight=-0.9,
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=FRONT_FOOT_NAMES)},
     )
+    cfg.rewards.track_lin_vel_xy.params["std"] = 0.15
+    cfg.rewards.track_ang_vel_z.params["std"] = 0.05
 
 
 @configclass

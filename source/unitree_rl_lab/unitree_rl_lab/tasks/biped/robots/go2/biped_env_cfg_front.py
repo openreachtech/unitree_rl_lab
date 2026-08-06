@@ -20,6 +20,7 @@ from unitree_rl_lab.tasks.biped.robots.go2.biped_env_cfg import CommandsCfg, Obs
 # image of the hind-leg-stance biped_env_cfg's STANCE_FOOT_NAMES / *_motion penalties.
 HIND_CALF_JOINT_NAMES = ["RR_calf_joint", "RL_calf_joint"]
 STANCE_FOOT_NAMES = ["FR_foot", "FL_foot"]
+HIND_FOOT_NAMES = ["RR_foot", "RL_foot"]
 
 
 @configclass
@@ -88,6 +89,16 @@ class RewardsCfgFront(RewardsCfg):
             "asset_cfg": SceneEntityCfg("robot", body_names=STANCE_FOOT_NAMES),
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=STANCE_FOOT_NAMES),
         }
+    )
+
+    # `RewardsCfg.front_contact_force` targets FRONT_FOOT_NAMES (FR/FL) -- the
+    # *stance* legs here, not the swing legs. Left un-overridden, the policy
+    # would be penalized for putting its own support legs on the ground.
+    # Retarget to the (now-swing) hind feet.
+    front_contact_force = RewTerm(
+        func=mdp.front_foot_contact_force,
+        weight=-0.6,
+        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=HIND_FOOT_NAMES)},
     )
 
 
