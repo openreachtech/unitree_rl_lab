@@ -246,3 +246,77 @@ class ForwardAssistVelocityCommandCfg(UniformVelocityCommandCfg):
     """Path used to persist/restore the EFGCL assist-scale + success-rate across process
     restarts -- rsl_rl checkpoints only save network weights, so without this, a
     ``--resume`` would silently restart the decay from ``initial_assist_scale``."""
+
+
+class PinnedGaitModeCommand(CommandTerm):
+    """Discrete gait-mode command permanently pinned to a single mode (never
+    resampled, never switches) -- exposes the same one-hot ``command``/``mode_ids``
+    interface as :class:`GaitModeCommand`, so any mode-aware reward/termination
+    function written against that interface keeps working unmodified, but the
+    mode itself never varies within or across episodes.
+
+    Built as a foundation stage: warm up the network's ``gait_mode`` input
+    dimension (and let a checkpoint form around it) on top of an *already-proven*
+    single-stance skill -- concretely, pinning to hind-biped on top of the
+    original ``Go2-Biped-Phase1`` reward/termination set (which reliably produces
+    genuine hind-leg standing at 7000 iterations on its own, no gait_mode at all)
+    -- before ever asking the policy to condition its behavior on an actually
+    *varying* mode signal. Every prior attempt at that in one step (Try-1, a
+    direct multimodal Phase1 edit, Try-8) converged to a policy that technically
+    received the gait_mode observation (confirmed correct via the printed
+    observation-term table) but never produced any visible mode-dependent
+    behavior change -- motivating decoupling "learn to use the gait_mode input
+    slot at all" from "learn when to switch" into two separate stages.
+
+    A later stage can swap this command out for an actually-varying one (e.g.
+    :class:`GaitModeCommand`) via a config change alone, resuming from this
+    stage's checkpoint -- no observation-shape change, since the
+    ``command``/``mode_ids`` interface is identical.
+    """
+
+    cfg: PinnedGaitModeCommandCfg
+
+    def __init__(self, cfg: PinnedGaitModeCommandCfg, env: ManagerBasedEnv):
+        super().__init__(cfg, env)
+        self.mode_ids = torch.full((self.num_envs,), cfg.pinned_mode, dtype=torch.long, device=self.device)
+        self._mode_one_hot = torch.zeros(self.num_envs, 3, device=self.device)
+        self._mode_one_hot[:, cfg.pinned_mode] = 1.0
+
+    def __str__(self) -> str:
+        return f"PinnedGaitModeCommand: pinned_mode={self.cfg.pinned_mode}"
+
+    @property
+    def command(self) -> torch.Tensor:
+        """One-hot ``[quad, hind_biped, front_biped]``. Shape ``(num_envs, 3)``."""
+        return self._mode_one_hot
+
+    def _update_metrics(self):
+        pass
+
+    def _resample_command(self, env_ids: Sequence[int]):
+        pass  # pinned -- nothing to (re)sample, mode_ids/one-hot never change.
+
+    def _update_command(self):
+        pass
+
+
+@configclass
+class PinnedGaitModeCommandCfg(CommandTermCfg):
+    """Configuration for :class:`PinnedGaitModeCommand`."""
+
+    class_type: type = PinnedGaitModeCommand
+
+    asset_name: str = MISSING
+
+    resampling_time_range: tuple[float, float] = (1.0e6, 1.0e6)
+    """Unused -- the mode is pinned and never resampled. Set far beyond any
+    episode length only because :class:`CommandTermCfg` declares this field
+    ``MISSING``."""
+
+    pinned_mode: int = MODE_HIND_BIPED
+    """Which mode id (``MODE_QUAD``/``MODE_HIND_BIPED``/``MODE_FRONT_BIPED``) the
+    command permanently reports."""
+
+
+
+    gait_mode_command_name: str = "gait_mode"

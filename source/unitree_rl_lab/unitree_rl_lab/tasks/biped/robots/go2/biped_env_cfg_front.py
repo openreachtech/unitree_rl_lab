@@ -14,7 +14,7 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 
 from unitree_rl_lab.tasks.biped import mdp
-from unitree_rl_lab.tasks.biped.robots.go2.biped_env_cfg import ObservationsCfg, RewardsCfg, RobotEnvCfg
+from unitree_rl_lab.tasks.biped.robots.go2.biped_env_cfg import CommandsCfg, ObservationsCfg, RewardsCfg, RobotEnvCfg
 
 # Hind legs swing/tuck (lifted); front legs are the stance/support legs -- mirror
 # image of the hind-leg-stance biped_env_cfg's STANCE_FOOT_NAMES / *_motion penalties.
@@ -92,9 +92,19 @@ class RewardsCfgFront(RewardsCfg):
 
 
 @configclass
+class CommandsCfgFront(CommandsCfg):
+    """Same as ``CommandsCfg``, but ``gait_mode`` is pinned to front-biped instead
+    of hind-biped (inert either way -- this file's reward set never reads
+    gait_mode -- but keeps the observation semantically correct)."""
+
+    gait_mode = mdp.PinnedGaitModeCommandCfg(asset_name="robot", pinned_mode=mdp.MODE_FRONT_BIPED)
+
+
+@configclass
 class RobotEnvCfgFront(RobotEnvCfg):
     """Front-leg-stance variant of the Go2 bipedal env."""
 
+    commands: CommandsCfgFront = CommandsCfgFront()
     observations: ObservationsCfgFront = ObservationsCfgFront()
     rewards: RewardsCfgFront = RewardsCfgFront()
 
