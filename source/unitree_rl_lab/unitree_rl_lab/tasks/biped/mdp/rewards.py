@@ -95,6 +95,47 @@ def handle_length_penalty(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, sen
     return torch.linalg.norm(c[:, :2], dim=-1)
 
 
+def front_body_height_l2(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    target_height: float,
+    command_name: str | None = None,
+    command_threshold: float = 0.1,
+    standstill_boost: float = 1.0,
+) -> torch.Tensor:
+    """Penalize front-body reference points (e.g. the front hips) for deviating
+    from ``target_height`` in world-frame z.
+
+    ``base_height_l2`` only constrains the *root* link -- during a near-zero
+    commanded velocity, the root can sit exactly on its own height target while
+    the front of the body droops/hunches forward (nothing else regulates that
+    independently), which is visibly a "nose-down" posture at a standstill
+    even though the root-height reward reports no problem. A symmetric
+    target-height penalty (not a one-sided "don't drop below X" hinge) avoids
+    the policy just hugging the boundary right at the danger threshold --
+    overshooting the target costs reward too, not just undershooting it.
+
+    If ``command_name`` is given, the penalty is multiplied by
+    ``standstill_boost`` whenever the commanded velocity's horizontal norm is
+    below ``command_threshold``. Without this, ~90% of training happens at a
+    nonzero commanded velocity (``rel_standing_envs`` is typically ~0.1), so a
+    standstill-specific shortfall gets diluted into a healthy-looking
+    population average and the gradient pushing to fix it specifically is
+    weak -- confirmed empirically (Go2-Biped-Sandbox-Try2: population-average
+    error stayed flat across ~7000 iterations of resumed training, and the
+    operator's own play-mode check still showed the ground contact at a
+    standstill). Same reasoning as ``stand_still_penalty``.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    heights = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]
+    err = torch.sum(torch.square(heights - target_height), dim=-1)
+    if command_name is not None:
+        command = env.command_manager.get_command(command_name)
+        is_standing = torch.norm(command[:, :2], dim=1) < command_threshold
+        err = torch.where(is_standing, err * standstill_boost, err)
+    return err
+
+
 """
 Multimode (quad / hind-biped / front-biped) reward shaping.
 

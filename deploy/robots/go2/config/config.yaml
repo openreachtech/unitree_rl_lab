@@ -11,6 +11,11 @@ FSM:
     Biped:
       id: 4
       type: BipedRL
+      optional: true
+    BipedFront:
+      id: 5
+      type: BipedRL
+      optional: true
   Passive:
     transitions:
       FixStand: LT + A.on_pressed
@@ -23,10 +28,12 @@ FSM:
       Passive: LT + B.on_pressed
       Velocity: start.on_pressed
       Biped: LT + Y.on_pressed
+      BipedFront: LT + X.on_pressed
     keyboard_transitions:
       Passive: "0"
       Velocity: enter
       Biped: "2"
+      BipedFront: "3"
     kp: [60, 80, 80, 60, 80, 80, 60, 80, 80, 60, 80, 80]
     kd: [5, 4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4]
     ts: [0, 1, 2]
@@ -87,4 +94,26 @@ FSM:
     # No timestamp -- parser_policy_dir picks the latest run under here with an
     # `exported/` folder, i.e. whichever Go2-Biped-Phase1 checkpoint was trained most
     # recently.
-    policy_dir: ../../../logs/rsl_rl/go2_biped_phase1
+    policy_dir: ../../../logs/rsl_rl/go2_biped_phase2
+  BipedFront:
+    transitions:
+      Passive: LT + B.on_pressed
+    keyboard_transitions:
+      Passive: "0"
+    # Mirror of Biped, for the front-leg-stance checkpoints (Go2-Biped-Front-Phase1/2
+    # -- gait_mode pinned to front_biped for the whole episode, PinnedGaitModeCommand).
+    # Same operator override bindings for exploring off-distribution modes.
+    default_gait_mode: front_biped
+    gait_modes:
+      quad: up.on_pressed
+      hind_biped: left.on_pressed
+      front_biped: right.on_pressed
+    keyboard_gait_modes:
+      quad: "q"
+      hind_biped: "h"
+      front_biped: "j"
+    tilt_limit: 1.0
+    biped_tilt_limit: 2.6
+    # No timestamp -- parser_policy_dir picks the latest run under here with an
+    # `exported/` folder.
+    policy_dir: ../../../logs/rsl_rl/go2_biped_front
