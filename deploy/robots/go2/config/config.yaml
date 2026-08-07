@@ -16,6 +16,10 @@ FSM:
       id: 5
       type: BipedRL
       optional: true
+    BipedSingle:
+      id: 6
+      type: BipedRL
+      optional: true
   Passive:
     transitions:
       FixStand: LT + A.on_pressed
@@ -29,11 +33,13 @@ FSM:
       Velocity: start.on_pressed
       Biped: LT + Y.on_pressed
       BipedFront: LT + X.on_pressed
+      BipedSingle: LT + RB.on_pressed
     keyboard_transitions:
       Passive: "0"
       Velocity: enter
       Biped: "2"
       BipedFront: "3"
+      BipedSingle: "4"
     kp: [60, 80, 80, 60, 80, 80, 60, 80, 80, 60, 80, 80]
     kd: [5, 4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4]
     ts: [0, 1, 2]
@@ -117,3 +123,29 @@ FSM:
     # No timestamp -- parser_policy_dir picks the latest run under here with an
     # `exported/` folder.
     policy_dir: ../../../logs/rsl_rl/go2_biped_front
+  BipedSingle:
+    transitions:
+      Passive: LT + B.on_pressed
+    keyboard_transitions:
+      Passive: "0"
+    # Single-leg (FR_foot only) standing, trained as Go2-Biped-Sandbox-Try2 (then
+    # Try3, a front_contact_force weight retune) on top of a Go2-Biped-Front
+    # checkpoint. Still uses front_biped's gait_mode encoding (neither Try touches
+    # CommandsCfgFront's PinnedGaitModeCommand) and is standing-only for now
+    # (rel_standing_envs=1.0 in training) -- no walking validated yet, so treat
+    # any velocity command here as out-of-distribution.
+    default_gait_mode: front_biped
+    gait_modes:
+      quad: up.on_pressed
+      hind_biped: left.on_pressed
+      front_biped: right.on_pressed
+    keyboard_gait_modes:
+      quad: "q"
+      hind_biped: "h"
+      front_biped: "j"
+    tilt_limit: 1.0
+    biped_tilt_limit: 2.6
+    # No timestamp -- parser_policy_dir picks the latest run under here with an
+    # `exported/` folder, i.e. whichever Try3 checkpoint (still training as of
+    # this writing) was exported most recently.
+    policy_dir: ../../../logs/rsl_rl/go2_biped_single
