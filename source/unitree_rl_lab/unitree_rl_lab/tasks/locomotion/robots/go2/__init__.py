@@ -95,28 +95,12 @@ gym.register(
     },
 )
 
-# Same as Go2-Run, but gait_command is narrowed to a jitter band around the rotary gallop
-# instead of covering the full trot/pace/bound/gallop space -- a policy specialized on one gait.
-gym.register(
-    id="Go2-Gallop",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_run:RobotEnvCfgGo2GallopRotary",
-        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_run:RobotPlayEnvCfgGo2GallopRotary",
-        "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
-    },
-)
-
-# Promoted from sandbox Try-5 + Try-6: Go2-Gallop's gait_command/gait_tracking_reward grade the
-# policy against an external, absolute-phase reference clock it never observes (a non-recurrent
-# policy has no way to track elapsed time since that command was last randomly resampled) --
-# close to unlearnable. Replaces it with paired_gait_reward, a self-referential reward computed
-# purely from the robot's own current + recent contact-sensor history (front-pair/hind-pair
-# relative timing lag, front-vs-hind alternation), needing no external clock or gait
-# observation. Try 5 (reward front feet syncing exactly) visibly produced a bound in Play; Try 6
-# (reward front feet landing a target ~0.1-cycle apart, matching GAIT_GALLOP_ROTARY's structure)
-# looked like a clean gallop. Velocity range and tow-assist curriculum unchanged from Go2-Gallop.
+# Forward-only running specialized on a gallop-style footfall. paired_gait_reward is a
+# self-referential reward computed purely from the robot's own current + recent contact-sensor
+# history (front-pair/hind-pair relative timing lag, front-vs-hind alternation), needing no
+# external clock or gait observation -- promoted from sandbox Try-5 + Try-6, where rewarding
+# the front feet landing a target ~0.1-cycle apart (matching GAIT_GALLOP_ROTARY's structure)
+# looked like a clean gallop in Play.
 gym.register(
     id="Go2-Gallop-Phase1",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",

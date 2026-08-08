@@ -139,65 +139,7 @@ class RobotPlayEnvCfgGo2Run(RobotEnvCfgGo2Run):
 
 
 @configclass
-class CommandsCfgGo2GallopRotary(CommandsCfgGo2Run):
-    """Same as Go2-Run's commands, but gait_command is narrowed to a small jitter band
-    around the rotary gallop (theta_FR~0.1, theta_RL~0.6, theta_RR~0.5), with a lower duty
-    cycle and higher frequency range typical of a real sprinting gallop, instead of covering
-    the full trot/pace/bound/gallop space. Trades Go2-Run's "any gait on command"
-    generality for a policy that spends its whole training budget specializing on one gait.
-    """
-
-    gait_command = CommandsCfgGo2Run().gait_command.replace(
-        ranges=mdp.GaitCommandCfg.Ranges(
-            frequency=(2.5, 4.0),
-            theta_fr=(GAIT_GALLOP_ROTARY[0] - 0.05, GAIT_GALLOP_ROTARY[0] + 0.05),
-            theta_rl=(GAIT_GALLOP_ROTARY[1] - 0.05, GAIT_GALLOP_ROTARY[1] + 0.05),
-            theta_rr=(GAIT_GALLOP_ROTARY[2] - 0.05, GAIT_GALLOP_ROTARY[2] + 0.05),
-            # Lowered from (0.25, 0.4): duty cycle is literally "fraction of the cycle each
-            # foot spends planted" -- a lower value commands a longer relative flight phase
-            # per stride, i.e. more hop/bounce, less shuffle.
-            duty_cycle=(0.15, 0.3),
-        ),
-    )
-
-    # A gallop has no sideways or backward variant in nature -- it's a straight-ahead gait --
-    # so drop lateral motion entirely and restrict lin_vel_x to forward-only, instead of
-    # inheriting Go2-Run's full omnidirectional range. Yaw (turning) is left alone. Starting
-    # range begins at ~1.0 m/s rather than Phase1's ~0.1 m/s -- no need to spend training time
-    # crawling through the trivial-speed regime the tow-assist below is meant to skip past.
-    #
-    # Note: this is a plain module-level helper call, not a class attribute -- configclass
-    # turns *every* class-body assignment into a dataclass field (even underscore-prefixed
-    # ones), and CommandManager would then try to instantiate it as a second, redundant
-    # velocity command term. Keep any such intermediate value out of the class body.
-    base_velocity = CommandsCfgGo2Run().base_velocity.replace(
-        ranges=CommandsCfgGo2Run().base_velocity.ranges.replace(lin_vel_x=(0.0, 1.0), lin_vel_y=(0.0, 0.0)),
-        limit_ranges=CommandsCfgGo2Run().base_velocity.limit_ranges.replace(
-            lin_vel_x=(0.0, 3.5), lin_vel_y=(0.0, 0.0)
-        ),
-    )
-
-    # EFGCL-style (Yoneda et al. 2026) physical guidance, adapted from feat/jump's one-shot
-    # launch assist to a continuous forward tow: pulls the robot up toward its commanded
-    # speed -- like being towed on a leash -- so it physically experiences running at speed
-    # (and can learn correct footfall timing there) before it can generate that speed itself.
-    # Decays via tow_assist_decay (see CurriculumCfgGo2GallopRotary) once velocity-tracking
-    # success is consistently good, same success-rate-gated schedule as the jump assist.
-    tow_assist = mdp.TowAssistCommandCfg(
-        resampling_time_range=(10.0, 10.0),
-        debug_vis=False,
-        asset_name="robot",
-        body_names=["base"],
-        velocity_command_name="base_velocity",
-        gain=40.0,
-        max_force=150.0,
-        initial_assist_scale=1.0,
-        state_file="logs/rsl_rl/go2_gallop/tow_assist_state.json",
-    )
-
-
-@configclass
-class CurriculumCfgGo2GallopRotary(CurriculumCfg):
+class CurriculumCfgGo2Gallop(CurriculumCfg):
     tow_assist = CurrTerm(
         func=mdp.tow_assist_decay,
         params={
@@ -212,62 +154,18 @@ class CurriculumCfgGo2GallopRotary(CurriculumCfg):
 
 
 @configclass
-class RewardsCfgGo2GallopRotary(RewardsCfgGo2Run):
-    """Loosened further than Go2-Run's already-loosened values, and feet_air_time weighted up
-    -- playtesting found the gallop looked more like a fast shuffle than a hop. These penalties
-    were the main things left stamping out vertical bounce/pitch and discouraging air time."""
-
-    base_linear_velocity = RewardsCfgGo2Run().base_linear_velocity.replace(weight=-0.5)
-    flat_orientation_l2 = RewardsCfgGo2Run().flat_orientation_l2.replace(weight=-0.75)
-    feet_air_time = RewardsCfgGo2Run().feet_air_time.replace(weight=0.2)
-
-
-@configclass
-class RobotEnvCfgGo2GallopRotary(RobotEnvCfgGo2Run):
-    """Go2-Run with gait_command narrowed to rotary-gallop only -- see
-    ``CommandsCfgGo2GallopRotary``. Terrain unchanged; velocity range is forward-only with a
-    tow-assist curriculum, and rewards are tuned for a more hop-like flight phase -- see
-    ``CommandsCfgGo2GallopRotary``/``RewardsCfgGo2GallopRotary``."""
-
-    commands: CommandsCfgGo2GallopRotary = CommandsCfgGo2GallopRotary()
-    curriculum: CurriculumCfgGo2GallopRotary = CurriculumCfgGo2GallopRotary()
-    rewards: RewardsCfgGo2GallopRotary = RewardsCfgGo2GallopRotary()
-
-
-@configclass
-class RobotPlayEnvCfgGo2GallopRotary(RobotEnvCfgGo2GallopRotary):
-    def __post_init__(self):
-        super().__post_init__()
-        self.scene.num_envs = 32
-        self.scene.terrain.terrain_generator.num_rows = 3
-        self.scene.terrain.terrain_generator.num_cols = 5
-        self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
-        theta_fr, theta_rl, theta_rr = GAIT_GALLOP_ROTARY
-        self.commands.gait_command.ranges = mdp.GaitCommandCfg.Ranges(
-            frequency=(3.0, 3.0),
-            theta_fr=(theta_fr, theta_fr),
-            theta_rl=(theta_rl, theta_rl),
-            theta_rr=(theta_rr, theta_rr),
-            duty_cycle=(0.3, 0.3),
-        )
-        # Play mode ignores the training curriculum's saved decay state and defaults to no
-        # tow assist, so what you see is the policy's own unassisted capability -- edit
-        # initial_assist_scale below (0.0-1.0) to manually test with partial/full assist.
-        self.commands.tow_assist.state_file = None
-        self.commands.tow_assist.initial_assist_scale = 0.0
-
-
-@configclass
 class CommandsCfgGo2GallopPhase1(CommandsCfgPhase1):
-    """Go2-Gallop, minus gait_command -- promoted from sandbox Try 6. Inherits directly from
-    ``CommandsCfgPhase1`` (not ``CommandsCfgGo2Run``/``CommandsCfgGo2GallopRotary``), so there's
-    no ``gait_command`` term at all: ``RewardsCfgGo2GallopPhase1``'s self-referential
-    ``paired_gait`` reward (see ``mdp.paired_gait_reward``) stands in for
-    ``gait_tracking_reward`` instead, needing no external absolute-phase reference to grade
-    against. Velocity range and tow-assist are otherwise identical to Go2-Gallop.
+    """Promoted from sandbox Try 6. Inherits directly from ``CommandsCfgPhase1`` (not
+    ``CommandsCfgGo2Run``), so there's no ``gait_command`` term at all:
+    ``RewardsCfgGo2GallopPhase1``'s self-referential ``paired_gait`` reward (see
+    ``mdp.paired_gait_reward``) stands in for ``gait_tracking_reward`` instead, needing no
+    external absolute-phase reference to grade against.
     """
 
-    # Identical to CommandsCfgGo2GallopRotary.base_velocity (forward-only, 0.0-3.5 m/s ceiling).
+    # A gallop has no sideways or backward variant in nature -- it's a straight-ahead gait --
+    # so drop lateral motion entirely and restrict lin_vel_x to forward-only. Starting range
+    # begins at ~1.0 m/s rather than Phase1's ~0.1 m/s -- no need to spend training time
+    # crawling through the trivial-speed regime the tow-assist below is meant to skip past.
     base_velocity = CommandsCfgPhase1().base_velocity.replace(
         ranges=CommandsCfgPhase1().base_velocity.ranges.replace(lin_vel_x=(0.0, 1.0), lin_vel_y=(0.0, 0.0)),
         limit_ranges=CommandsCfgPhase1().base_velocity.limit_ranges.replace(
@@ -275,21 +173,35 @@ class CommandsCfgGo2GallopPhase1(CommandsCfgPhase1):
         ),
     )
 
-    # Same EFGCL tow-assist as Go2-Gallop (see CommandsCfgGo2GallopRotary.tow_assist) -- own
-    # state_file so it decays independently under this task's own experiment_name.
-    tow_assist = CommandsCfgGo2GallopRotary().tow_assist.replace(
-        state_file="logs/rsl_rl/go2_gallop_phase1/tow_assist_state.json"
+    # EFGCL-style (Yoneda et al. 2026) physical guidance, adapted from feat/jump's one-shot
+    # launch assist to a continuous forward tow: pulls the robot up toward its commanded
+    # speed -- like being towed on a leash -- so it physically experiences running at speed
+    # (and can learn correct footfall timing there) before it can generate that speed itself.
+    # Decays via tow_assist_decay (see CurriculumCfgGo2Gallop) once velocity-tracking
+    # success is consistently good, same success-rate-gated schedule as the jump assist.
+    tow_assist = mdp.TowAssistCommandCfg(
+        resampling_time_range=(10.0, 10.0),
+        debug_vis=False,
+        asset_name="robot",
+        body_names=["base"],
+        velocity_command_name="base_velocity",
+        gain=40.0,
+        max_force=150.0,
+        initial_assist_scale=1.0,
+        state_file="logs/rsl_rl/go2_gallop_phase1/tow_assist_state.json",
     )
 
 
 @configclass
 class RewardsCfgGo2GallopPhase1(RewardsCfgGo2):
-    """Same loosened-for-bounce tuning as Go2-Gallop, with ``paired_gait`` (self-referential,
-    see ``mdp.paired_gait_reward``) standing in for ``gait_tracking_reward``. ``air_time_variance``
-    is disabled outright, same as Go2-Gallop, rather than replaced by a term that tracks a
-    nonexistent command -- ``paired_gait`` takes over its role of shaping *structure*
-    (front-pair/hind-pair relative timing, front-vs-hind alternation) self-referentially
-    instead of against an external target.
+    """Loosened further than Go2-Run's already-loosened values, and feet_air_time weighted up --
+    playtesting found the gallop looked more like a fast shuffle than a hop; these penalties were
+    the main things left stamping out vertical bounce/pitch and discouraging air time.
+    ``paired_gait`` (self-referential, see ``mdp.paired_gait_reward``) stands in for
+    ``gait_tracking_reward``, and ``air_time_variance`` is disabled outright rather than replaced
+    by a term that tracks a nonexistent command -- ``paired_gait`` takes over its role of shaping
+    *structure* (front-pair/hind-pair relative timing, front-vs-hind alternation)
+    self-referentially instead of against an external target.
     """
 
     air_time_variance = RewardsCfgGo2().air_time_variance.replace(weight=0.0)
@@ -306,15 +218,14 @@ class RewardsCfgGo2GallopPhase1(RewardsCfgGo2):
 
 @configclass
 class RobotEnvCfgGo2GallopPhase1(RobotEnvCfgPhase1):
-    """Go2-Gallop, minus gait_command -- promoted from sandbox Try 6 (see
+    """Forward-only gallop-style running -- promoted from sandbox Try 6 (see
     ``CommandsCfgGo2GallopPhase1``/``RewardsCfgGo2GallopPhase1``). Observations are plain
-    ``ObservationsCfgGo2`` (via ``RobotEnvCfgPhase1``) -- no gait-style inputs, unlike
-    Go2-Gallop, which still observes ``gait_commands``/``gait_clock``. Terrain is unchanged
-    from Go2-Gallop (both ultimately inherit ``RobotEnvCfgPhase1``'s).
+    ``ObservationsCfgGo2`` (via ``RobotEnvCfgPhase1``) -- no gait-style inputs, unlike Go2-Run,
+    which observes ``gait_commands``/``gait_clock``. Terrain is Phase1's, unchanged.
     """
 
     commands: CommandsCfgGo2GallopPhase1 = CommandsCfgGo2GallopPhase1()
-    curriculum: CurriculumCfgGo2GallopRotary = CurriculumCfgGo2GallopRotary()
+    curriculum: CurriculumCfgGo2Gallop = CurriculumCfgGo2Gallop()
     rewards: RewardsCfgGo2GallopPhase1 = RewardsCfgGo2GallopPhase1()
 
 
@@ -344,9 +255,8 @@ class CommandsCfgGo2GallopPhase2(CommandsCfgPhase1):
     ``RewardsCfgGo2GallopPhase2``) so the gallop-style structure is only rewarded at/above
     ~1.0 m/s forward -- below that, or moving backward/lateral, the policy is free to choose
     its own footfall. Trained resuming from Go2-Gallop-Phase1
-    (``--previous-task Go2-Gallop-Phase1 --resume``): unlike the old gait_command-based
-    Go2-Gallop, Phase1 here has no gait observation at all, so its observation width matches
-    this task's exactly -- no checkpoint-surgery needed.
+    (``--previous-task Go2-Gallop-Phase1 --resume``): neither phase has a gait observation, so
+    their observation widths match exactly -- no checkpoint-surgery needed.
     """
 
     # Forward range/ceiling unchanged from Go2-Gallop-Phase1 (up to 3.5 m/s); adds backward
@@ -396,14 +306,14 @@ class RewardsCfgGo2GallopPhase2(RewardsCfgGo2):
 
 @configclass
 class RobotEnvCfgGo2GallopPhase2(RobotEnvCfgPhase1):
-    """Phase 2 of Go2-Gallop -- adds backward/lateral commands on top of Go2-Gallop-Phase1's
-    forward-only gallop, with ``paired_gait`` gated on forward speed (see
+    """Adds backward/lateral commands on top of Go2-Gallop-Phase1's forward-only gallop, with
+    ``paired_gait`` gated on forward speed (see
     ``CommandsCfgGo2GallopPhase2``/``RewardsCfgGo2GallopPhase2``). Terrain is unchanged from
     Go2-Gallop-Phase1 (both ultimately inherit ``RobotEnvCfgPhase1``'s).
     """
 
     commands: CommandsCfgGo2GallopPhase2 = CommandsCfgGo2GallopPhase2()
-    curriculum: CurriculumCfgGo2GallopRotary = CurriculumCfgGo2GallopRotary()
+    curriculum: CurriculumCfgGo2Gallop = CurriculumCfgGo2Gallop()
     rewards: RewardsCfgGo2GallopPhase2 = RewardsCfgGo2GallopPhase2()
 
 
