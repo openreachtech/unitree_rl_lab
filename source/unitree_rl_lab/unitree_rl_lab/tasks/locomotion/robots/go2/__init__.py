@@ -108,6 +108,43 @@ gym.register(
     },
 )
 
+# Promoted from sandbox Try-5 + Try-6: Go2-Gallop's gait_command/gait_tracking_reward grade the
+# policy against an external, absolute-phase reference clock it never observes (a non-recurrent
+# policy has no way to track elapsed time since that command was last randomly resampled) --
+# close to unlearnable. Replaces it with paired_gait_reward, a self-referential reward computed
+# purely from the robot's own current + recent contact-sensor history (front-pair/hind-pair
+# relative timing lag, front-vs-hind alternation), needing no external clock or gait
+# observation. Try 5 (reward front feet syncing exactly) visibly produced a bound in Play; Try 6
+# (reward front feet landing a target ~0.1-cycle apart, matching GAIT_GALLOP_ROTARY's structure)
+# looked like a clean gallop. Velocity range and tow-assist curriculum unchanged from Go2-Gallop.
+gym.register(
+    id="Go2-Gallop-Phase1",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_run:RobotEnvCfgGo2GallopPhase1",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_run:RobotPlayEnvCfgGo2GallopPhase1",
+        "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
+    },
+)
+
+# Promoted from sandbox Try-7: generalizes Go2-Gallop-Phase1 to omnidirectional commands (adds
+# backward/lateral). paired_gait is gated on forward commanded speed (>= ~1.0 m/s) rather than
+# unconditionally active -- backward/lateral commands always have lin_vel_x <= 0, so they fall
+# below the gate automatically and the policy is free to choose its own footfall there, instead
+# of being pushed toward a gallop-style structure that only makes sense running forward at
+# speed. Verified in MuJoCo. Train with --previous-task Go2-Gallop-Phase1 --resume.
+gym.register(
+    id="Go2-Gallop-Phase2",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_run:RobotEnvCfgGo2GallopPhase2",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_run:RobotPlayEnvCfgGo2GallopPhase2",
+        "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
+    },
+)
+
 # Continual learning on top of Phase3-balance-floating: dedicated terrain mix
 # for stepping over short free-standing walls (10% flat, 90% thin_wall --
 # height 0.05 -> 0.25 m and thickness 0.15 -> 0.03 m, both narrowing/rising

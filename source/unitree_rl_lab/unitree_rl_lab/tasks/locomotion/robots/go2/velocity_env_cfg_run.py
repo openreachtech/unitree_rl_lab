@@ -255,3 +255,165 @@ class RobotPlayEnvCfgGo2GallopRotary(RobotEnvCfgGo2GallopRotary):
         # initial_assist_scale below (0.0-1.0) to manually test with partial/full assist.
         self.commands.tow_assist.state_file = None
         self.commands.tow_assist.initial_assist_scale = 0.0
+
+
+@configclass
+class CommandsCfgGo2GallopPhase1(CommandsCfgPhase1):
+    """Go2-Gallop, minus gait_command -- promoted from sandbox Try 6. Inherits directly from
+    ``CommandsCfgPhase1`` (not ``CommandsCfgGo2Run``/``CommandsCfgGo2GallopRotary``), so there's
+    no ``gait_command`` term at all: ``RewardsCfgGo2GallopPhase1``'s self-referential
+    ``paired_gait`` reward (see ``mdp.paired_gait_reward``) stands in for
+    ``gait_tracking_reward`` instead, needing no external absolute-phase reference to grade
+    against. Velocity range and tow-assist are otherwise identical to Go2-Gallop.
+    """
+
+    # Identical to CommandsCfgGo2GallopRotary.base_velocity (forward-only, 0.0-3.5 m/s ceiling).
+    base_velocity = CommandsCfgPhase1().base_velocity.replace(
+        ranges=CommandsCfgPhase1().base_velocity.ranges.replace(lin_vel_x=(0.0, 1.0), lin_vel_y=(0.0, 0.0)),
+        limit_ranges=CommandsCfgPhase1().base_velocity.limit_ranges.replace(
+            lin_vel_x=(0.0, 3.5), lin_vel_y=(0.0, 0.0)
+        ),
+    )
+
+    # Same EFGCL tow-assist as Go2-Gallop (see CommandsCfgGo2GallopRotary.tow_assist) -- own
+    # state_file so it decays independently under this task's own experiment_name.
+    tow_assist = CommandsCfgGo2GallopRotary().tow_assist.replace(
+        state_file="logs/rsl_rl/go2_gallop_phase1/tow_assist_state.json"
+    )
+
+
+@configclass
+class RewardsCfgGo2GallopPhase1(RewardsCfgGo2):
+    """Same loosened-for-bounce tuning as Go2-Gallop, with ``paired_gait`` (self-referential,
+    see ``mdp.paired_gait_reward``) standing in for ``gait_tracking_reward``. ``air_time_variance``
+    is disabled outright, same as Go2-Gallop, rather than replaced by a term that tracks a
+    nonexistent command -- ``paired_gait`` takes over its role of shaping *structure*
+    (front-pair/hind-pair relative timing, front-vs-hind alternation) self-referentially
+    instead of against an external target.
+    """
+
+    air_time_variance = RewardsCfgGo2().air_time_variance.replace(weight=0.0)
+    base_linear_velocity = RewardsCfgGo2().base_linear_velocity.replace(weight=-0.5)
+    flat_orientation_l2 = RewardsCfgGo2().flat_orientation_l2.replace(weight=-0.75)
+    feet_air_time = RewardsCfgGo2().feet_air_time.replace(weight=0.2)
+
+    paired_gait = RewTerm(
+        func=mdp.paired_gait_reward,
+        weight=0.2,
+        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=_GAIT_FEET, preserve_order=True)},
+    )
+
+
+@configclass
+class RobotEnvCfgGo2GallopPhase1(RobotEnvCfgPhase1):
+    """Go2-Gallop, minus gait_command -- promoted from sandbox Try 6 (see
+    ``CommandsCfgGo2GallopPhase1``/``RewardsCfgGo2GallopPhase1``). Observations are plain
+    ``ObservationsCfgGo2`` (via ``RobotEnvCfgPhase1``) -- no gait-style inputs, unlike
+    Go2-Gallop, which still observes ``gait_commands``/``gait_clock``. Terrain is unchanged
+    from Go2-Gallop (both ultimately inherit ``RobotEnvCfgPhase1``'s).
+    """
+
+    commands: CommandsCfgGo2GallopPhase1 = CommandsCfgGo2GallopPhase1()
+    curriculum: CurriculumCfgGo2GallopRotary = CurriculumCfgGo2GallopRotary()
+    rewards: RewardsCfgGo2GallopPhase1 = RewardsCfgGo2GallopPhase1()
+
+
+@configclass
+class RobotPlayEnvCfgGo2GallopPhase1(RobotEnvCfgGo2GallopPhase1):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 32
+        self.scene.terrain.terrain_generator.num_rows = 3
+        self.scene.terrain.terrain_generator.num_cols = 5
+        self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
+        self.commands.tow_assist.state_file = None
+        self.commands.tow_assist.initial_assist_scale = 0.0
+
+
+# Forward-speed threshold at/above which paired_gait is graded -- below it (which covers every
+# backward/lateral command, since those have lin_vel_x <= 0), the term is inactive and the
+# policy is free to pick its own natural footfall instead of being pushed toward a gallop-style
+# structure that only makes sense running forward at speed.
+_GALLOP_SPEED_THRESHOLD = 1.0
+
+
+@configclass
+class CommandsCfgGo2GallopPhase2(CommandsCfgPhase1):
+    """Generalizes Go2-Gallop-Phase1 to omnidirectional commands (adds backward/lateral) --
+    promoted from sandbox Try 7. Gates ``paired_gait`` on forward speed (see
+    ``RewardsCfgGo2GallopPhase2``) so the gallop-style structure is only rewarded at/above
+    ~1.0 m/s forward -- below that, or moving backward/lateral, the policy is free to choose
+    its own footfall. Trained resuming from Go2-Gallop-Phase1
+    (``--previous-task Go2-Gallop-Phase1 --resume``): unlike the old gait_command-based
+    Go2-Gallop, Phase1 here has no gait observation at all, so its observation width matches
+    this task's exactly -- no checkpoint-surgery needed.
+    """
+
+    # Forward range/ceiling unchanged from Go2-Gallop-Phase1 (up to 3.5 m/s); adds backward
+    # (down to -1.0 m/s start / -1.0 m/s ceiling) and lateral (+-0.5 m/s start / +-1.0 m/s
+    # ceiling). lin_vel_cmd_levels (inherited via CurriculumCfg) widens both dims from these
+    # starting ranges toward limit_ranges as tracking improves, same as every other velocity
+    # task. ang_vel_z is untouched (Phase1's own (-0.5, 0.5) -> (-1.2, 1.2)).
+    base_velocity = CommandsCfgPhase1().base_velocity.replace(
+        ranges=CommandsCfgPhase1().base_velocity.ranges.replace(lin_vel_x=(-0.5, 1.5), lin_vel_y=(-0.5, 0.5)),
+        limit_ranges=CommandsCfgPhase1().base_velocity.limit_ranges.replace(
+            lin_vel_x=(-1.0, 3.5), lin_vel_y=(-1.0, 1.0)
+        ),
+    )
+
+    # Same EFGCL tow-assist as Go2-Gallop-Phase1, own state_file. The force itself is
+    # forward-only regardless (see TowAssistCommand._update_command) so it's a no-op for
+    # backward/lateral commands anyway; it only ever helps the forward-fast regime this phase
+    # already inherits a trained head start on via --resume.
+    tow_assist = CommandsCfgGo2GallopPhase1().tow_assist.replace(
+        state_file="logs/rsl_rl/go2_gallop_phase2/tow_assist_state.json"
+    )
+
+
+@configclass
+class RewardsCfgGo2GallopPhase2(RewardsCfgGo2):
+    """Same loosened-for-bounce tuning as Go2-Gallop-Phase1, with ``paired_gait`` gated on
+    forward speed (see ``mdp.paired_gait_reward``'s ``velocity_command_name``/
+    ``speed_threshold``) instead of unconditionally active -- backward/lateral commands always
+    have ``lin_vel_x <= 0``, so they fall below the gate automatically.
+    """
+
+    air_time_variance = RewardsCfgGo2().air_time_variance.replace(weight=0.0)
+    base_linear_velocity = RewardsCfgGo2().base_linear_velocity.replace(weight=-0.5)
+    flat_orientation_l2 = RewardsCfgGo2().flat_orientation_l2.replace(weight=-0.75)
+    feet_air_time = RewardsCfgGo2().feet_air_time.replace(weight=0.2)
+
+    paired_gait = RewTerm(
+        func=mdp.paired_gait_reward,
+        weight=0.2,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=_GAIT_FEET, preserve_order=True),
+            "velocity_command_name": "base_velocity",
+            "speed_threshold": _GALLOP_SPEED_THRESHOLD,
+        },
+    )
+
+
+@configclass
+class RobotEnvCfgGo2GallopPhase2(RobotEnvCfgPhase1):
+    """Phase 2 of Go2-Gallop -- adds backward/lateral commands on top of Go2-Gallop-Phase1's
+    forward-only gallop, with ``paired_gait`` gated on forward speed (see
+    ``CommandsCfgGo2GallopPhase2``/``RewardsCfgGo2GallopPhase2``). Terrain is unchanged from
+    Go2-Gallop-Phase1 (both ultimately inherit ``RobotEnvCfgPhase1``'s).
+    """
+
+    commands: CommandsCfgGo2GallopPhase2 = CommandsCfgGo2GallopPhase2()
+    curriculum: CurriculumCfgGo2GallopRotary = CurriculumCfgGo2GallopRotary()
+    rewards: RewardsCfgGo2GallopPhase2 = RewardsCfgGo2GallopPhase2()
+
+
+@configclass
+class RobotPlayEnvCfgGo2GallopPhase2(RobotEnvCfgGo2GallopPhase2):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 32
+        self.scene.terrain.terrain_generator.num_rows = 3
+        self.scene.terrain.terrain_generator.num_cols = 5
+        self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
+        self.commands.tow_assist.state_file = None
+        self.commands.tow_assist.initial_assist_scale = 0.0

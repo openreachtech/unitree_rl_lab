@@ -472,6 +472,100 @@ def air_time_variance_penalty(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg
     )
 
 
+def _local_stride_phase(
+    current_stance_time: torch.Tensor,
+    current_swing_time: torch.Tensor,
+    is_stance: torch.Tensor,
+    last_stance_time: torch.Tensor,
+    last_swing_time: torch.Tensor,
+) -> torch.Tensor:
+    """Approximate each foot's own position within its stride cycle, in ``[0, 1)``, using only
+    that foot's own recent contact history -- no shared/external clock. ``duty`` (the
+    stance/swing split) and "how far along the current phase am I" are both estimated from the
+    most recently *completed* stance/swing durations, since the currently in-progress one's
+    total length isn't known yet. Falls back to "at the end of the current phase" (fraction
+    clamped to 1.0) before any cycle has completed (e.g. the first step of an episode), rather
+    than dividing by zero.
+    """
+    eps = 1.0e-3
+    duty = (last_stance_time / (last_stance_time + last_swing_time + eps)).clamp(0.05, 0.95)
+    stance_frac = (current_stance_time / (last_stance_time + eps)).clamp(max=1.0)
+    swing_frac = (current_swing_time / (last_swing_time + eps)).clamp(max=1.0)
+    return torch.where(is_stance, stance_frac * duty, duty + swing_frac * (1.0 - duty))
+
+
+def _circular_dist(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """Shortest distance between two phases in ``[0, 1)``, wrapping ``1.0`` back to ``0.0``."""
+    d = (a - b).abs() % 1.0
+    return torch.minimum(d, 1.0 - d)
+
+
+def paired_gait_reward(
+    env: ManagerBasedRLEnv,
+    sensor_cfg: SceneEntityCfg,
+    target_pair_offset: float = 0.1,
+    offset_std: float = 0.05,
+    velocity_command_name: str | None = None,
+    speed_threshold: float = 0.0,
+) -> torch.Tensor:
+    """Self-referential bound/gallop-style structure reward (promoted from sandbox Try 6,
+    replacing Try 5's version -- see git history for why: Try 5 rewarded FL/FR (and RL/RR)
+    sharing the *exact same* instantaneous contact state, which is what a bound is, not a
+    rotary gallop -- confirmed visibly putting both front feet down together in Play).
+
+    Rewards the front pair (FL, FR) and hind pair (RL, RR) landing near a target relative
+    timing lag (``target_pair_offset``, a fraction of a stride cycle -- default 0.1, matching
+    the ~0.1-cycle front-leg lead and ~0.1-cycle hind-leg lead in
+    ``GAIT_GALLOP_ROTARY = (0.1, 0.6, 0.5)``) via a Gaussian centered on that target, plus the
+    two pairs alternating with each other (one grounded while the other is airborne) -- the
+    structural signature that separates a bound/gallop from a trot (diagonal pairs share
+    contact) or a pace (same-side pairs share contact).
+
+    The lag is computed from each foot's own local stride-phase estimate (see
+    ``_local_stride_phase``) -- purely from that foot's own contact-sensor history -- so unlike
+    ``gait_tracking_reward``, this needs no external absolute-phase reference (``gait_command``)
+    to grade against, and works without a ``gait_clock`` observation. That matters because a
+    non-recurrent policy (this repo's default ``RslRlPpoActorCriticCfg`` has no recurrent
+    memory) has no way to track elapsed time since an *unobserved* command was last resampled,
+    so grading against ``gait_command``'s hidden, randomly-timed clock is close to unlearnable
+    without also observing it.
+
+    If ``velocity_command_name`` is given, the term is only active for envs whose *forward*
+    commanded speed (``lin_vel_x``, not the 2D magnitude -- a gallop has no backward/sideways
+    variant) is at or above ``speed_threshold``; below that, this returns 0 so the policy is
+    free to pick its own natural low-speed/backward/lateral footfall. Leaving
+    ``velocity_command_name`` unset (the default) keeps the term unconditionally active.
+
+    ``sensor_cfg`` must list feet in ``[FL, FR, RL, RR]`` order, matching this module's other
+    gait-related rewards (``feet_gait``, ``gait_tracking_reward``).
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    current_contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]  # (N, 4)
+    current_air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]
+    last_contact_time = contact_sensor.data.last_contact_time[:, sensor_cfg.body_ids]
+    last_air_time = contact_sensor.data.last_air_time[:, sensor_cfg.body_ids]
+    is_stance = current_contact_time > 0.0
+
+    phase = _local_stride_phase(current_contact_time, current_air_time, is_stance, last_contact_time, last_air_time)
+
+    front_offset = _circular_dist(phase[:, 0], phase[:, 1])  # FL vs FR
+    hind_offset = _circular_dist(phase[:, 2], phase[:, 3])  # RL vs RR
+    front_reward = torch.exp(-torch.square(front_offset - target_pair_offset) / offset_std**2)
+    hind_reward = torch.exp(-torch.square(hind_offset - target_pair_offset) / offset_std**2)
+
+    front_state = is_stance[:, 0:2].float().mean(dim=-1)  # 0 (both airborne), 0.5 (split), 1 (both grounded)
+    hind_state = is_stance[:, 2:4].float().mean(dim=-1)
+    alternation = (front_state - hind_state).abs()  # 1 when one pair fully grounded, other fully airborne
+
+    reward = front_reward + hind_reward + alternation
+
+    if velocity_command_name is not None:
+        forward_speed = env.command_manager.get_command(velocity_command_name)[:, 0]
+        reward = reward * (forward_speed >= speed_threshold).float()
+
+    return reward
+
+
 """
 Feet Gait rewards.
 """
