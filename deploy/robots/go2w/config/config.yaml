@@ -8,8 +8,10 @@ FSM:
       id: 3
       type: RLBase
   Passive:
-    transitions: 
+    transitions:
       FixStand: LT + A.on_pressed
+    keyboard_transitions:
+      FixStand: "1"
     mode: [
       1, 1, 1, 1,
       1, 1, 1, 1, 
@@ -23,10 +25,13 @@ FSM:
       3, 3, 3, 3
     ]
   FixStand:
-    transitions: 
+    transitions:
       Passive: LT + B.on_pressed
       Velocity: start.on_pressed
-    kp: [ 60, 80, 80, 60, 
+    keyboard_transitions:
+      Passive: "0"
+      Velocity: enter
+    kp: [ 60, 80, 80, 60,
           80, 80, 60, 80, 
           80, 60, 80, 80,
           0, 0, 0, 0]
@@ -42,6 +47,8 @@ FSM:
       [0., 0.8, -1.5, 0., 0.8, -1.5, 0., 0.8, -1.5, 0., 0.8, -1.5],
     ]
   Velocity:
-    transitions: 
+    transitions:
       Passive: LT + B.on_pressed
+    keyboard_transitions:
+      Passive: "0"
     policy_dir: ../../../logs/rsl_rl/unitree_go2w_velocity

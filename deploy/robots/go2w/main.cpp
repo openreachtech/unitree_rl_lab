@@ -37,12 +37,20 @@ int main(int argc, char** argv)
 
     init_fsm_state();
 
+    // Must be constructed before CtrlFSM: FSMState's constructor only registers a state's
+    // keyboard_transitions when FSMState::keyboard is already non-null, and it does so
+    // silently otherwise -- build the FSM first and every key binding is dropped without
+    // a warning.
+    FSMState::keyboard = std::make_shared<Keyboard>();
+
     // Initialize FSM
     auto fsm = std::make_unique<CtrlFSM>(param::config["FSM"]);
     fsm->start();
 
-    std::cout << "Press [L2 + A] to enter FixStand mode.\n";
-    std::cout << "And then press [Start] to start controlling the robot.\n";
+    std::cout << "Remote: [L2+A] FixStand, [Start] Velocity, [L2+B] Passive\n";
+    std::cout << "Keyboard: [1] FixStand, [Enter] Velocity, [0] Passive\n";
+    std::cout << "          [F/B/L/R/Y/U] velocity forward/back/left/right/yaw (latched, diagonal OK)\n";
+    std::cout << "          [Space] zero velocity cmd; [0] Passive FSM\n";
 
     while (true)
     {
