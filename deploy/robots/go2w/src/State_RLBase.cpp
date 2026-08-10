@@ -6,6 +6,7 @@
 
 #include <array>
 #include <algorithm>
+#include <utility>
 
 namespace isaaclab
 {
@@ -95,9 +96,23 @@ REGISTER_OBSERVATION(keyboard_velocity_commands)
         cmd[i] = (1.0f - alpha) * cmd[i] + alpha * target[i];
     }
 
-    cmd[0] = std::clamp(cmd[0], sx(0), sx(1));
-    cmd[1] = std::clamp(cmd[1], sy(0), sy(1));
-    cmd[2] = std::clamp(cmd[2], sz(0), sz(1));
+    // Neutral has to stay reachable. These bounds come from the policy's limit_ranges,
+    // and Phase5's are one-sided (lin_vel_x = 0.4 .. 1.2 -- the non-zero floor is
+    // deliberate, see CommandsCfgPhase5), so clamping to [sx(0), sx(1)] alone would pin
+    // the command at 0.8 * 0.4 = 0.32 m/s with nothing pressed and the robot would drive
+    // off on its own. (Space still zeroed it for exactly one control step, because
+    // consume_velocity_stop returns before this clamp, then the clamp pulled it back up.)
+    // Widening each bound to include zero fixes that and is a no-op for a symmetric range
+    // like Go2's, where zero already sat inside the interval.
+    const auto with_zero = [](float lo, float hi) {
+        return std::pair<float, float>(std::min(0.0f, lo), std::max(0.0f, hi));
+    };
+    const auto bx = with_zero(sx(0), sx(1));
+    const auto by = with_zero(sy(0), sy(1));
+    const auto bz = with_zero(sz(0), sz(1));
+    cmd[0] = std::clamp(cmd[0], bx.first, bx.second);
+    cmd[1] = std::clamp(cmd[1], by.first, by.second);
+    cmd[2] = std::clamp(cmd[2], bz.first, bz.second);
 
     return std::vector<float>(cmd.begin(), cmd.end());
 }

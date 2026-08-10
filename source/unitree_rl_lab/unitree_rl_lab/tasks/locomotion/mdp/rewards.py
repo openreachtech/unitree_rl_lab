@@ -546,6 +546,34 @@ def forward_command_progress(
     return progress * (cmd_norm > 0.1)
 
 
+def climb_progress_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    max_climb_speed: float = 0.5,
+) -> torch.Tensor:
+    """Reward vertical (world Z) speed magnitude, clamped to a reasonable max -- a
+    direct, continuous incentive to make height-changing progress while crossing
+    stairs, mirroring ``forward_command_progress``'s design: velocity-based (so it
+    doesn't saturate near zero the way an exponential-kernel reward would) and a rate,
+    not a state, so it doesn't create a "camp at a height and collect reward every
+    remaining step" exploit the way a raw height-achieved reward would.
+
+    Magnitude, not signed to a single "up" direction, because a mixed pyramid_stairs
+    (climbing up) / pyramid_stairs_inv (descending) terrain needs genuine progress
+    rewarded in either direction without conditioning on which sub-terrain type a given
+    env is currently on.
+
+    Caveat: a robot bouncing vertically in place (no net XY progress) could in principle
+    farm this reward without actually crossing anything. ``forward_stall_penalty``
+    (gated on forward-projected XY speed specifically) provides some counter-pressure
+    against that, but this combination hasn't been stress-tested -- watch for
+    oscillating/bouncing behavior in training results.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    vertical_speed = torch.abs(asset.data.root_lin_vel_w[:, 2])
+    return vertical_speed.clamp(max=max_climb_speed)
+
+
 def stall_penalty(
     env: ManagerBasedRLEnv,
     command_name: str = "base_velocity",
@@ -570,6 +598,37 @@ def stall_penalty(
     cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
     body_speed = torch.norm(asset.data.root_lin_vel_b[:, :2], dim=1)
     stall = torch.exp(-body_speed / speed_scale)
+    return stall * (cmd_norm > 0.1)
+
+
+def forward_stall_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str = "base_velocity",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    speed_scale: float = 0.1,
+) -> torch.Tensor:
+    """Like ``stall_penalty``, but gates on forward-projected speed (the same
+    ``vel_b . cmd_dir`` projection ``forward_command_progress`` uses) instead of raw
+    planar speed magnitude.
+
+    ``stall_penalty``'s ``norm(root_lin_vel_b[:, :2])`` is direction-agnostic: any
+    planar motion -- forward, sideways, backward, or the center-of-mass wobble produced
+    by rotating in place near an obstacle -- reduces it, even with zero net progress.
+    Observed on a 2026-08-05 Go2W wall-climb run: instead of committing to the wall,
+    the policy span in place, plausibly because off-axis CoM wobble during rotation
+    gave ``stall_penalty`` enough nonzero body_speed to soften it without genuine
+    forward progress, while ``track_ang_vel_z`` (decoupled from ``lin_vel_x``) gave an
+    independent, easier-to-satisfy reward for turning at all. Clamping the projection
+    at 0 before the exponential means backward motion is scored the same as standing
+    still (full penalty), not "not stalled" -- only genuine forward progress counts.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    cmd_xy = env.command_manager.get_command(command_name)[:, :2]
+    cmd_norm = torch.norm(cmd_xy, dim=1)
+    cmd_dir = cmd_xy / cmd_norm.clamp(min=1e-3).unsqueeze(1)
+    vel_b = asset.data.root_lin_vel_b[:, :2]
+    forward_speed = torch.sum(vel_b * cmd_dir, dim=1).clamp(min=0.0)
+    stall = torch.exp(-forward_speed / speed_scale)
     return stall * (cmd_norm > 0.1)
 
 
