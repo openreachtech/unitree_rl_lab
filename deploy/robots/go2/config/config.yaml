@@ -66,6 +66,13 @@ FSM:
     command_duration_s: 0.5
     time_scale: 1.0
     rearm_delay_s: 0.3
+    # Fall -> Passive guard. The delay is measured from the trigger and must cover the
+    # landing and the settle that follows it, not just command_duration_s: a backflip's
+    # front feet touch down around 0.8s in, and the guard must not un-gate while the
+    # robot is still absorbing that impact. The hold time then requires a sustained
+    # tilt, so an IMU transient from the touchdown shock alone cannot trip it.
+    fall_check_delay_s: 1.2
+    fall_check_hold_s: 0.1
     motions:
       - key: "3"
         motion: jump

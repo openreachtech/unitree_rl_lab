@@ -105,11 +105,13 @@ private:
         
         // Check if need to change state
         int nextStateMode = 0;
+        std::string trigger_label;
         for(int i(0); i<currentState->registered_checks.size(); i++)
         {
-            if(currentState->registered_checks[i].first())
+            if(currentState->registered_checks[i].triggered())
             {
-                nextStateMode = currentState->registered_checks[i].second;
+                nextStateMode = currentState->registered_checks[i].target_state;
+                trigger_label = currentState->registered_checks[i].label;
                 break;
             }
         }
@@ -120,7 +122,8 @@ private:
             {
                 if(state->isState(nextStateMode))
                 {
-                    spdlog::info("FSM: Change state from {} to {}", currentState->getStateString(), state->getStateString());
+                    spdlog::info("FSM: Change state from {} to {} [triggered by: {}]",
+                        currentState->getStateString(), state->getStateString(), trigger_label);
                     currentState->exit();
                     currentState = state;
                     currentState->enter();

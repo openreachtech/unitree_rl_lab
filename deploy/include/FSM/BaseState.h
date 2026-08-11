@@ -6,9 +6,35 @@
 #include <boost/bimap.hpp>
 #include <string>
 #include <any>
+#include <functional>
 #include <utility>
+#include <vector>
 
 inline boost::bimap<int, std::string> FSMStringMap;
+
+// A condition that, once true, hands control to `target_state`. `label` names the
+// condition so CtrlFSM can report *which* one fired: several unrelated conditions
+// (joystick, lowstate timeout, fall detection) all lead to Passive, and on hardware
+// the difference between them is the whole diagnosis.
+struct TransitionCheck
+{
+    std::function<bool()> triggered;
+    int target_state;
+    std::string label;
+
+    TransitionCheck(std::function<bool()> fn, int target, std::string check_label)
+    : triggered(std::move(fn)), target_state(target), label(std::move(check_label))
+    {
+    }
+
+    // Accepts the older `emplace_back(std::make_pair(fn, id))` form still used by the
+    // per-robot RL states, which register their checks without a label.
+    template <typename Fn>
+    TransitionCheck(std::pair<Fn, int> pair)
+    : triggered(std::move(pair.first)), target_state(pair.second), label("unlabeled")
+    {
+    }
+};
 
 class BaseState
 {
@@ -29,7 +55,7 @@ public:
     std::string getStateString() { return FSMStringMap.left.at(state_); }
     int getState() {return state_; }
     bool isState(int state) { return state_ == state; }
-    std::vector<std::pair<std::function<bool()>, int>> registered_checks;
+    std::vector<TransitionCheck> registered_checks;
 private:
     int state_;
 };

@@ -22,6 +22,7 @@
 #include "isaaclab/envs/mdp/terminations.h"
 
 #include <atomic>
+#include <chrono>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -181,8 +182,18 @@ private:
     std::string trigger_key_;             // (single-shot) optional key to fire the one configured motion
     std::vector<MotionPreset> motions_;   // (manual/Dynamic) key -> motion presets
     bool manual_mode_ = false;            // true when a `motions:` list is configured
-    float fall_check_delay_s_ = 0.3f;     // grace period after the motion before fall -> Passive
+    // Grace period after the motion window before fall -> Passive. Must outlast the
+    // whole landing *and* settle, not just the command: a backflip touches down around
+    // command_duration_s + 0.3s (training's minimum_landing_time_s is 0.80s for a 0.50s
+    // command), so a shorter delay un-gates the check at the exact instant the front
+    // feet slam down and the robot is still pitching.
+    float fall_check_delay_s_ = 1.2f;
     float bad_orientation_limit_ = 1.2f;
+    // The tilt must exceed the limit continuously for this long before we call it a
+    // fall. See the check in State_Flip.cpp for why a single sample is not enough.
+    float fall_check_hold_s_ = 0.1f;
+    std::chrono::steady_clock::time_point bad_orientation_since_{};
+    bool bad_orientation_latched_ = false;
 
     std::thread policy_thread;
     bool policy_thread_running = false;
@@ -198,6 +209,41 @@ private:
     long telemetry_step_ = 0;
     float accumulated_pitch_deg_ = 0.0f;
     void log_telemetry_row();
+
+    // --- landing-impact diagnostics -----------------------------------------
+    // Sampled from run(), i.e. at the 1 kHz FSM rate, not from the 50 Hz policy
+    // loop: a touchdown spike lasts a few milliseconds, so policy-rate sampling
+    // can miss its peak entirely -- and that peak is precisely the quantity in
+    // question when a landing kicks the state machine out of this state. Peaks are
+    // accumulated per motion and reported once, so a run that *doesn't* trip the
+    // fall check still tells you how hard it landed (e.g. for comparing a backflip
+    // against a sideflip).
+    void sample_diagnostics();
+    void report_impact() const;
+    std::string impact_summary() const;
+    float tilt_deg() const;
+
+    long diag_trigger_step_ = -1;      // which motion the peaks below belong to
+    bool diag_reported_ = false;
+    float peak_accel_ = 0.0f;          // |IMU acceleration| over the motion, m/s^2
+    float peak_accel_time_s_ = 0.0f;
+    float peak_tau_ = 0.0f;            // |tau_est| over the motion, Nm
+    int peak_tau_motor_ = -1;          // SDK motor index of the above
+    float peak_joint_vel_ = 0.0f;      // |dq| over the motion, rad/s
+    // Tilt is only meaningful once the fall guard arms -- before that the robot is
+    // deliberately upside down. Both are measured against bad_orientation_limit_.
+    float tilt_at_arm_deg_ = -1.0f;    // single sample, taken as the guard arms
+    float peak_tilt_deg_ = 0.0f;       // peak after the guard armed
+    float peak_tilt_time_s_ = 0.0f;
+
+    // Policy-loop health. The loop targets step_dt per iteration but does ONNX
+    // inference and a flushed CSV write inline, either of which can block longer
+    // than that on the robot's own filesystem/CPU -- and once an iteration overruns,
+    // sleep_until stops sleeping and the effective control rate drops. That failure
+    // cannot happen in simulation, so it is worth measuring separately from the
+    // orientation guard. Written by the policy thread, read by the FSM thread.
+    std::atomic<int> policy_overrun_count_{0};
+    std::atomic<float> policy_step_max_ms_{0.0f};
 };
 
 REGISTER_FSM(State_Flip)

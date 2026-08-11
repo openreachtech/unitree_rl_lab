@@ -38,10 +38,9 @@ public:
                 auto ast = p.Parse();
                 auto func = unitree::common::dsl::Compile(*ast);
                 registered_checks.emplace_back(
-                    std::make_pair(
-                        [func]()->bool{ return func(FSMState::lowstate->joystick); },
-                        fsm_id
-                    )
+                    [func]()->bool{ return func(FSMState::lowstate->joystick); },
+                    fsm_id,
+                    "joystick[" + condition + "]"
                 );
             }
         }
@@ -62,7 +61,8 @@ public:
                 int fsm_id = FSMStringMap.right.at(target_fsm);
                 const std::string &key_spec = it->second;
                 registered_checks.emplace_back(
-                    std::make_pair(make_keyboard_transition_check(key_spec), fsm_id));
+                    make_keyboard_transition_check(key_spec), fsm_id,
+                    "keyboard['" + key_spec + "']");
                 spdlog::info(
                     "FSM: State_{} keyboard transition -> {} (key='{}')",
                     state_string,
@@ -73,10 +73,9 @@ public:
 
         // register for all states
         registered_checks.emplace_back(
-            std::make_pair(
-                []()->bool{ return lowstate->isTimeout(); },
-                FSMStringMap.right.at("Passive")
-            )
+            []()->bool{ return lowstate->isTimeout(); },
+            FSMStringMap.right.at("Passive"),
+            "lowstate_timeout"
         );
     }
 

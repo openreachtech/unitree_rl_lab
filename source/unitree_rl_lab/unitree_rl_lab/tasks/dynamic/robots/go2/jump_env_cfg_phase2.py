@@ -118,17 +118,17 @@ class FlipRewardsCfg(StandingRewardsCfg):
         weight=1.0,
         params={"command_name": "jump"},
     )
-    # Penalizes hard foot-touchdown forces right after landing, since nothing else in
-    # this reward set discourages a landing that hits the pose/height target via a hard
-    # slam -- see landing_impact_penalty docstring.
-    landing_impact = RewTerm(
-        func=mdp.landing_impact_penalty,
-        weight=-0.05,
-        params={
-            "command_name": "jump",
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"),
-        },
-    )
+    # # Penalizes hard foot-touchdown forces right after landing, since nothing else in
+    # # this reward set discourages a landing that hits the pose/height target via a hard
+    # # slam -- see landing_impact_penalty docstring.
+    # landing_impact = RewTerm(
+    #     func=mdp.landing_impact_penalty,
+    #     weight=-0.05,
+    #     params={
+    #         "command_name": "jump",
+    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"),
+    #     },
+    # )
 
 
 @configclass
