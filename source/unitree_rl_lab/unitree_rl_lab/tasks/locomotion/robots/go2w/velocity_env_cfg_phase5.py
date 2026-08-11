@@ -64,8 +64,11 @@ from unitree_rl_lab.tasks.locomotion.robots.go2w.velocity_env_cfg_phase4 import 
 #   what it did and what re-adding it would take.
 # =============================================================================
 
-# pyramid_stairs_inv (80 %) spawns the robot on a pit floor and is therefore the *climbing*
-# case; pyramid_stairs (20 %) spawns it on top of a pyramid and is the *descending* one --
+# Mix is rough 10 % / pyramid_stairs 20 % / pyramid_stairs_inv 70 % (they sum to 1.0, so
+# the proportions read directly as percentages of the 20-column grid).
+#
+# pyramid_stairs_inv spawns the robot on a pit floor and is therefore the *climbing*
+# case; pyramid_stairs spawns it on top of a pyramid and is the *descending* one --
 # from the origins the two mesh generators return, +(num_steps+1)*step_height vs
 # -(num_steps+1)*step_height (isaaclab mesh_terrains.py:146 and :246). The split is
 # deliberately climb-heavy.
@@ -92,6 +95,20 @@ PHASE5_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
     difficulty_range=(0.0, 1.0),
     use_cache=False,
     sub_terrains={
+        # Rough ground, 10 % (2026-08-11). Other phases spend this slot on a flat column,
+        # but flat is not actually missing from a stairs-only mix: escaping an inverted
+        # pyramid puts the robot on the tile's level rim and border, and the grid's own
+        # 20 m outer border is flat, so level ground is already encountered every time a
+        # climb succeeds. Unstructured ground is the thing genuinely absent, and it is
+        # also closer to what an obstacle course looks like off the obstacle. Kept mild
+        # (+/-3 cm, well under the wheel radius) so it exercises balance without competing
+        # with the stairs for difficulty.
+        "rough": terrain_gen.HfRandomUniformTerrainCfg(
+            proportion=0.10,
+            noise_range=(0.0, 0.03),
+            noise_step=0.01,
+            border_width=0.25,
+        ),
         "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
             proportion=0.20,
             step_height_range=(0.10, 0.80),
@@ -100,8 +117,10 @@ PHASE5_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
             border_width=1.0,
             holes=False,
         ),
+        # 0.20 / 0.70 alongside rough's 0.10 -- the three sum to exactly 1.0, so the
+        # proportions read directly as percentages of the column grid.
         "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
-            proportion=0.80,
+            proportion=0.70,
             step_height_range=(0.10, 0.80),
             step_width=1.00,
             platform_width=2.0,
@@ -127,13 +146,22 @@ class RobotSceneCfgPhase5(RobotSceneCfgPhase4):
 
 @configclass
 class CommandsCfgPhase5(CommandsCfgPhase3):
-    """base_velocity restricted to forward-only, with a non-zero floor.
+    """base_velocity: forward-biased, with a slow reverse and no strafing.
 
-    No strafing or reverse: lin_vel_y is pinned to exactly zero and lin_vel_x is one-sided.
-    The terrain's rings surround the spawn platform symmetrically, so "forward" always
-    means driving straight at whichever face is currently ahead; commanding the robot to
-    approach sideways or backwards is wasted exploration. ang_vel_z is untouched -- turning
-    to square up with a face is still legitimate.
+    lin_vel_y is pinned to exactly zero. The terrain's rings surround the spawn platform
+    symmetrically, so "forward" always means driving straight at whichever face is ahead;
+    strafing has no task value, and lateral motion is the hardest mode for a wheeled
+    quadruped (the legs have to step sideways), so it would cost the most training
+    dilution for the least gain. ang_vel_z is untouched -- turning to square up with a
+    face is still legitimate, and turning is what covers repositioning.
+
+    lin_vel_x runs (-0.4, 1.2): reverse is allowed but capped well under the forward
+    ceiling, because it is for backing out, not for driving. Added 2026-08-11 (validated
+    as sandbox Try 9, since folded in): a robot nose-first against a step it cannot clear
+    otherwise has turning in place as its only recovery, which is a poor position to be in
+    on hardware. ``ranges`` starts at (0.4, 0.4) and lin_vel_cmd_levels widens it by
+    +/-0.1 per promotion, so training begins forward-only and earns reverse gradually
+    rather than facing the two-sided range cold.
 
     lin_vel_x's floor is 0.4 m/s, in ranges *and* limit_ranges (lin_vel_cmd_levels clamps
     against limit_ranges, so the floor has to be in both to hold). This came out of the
@@ -178,7 +206,7 @@ class CommandsCfgPhase5(CommandsCfgPhase3):
             lin_vel_x=(0.4, 0.4), lin_vel_y=(0.0, 0.0), ang_vel_z=(-1.0, 1.0)
         ),
         limit_ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
-            lin_vel_x=(0.4, 1.2), lin_vel_y=(0.0, 0.0), ang_vel_z=(-1.0, 1.0)
+            lin_vel_x=(-0.4, 1.2), lin_vel_y=(0.0, 0.0), ang_vel_z=(-1.0, 1.0)
         ),
     )
 
@@ -218,6 +246,18 @@ class RewardsCfgPhase5(RewardsCfgPhase3):
     the main thing keeping the wheeled base level in ordinary driving. Watch for the base
     riding nose-up on flat ground; if that appears, this is the term to restore.
 
+    motion_without_cmd (-1.0) makes "stop when told to stop" an explicit objective. A
+    2026-08-11 MuJoCo check found the policy driving off on its own under a zero command;
+    probing the exported network with a stationary, level, default-pose observation
+    reproduced it offline, with wheel outputs of 20-30 rad/s whether the command was zero,
+    forward or reverse. The reward set had nothing that actually penalised this on a
+    wheeled base: ``feet_contact_without_cmd`` rewards feet *in contact*, which is a sound
+    proxy for standing on a legged robot but is collected in full by a Go2W rolling at
+    speed, so the only remaining pressure was track_lin_vel_xy_exp's kernel, which is
+    already saturated near zero by the time the robot is visibly moving. Raising
+    rel_standing_envs to 0.1 (see CommandsCfgPhase5) gave the policy the *exposure* to
+    zero commands it was missing; this gives it a gradient to learn from once exposed.
+
     undesired_contacts relaxed -1 -> -0.3 for the same reason base_contact's termination is
     loosened below: climbing something near standing height needs room to touch the
     obstacle on the way.
@@ -244,6 +284,15 @@ class RewardsCfgPhase5(RewardsCfgPhase3):
         func=mdp.climb_progress_reward,
         weight=2.0,
         params={"max_climb_speed": 0.5},
+    )
+    motion_without_cmd = RewTerm(
+        func=mdp.motion_without_cmd_penalty,
+        weight=-1.0,
+        params={
+            "command_name": "base_velocity",
+            "asset_cfg": SceneEntityCfg("robot"),
+            "cmd_threshold": 0.1,
+        },
     )
 
 
@@ -336,6 +385,34 @@ class RobotPlayEnvCfgPhase5(RobotEnvCfgPhase5):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 32
-        self.scene.terrain.terrain_generator.num_rows = 5
-        self.scene.terrain.terrain_generator.num_cols = 2
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
+
+        # Inspection layout: the two stair types only (rough is dropped -- play mode is for
+        # looking at the climb; off-obstacle behaviour is what a deploy sim is for), each at
+        # a fixed 0.60 / 0.70 / 0.80 m step, one per column.
+        #
+        # The heights are pinned with a degenerate (h, h) step_height_range rather than by
+        # difficulty: the generator varies difficulty over *rows* and picks the sub_terrain
+        # by *column* (terrain_generator.py:244-263), so with num_rows=1 the difficulty is a
+        # random U(0,1) per tile and cannot pin a height, while a (h, h) range returns h
+        # whatever difficulty comes out. Six equal proportions over six columns put exactly
+        # one sub_terrain in each. Geometry matches training (step_width / platform_width /
+        # border_width unchanged), so num_steps stays 1 and each tile is two steps of h,
+        # i.e. a tower or pit 2h tall.
+        self.scene.terrain.terrain_generator.num_rows = 1
+        self.scene.terrain.terrain_generator.num_cols = 6
+        self.scene.terrain.terrain_generator.sub_terrains = {
+            f"{label}_{round(h * 100)}cm": cls(
+                proportion=1.0,
+                step_height_range=(h, h),
+                step_width=1.00,
+                platform_width=2.0,
+                border_width=1.0,
+                holes=False,
+            )
+            for label, cls in (
+                ("pyramid", terrain_gen.MeshPyramidStairsTerrainCfg),
+                ("inv", terrain_gen.MeshInvertedPyramidStairsTerrainCfg),
+            )
+            for h in (0.60, 0.70, 0.80)
+        }

@@ -753,3 +753,33 @@ def joint_mirror(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, mirror_joint
         )
     reward *= 1 / len(mirror_joints) if len(mirror_joints) > 0 else 0
     return reward
+
+
+def motion_without_cmd_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str = "base_velocity",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    cmd_threshold: float = 0.1,
+) -> torch.Tensor:
+    """Penalize body motion while (essentially) no velocity is commanded.
+
+    The mirror image of :func:`stall_penalty`, and the direct counterpart to
+    ``feet_contact_without_cmd``. That existing term is the only thing rewarding "stand
+    still when told to" -- but it rewards *feet in contact*, which is a sound proxy for
+    standing on a legged robot and a meaningless one on a wheeled base: a Go2W rolling at
+    2 m/s still has all four wheels on the ground and collects it in full. So on Go2W the
+    reward set had no term that actually distinguished stopped from moving under a zero
+    command, leaving only ``track_lin_vel_xy_exp``'s implicit gradient, which saturates to
+    ~0 well before the robot is anywhere near stationary and so stops pushing exactly when
+    the remaining error is what a human notices.
+
+    Penalizes the magnitude of planar body velocity (linear, plus yaw rate scaled to a
+    comparable size) rather than an exponential kernel, so the pressure grows with how far
+    from stopped the robot is instead of flattening out. Gated on the command being near
+    zero, so it never interferes with commanded motion.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
+    lin_speed = torch.norm(asset.data.root_lin_vel_b[:, :2], dim=1)
+    yaw_rate = torch.abs(asset.data.root_ang_vel_b[:, 2])
+    return (lin_speed + 0.25 * yaw_rate) * (cmd_norm < cmd_threshold)
