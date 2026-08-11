@@ -51,7 +51,7 @@ FSM:
   #
   #   [3] jump   [4] backflip   [5] sideflip      [0]/LT+B Passive   [1]/LT+A FixStand
   #
-  # CURRENT STATUS: `Unitree-Go2-Jump-Phase3` is now trained with all three
+  # CURRENT STATUS: `Go2-Jump-Phase2` is now trained with all three
   # motions enabled (enable_jump=True, enable_backflip=True, enable_sideflip=True)
   # -- jump, backflip, and sideflip all confirmed working, sim2sim-validated in
   # MuJoCo.
@@ -62,7 +62,7 @@ FSM:
     keyboard_transitions:
       Passive: "0"
       FixStand: "1"
-    policy_dir: ../../../logs/rsl_rl/unitree_go2_jump_phase3
+    policy_dir: ../../../logs/rsl_rl/go2_jump_phase2
     command_duration_s: 0.5
     time_scale: 1.0
     rearm_delay_s: 0.3

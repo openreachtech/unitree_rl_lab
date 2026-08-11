@@ -2,11 +2,18 @@
 
 Context: reproducing the Jump task from the EFGCL paper ("Learning Dynamic
 Motion through Spotting-Inspired External Force Guided Curriculum Learning")
-on Unitree Go2, across `Unitree-Go2-Jump-Phase1` (quiet standing),
-`Unitree-Go2-Jump-Phase2` (vertical jump), and `Unitree-Go2-Jump-Phase3`
-(backflip/sideflip). The `try*.py` files that produced these results have
+on Unitree Go2. The `try*.py` files that produced these results have
 been deleted after this summary was written; the working, current task
-configs remain in `jump_env_cfg_phase{1,2,3}.py`.
+configs remain in `jump_env_cfg_phase{1,2}.py`.
+
+**Phase renumbering.** While these experiments ran there were three phases:
+Phase1 (quiet standing), Phase2 (vertical jump only), Phase3 (unified
+jump/backflip/sideflip). The standalone vertical-jump phase has since been
+dropped — the unified task subsumes it — so the former Phase3 is now
+`Go2-Jump-Phase2` (`jump_env_cfg_phase2.py`) and training goes
+Phase1 -> Phase2 directly. The sections below use the phase numbers that were
+current when each experiment ran; "old Phase2" always means the removed
+vertical-jump-only task.
 
 ## Fixes made to the base tasks (before any sandbox tries)
 
@@ -31,7 +38,7 @@ configs remain in `jump_env_cfg_phase{1,2,3}.py`.
   `standing_height` at trigger (~0.15m) vs. `root_height_max` (exactly
   0.40m, never exceeding nominal standing height). Fixed by removing the
   dynamic re-capture, always using the fixed `nominal_standing_height`.
-  Phase2 was retrained from scratch after this fix and confirmed to jump for
+  Old Phase2 was retrained from scratch after this fix and confirmed to jump for
   real (root height 0.40m -> 0.59m peak, ~44-55% of envs briefly fully
   airborne).
 - **`export_deploy_cfg` crash on non-velocity tasks.** The shared
@@ -83,7 +90,7 @@ points (confirmed via URDF inspection: hips are exactly symmetric at
 would give equal-magnitude front/rear assist forces unequal moment arms and
 a resulting net pitch torque. Not further investigated (deprioritized to
 avoid over-spending time on diagnosis per user direction). Tilt fix
-abandoned as a dead end for now; current Phase2 checkpoint still tilts
+abandoned as a dead end for now; the old Phase2 checkpoint still tilts
 ~38 deg in flight but jumps successfully.
 
 ## Try 5, 6, 7 — raising the jump height target
@@ -119,19 +126,19 @@ time to contribute as assist decays) than with a reward-shaping problem.
 `mdp.jump_takeoff_velocity_reward` remains in `rewards.py` (unused by any
 current task) in case this is revisited later.
 
-**0.20m accepted as the practical target height for Phase2.**
+**0.20m accepted as the practical target height for the jump motion.**
 
-## Phase 3 (backflip) — works, no sandbox needed
+## Phase 3 (backflip, now Phase2) — works, no sandbox needed
 
 Given the height ceiling, tested whether a backflip (a different motion —
 asymmetric front-leg push generating rotation, not a pure vertical jump,
 using the paper's own fixed 350N force design, independent of the height
 formula) is achievable at all. Trained the existing, unmodified
-`Unitree-Go2-Jump-Phase3` task fresh from Phase1 — converged cleanly in a
+flip task fresh from Phase1 — converged cleanly in a
 single run: `assist_force` fully decayed to 0.0 by iteration 1200,
 `success` reached and held 98.7-100% from iteration 1800 onward, and
 `base_contact` (failed/crashed landing) dropped to 0.000 by iteration 1700.
-The height ceiling found in Phase2 does not appear to block the backflip
+The height ceiling found for the jump motion does not appear to block the backflip
 motion.
 
 ## Try 1-8 — natural pre-jump crouch pose (backflip aesthetics fix)
@@ -142,7 +149,7 @@ tucking vertically, and the crouch starting immediately after spawn and
 being held for the entire pre-trigger window instead of only briefly before
 liftoff, since a real robot gets no advance notice of when a command fires.
 Fixed in two independent stages; both are now merged into the default
-`Unitree-Go2-Jump-Phase3` task (`jump_env_cfg_phase3.py`).
+`Go2-Jump-Phase2` task (`jump_env_cfg_phase2.py`).
 
 **Try 1 — leg-splay fix (promoted).** `.*_hip` joints are abduction/adduction;
 splay is a hip problem, not a thigh/calf one. Added `hip_deviation`
@@ -188,7 +195,7 @@ shaping, purely the hard discontinuity.
 (promoted, current default).** Combines everything: (1) `crouch_assist_force`
 + `crouch_assist_duration_s` (new fields) -- a brief downward pulse on all 4
 legs (added `RL_hip` to `assist_body_names`, previously only 3 legs were
-resolved since Phase3's launch profiles only ever needed FR/FL/RR) right at
+resolved since the flip launch profiles only ever needed FR/FL/RR) right at
 trigger, shaped as a linear 0->peak->0 envelope so it starts and ends at
 zero force; `assist_delay_s` set equal to `crouch_assist_duration_s` so the
 (already-ramped, from Try 7) launch force begins exactly as the crouch pulse
@@ -255,14 +262,14 @@ Go2 task**, not sandbox-scoped.
 Retrained with both fixes together (friction randomization + armature):
 converged even faster than the friction-only run (success 0.99+ by
 iteration ~900 vs ~1100-1400). Confirmed working in MuJoCo. Promoted into
-the default `Unitree-Go2-Jump-Phase3` task (`events.physics_material` in
-`jump_env_cfg_phase3.py`; armature fix lives in the shared actuator config).
+the default `Go2-Jump-Phase2` task (`events.physics_material` in
+`jump_env_cfg_phase2.py`; armature fix lives in the shared actuator config).
 
 ## Try 1 (unified jump + backflip + sideflip) -- in progress
 
 Enabling `enable_jump=True, enable_backflip=True, enable_sideflip=True`
 together (plus restoring `target_height_range` to (0.20, 0.20), the
-Phase2-proven achievable jump height) hit two separate issues.
+achievable jump height established above) hit two separate issues.
 
 **Crash: PPO numeric divergence at seed 42 (resolved -- not a config bug).**
 Training crashed deterministically (`RuntimeError: normal expects all
@@ -307,7 +314,7 @@ has a smaller moment of inertia than the pitch axis backflip uses, so
 sideflip needed *less* force than backflip, not more.
 
 **Promoted**: `sideflip_assist_force` fixed to 350.0 (was 600.0) in the
-default `jump_env_cfg_phase3.py`. `enable_sideflip` stays `False` in the
+default flip config. `enable_sideflip` stays `False` in the
 default task -- this only corrects the dormant value for whenever sideflip
 is actually enabled (i.e., the eventual unified-motion retrain in Try 1).
 
@@ -335,7 +342,7 @@ across all three motions, meaning jump, backflip, and sideflip are each
 individually near 99.8% success, not just a favorable aggregate. Confirmed
 working in MuJoCo.
 
-Promoted into the default `Unitree-Go2-Jump-Phase3` task:
+Promoted into the default `Go2-Jump-Phase2` task:
 `TRAIN_JUMP = TRAIN_BACKFLIP = TRAIN_SIDEFLIP = True`, `target_height_range`
 restored to `(0.20, 0.20)` (previously a backflip-only leftover at
 `(0.0, 0.0)`). One motion is sampled uniformly at random per environment

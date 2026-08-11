@@ -171,7 +171,7 @@ State_Flip::State_Flip(int state_mode, std::string state_string)
     // A fall *after* the motion window sends the robot to Passive. We must not
     // trip on the (expected) large in-air tilt during the flip itself, so the
     // check is gated until command_duration_s + a small settle delay has
-    // elapsed since the trigger (Phase 3 disables bad_orientation entirely).
+    // elapsed since the trigger (Phase 2 disables bad_orientation entirely).
     this->registered_checks.emplace_back(
         std::make_pair(
             [this]() -> bool

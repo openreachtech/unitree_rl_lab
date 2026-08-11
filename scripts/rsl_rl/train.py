@@ -19,7 +19,9 @@ sys.path.pop(0)
 
 tasks = []
 for task_spec in gym.registry.values():
-    if "Unitree" in task_spec.id and "Isaac" not in task_spec.id:
+    # tasks of this extension are identified by their agent config, since task ids are not prefix-consistent
+    agent_cfg_entry_point = (task_spec.kwargs or {}).get("rsl_rl_cfg_entry_point")
+    if isinstance(agent_cfg_entry_point, str) and agent_cfg_entry_point.startswith("unitree_rl_lab."):
         tasks.append(task_spec.id)
 
 import argparse
