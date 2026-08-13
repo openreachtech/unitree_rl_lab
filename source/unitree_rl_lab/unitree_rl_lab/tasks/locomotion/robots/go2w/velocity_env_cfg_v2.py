@@ -91,7 +91,19 @@ RobotSceneCfgV2Phase5 = _with_foot_scanners(RobotSceneCfgPhase5)
 
 @configclass
 class ObservationsCfgV2(ObservationsCfg):
-    """v1 policy observations, plus a teacher-style privileged critic group."""
+    """v1 policy terms without stacked history (TCN-100 is the temporal encoder),
+    plus a teacher-style privileged critic group.
+    """
+
+    @configclass
+    class PolicyCfg(ObservationsCfg.PolicyCfg):
+        """Single-frame proprioception; the TCN carries the 100-step window."""
+
+        joint_pos_rel = ObservationsCfg.PolicyCfg().joint_pos_rel.replace(history_length=0)
+        joint_vel_rel = ObservationsCfg.PolicyCfg().joint_vel_rel.replace(history_length=0)
+        last_action = ObservationsCfg.PolicyCfg().last_action.replace(history_length=0)
+
+    policy: PolicyCfg = PolicyCfg()
 
     @configclass
     class CriticCfg(ObsGroup):
