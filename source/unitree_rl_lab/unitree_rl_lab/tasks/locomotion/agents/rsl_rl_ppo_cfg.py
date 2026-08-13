@@ -11,6 +11,7 @@ from isaaclab_rl.rsl_rl import (
     RslRlPpoAlgorithmCfg,
 )
 
+from unitree_rl_lab.tasks.locomotion.agents.actor_critic_teacher import ActorCriticTeacher  # noqa: F401
 from unitree_rl_lab.tasks.locomotion.agents.actor_critic_tcn import ActorCriticTcn  # noqa: F401
 
 
@@ -124,6 +125,36 @@ class TcnTeacherPPORunnerCfg(TcnPPORunnerCfg):
         tcn_latent_dim=64,
         tcn_concat_current_obs=True,
         use_privileged_encoder=True,
+        privileged_encoder_hidden_dims=[72],
+        privileged_latent_dim=64,
+    )
+
+
+@configclass
+class RslRlPpoActorCriticTeacherCfg(RslRlPpoActorCriticCfg):
+    """PPO actor-critic whose actor is Lee et al. 2020's privileged teacher."""
+
+    class_name: str = "ActorCriticTeacher"
+    privileged_encoder_hidden_dims: list[int] = [72]
+    privileged_latent_dim: int = 64
+
+
+@configclass
+class TeacherPPORunnerCfg(BasePPORunnerCfg):
+    """Privileged teacher from Lee et al. 2020 (Table S5), trained with PPO.
+
+    Actor and critic both encode ``xt`` (ELU 72 → 64), concatenate proprioception
+    ``ot``, then the same MLP as ``BasePPORunnerCfg``. Same environment observations
+    as ``TcnTeacherPPORunnerCfg`` (v2); the actor here sees ``xt``, the TCN student
+    does not. Feedforward, so no TCN history buffer. Sim-only: cannot deploy without
+    privileged state. Checkpoints cannot be shared with the TCN runners.
+    """
+
+    policy: RslRlPpoActorCriticTeacherCfg = RslRlPpoActorCriticTeacherCfg(
+        init_noise_std=1.0,
+        actor_hidden_dims=[512, 256, 128],
+        critic_hidden_dims=[512, 256, 128],
+        activation="elu",
         privileged_encoder_hidden_dims=[72],
         privileged_latent_dim=64,
     )
