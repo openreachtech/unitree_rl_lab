@@ -24,7 +24,8 @@ from unitree_rl_lab.tasks.locomotion.robots.go2w.velocity_env_cfg_phase4 import 
 # Try 1 - Try 9 (2026-08-02 .. 2026-08-11) and Try 10 - Try 14 (2026-08-12 .. 2026-08-13).
 # Every try has been folded in and deleted; see sandbox/SUMMARY.md for the reasoning that
 # would otherwise be lost with them -- especially Lesson 7, which is why this phase's
-# rsl_rl_cfg_entry_point is GruPPORunnerCfg rather than BasePPORunnerCfg (go2w/__init__.py).
+# rsl_rl_cfg_entry_point is a sequence model (now TcnPPORunnerCfg; previously
+# GruPPORunnerCfg) rather than BasePPORunnerCfg (go2w/__init__.py).
 #
 # --- What the first campaign established (Try 1-9) ------------------------------------
 #
@@ -75,10 +76,10 @@ from unitree_rl_lab.tasks.locomotion.robots.go2w.velocity_env_cfg_phase4 import 
 #    Isaac Lab. Try 14, changing nothing but the network (MLP -> GRU), fixed the
 #    command-drift and climbed 0.40 m on the identical environment. terrain_levels (or any
 #    Isaac-Lab-only metric) is not sufficient evidence a change helped -- check MuJoCo.
-#    This is why Go2W-v1-Phase1 through Phase5 all point at GruPPORunnerCfg now, not just
-#    this phase, and why a policy trained here cannot resume from an older MLP checkpoint
-#    (RSL-RL's checkpoint load is a strict state_dict load; ActorCriticRecurrent's
-#    parameters don't match ActorCritic's -- retrain through Phase1 -> Phase2 -> ... again).
+#    Go2W-v1-Phase1 through Phase5 now point at TcnPPORunnerCfg (Lee et al. 2020 TCN-100
+#    student encoder, trained with PPO -- not teacher/student imitation). A policy trained
+#    here cannot resume from an MLP or GRU checkpoint (RSL-RL's checkpoint load is a
+#    strict state_dict load). Retrain through Phase1 -> Phase2 -> ... again.
 # =============================================================================
 
 # Mix is rough 10 % / pyramid_stairs 20 % / pyramid_stairs_inv 70 % (they sum to 1.0, so
@@ -314,7 +315,7 @@ class RewardsCfgPhase5(RewardsCfgPhase3):
     (``cmd_norm < cmd_threshold``), computed on wheel joint velocity directly.
 
     Even with all of the above, an MLP alone was not sufficient to fully solve
-    "stop when told to" on this task -- see go2w/__init__.py's GruPPORunnerCfg and
+    "stop when told to" on this task -- see go2w/__init__.py's TcnPPORunnerCfg and
     sandbox/SUMMARY.md's Lesson 7. These reward terms remain necessary (they measurably
     helped) but were not, on their own, sufficient.
 
@@ -433,8 +434,8 @@ class CurriculumCfgPhase5(CurriculumCfg):
 class RobotEnvCfgPhase5(RobotEnvCfgPhase4):
     """Phase 5: stair-crossing at 0.10-0.60 m steps, terrain-gated commands (full range on
     "rough", forward-only/no-strafe on stairs), direct climb reward, and top-surface-exempt
-    contact terminations. Trained with a GRU policy (see go2w/__init__.py's
-    GruPPORunnerCfg) -- an MLP was not sufficient to reliably learn "stop when told to" on
+    contact terminations. Trained with a TCN policy (see go2w/__init__.py's
+    TcnPPORunnerCfg) -- an MLP was not sufficient to reliably learn "stop when told to" on
     this task, see sandbox/SUMMARY.md's Lesson 7."""
 
     scene: RobotSceneCfgPhase5 = RobotSceneCfgPhase5(num_envs=4096, env_spacing=2.5)
