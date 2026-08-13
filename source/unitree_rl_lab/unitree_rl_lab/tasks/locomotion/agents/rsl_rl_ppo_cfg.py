@@ -27,6 +27,8 @@ class BasePPORunnerCfg(RslRlOnPolicyRunnerCfg):
         actor_hidden_dims=[512, 256, 128],
         critic_hidden_dims=[512, 256, 128],
         activation="elu",
+        actor_obs_normalization=False,
+        critic_obs_normalization=False,
     )
     algorithm = RslRlPpoAlgorithmCfg(
         value_loss_coef=1.0,
@@ -59,6 +61,8 @@ class GruPPORunnerCfg(BasePPORunnerCfg):
         actor_hidden_dims=[512, 256, 128],
         critic_hidden_dims=[512, 256, 128],
         activation="elu",
+        actor_obs_normalization=False,
+        critic_obs_normalization=False,
         rnn_type="gru",
         rnn_hidden_dim=256,
         rnn_num_layers=1,
@@ -70,6 +74,8 @@ class RslRlPpoActorCriticTcnCfg(RslRlPpoActorCriticCfg):
     """PPO actor-critic whose actor is Lee et al. 2020's TCN student encoder."""
 
     class_name: str = "ActorCriticTcn"
+    actor_obs_normalization: bool = False
+    critic_obs_normalization: bool = False
     tcn_history_length: int = 100
     tcn_channels: int = 34
     tcn_kernel_size: int = 5
@@ -96,6 +102,8 @@ class TcnPPORunnerCfg(BasePPORunnerCfg):
         actor_hidden_dims=[512, 256, 128],
         critic_hidden_dims=[512, 256, 128],
         activation="elu",
+        actor_obs_normalization=False,
+        critic_obs_normalization=False,
         tcn_history_length=100,
         tcn_channels=34,
         tcn_kernel_size=5,
@@ -119,6 +127,8 @@ class TcnTeacherPPORunnerCfg(TcnPPORunnerCfg):
         actor_hidden_dims=[512, 256, 128],
         critic_hidden_dims=[512, 256, 128],
         activation="elu",
+        actor_obs_normalization=False,
+        critic_obs_normalization=False,
         tcn_history_length=100,
         tcn_channels=34,
         tcn_kernel_size=5,
@@ -135,6 +145,8 @@ class RslRlPpoActorCriticTeacherCfg(RslRlPpoActorCriticCfg):
     """PPO actor-critic whose actor is Lee et al. 2020's privileged teacher."""
 
     class_name: str = "ActorCriticTeacher"
+    actor_obs_normalization: bool = False
+    critic_obs_normalization: bool = False
     privileged_encoder_hidden_dims: list[int] = [72]
     privileged_latent_dim: int = 64
 
@@ -155,6 +167,8 @@ class TeacherPPORunnerCfg(BasePPORunnerCfg):
         actor_hidden_dims=[512, 256, 128],
         critic_hidden_dims=[512, 256, 128],
         activation="elu",
+        actor_obs_normalization=False,
+        critic_obs_normalization=False,
         privileged_encoder_hidden_dims=[72],
         privileged_latent_dim=64,
     )

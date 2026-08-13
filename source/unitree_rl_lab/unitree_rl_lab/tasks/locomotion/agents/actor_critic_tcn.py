@@ -17,16 +17,17 @@ to a latent, concatenated with current proprioception ``ot``, then a value head.
 
 from __future__ import annotations
 
-from typing import Any, NoReturn
+from typing import Any
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tensordict import TensorDict
-from torch.distributions import Normal
 
-from rsl_rl.networks import MLP, EmpiricalNormalization, HiddenState
+from rsl_rl.networks import MLP, HiddenState
 from rsl_rl.utils import unpad_trajectories
+
+from unitree_rl_lab.tasks.locomotion.agents.actor_critic_base import ActorCriticPpoBase, register_policy_class
 
 
 class CausalConv1d(nn.Module):
@@ -217,7 +218,7 @@ class TcnMemory(nn.Module):
             self.hidden_state[..., dones == 1, :] = 0.0
 
 
-class ActorCriticTcn(nn.Module):
+class ActorCriticTcn(ActorCriticPpoBase):
     """TCN actor (student) with an MLP critic.
 
     Actor: TCN over proprioceptive history, concatenated with the current observation,
@@ -251,24 +252,9 @@ class ActorCriticTcn(nn.Module):
         privileged_latent_dim: int = 64,
         **kwargs: dict[str, Any],
     ) -> None:
-        if kwargs:
-            print(
-                "ActorCriticTcn.__init__ got unexpected arguments, which will be ignored: "
-                + str(list(kwargs.keys()))
-            )
+        self._warn_unexpected_kwargs("ActorCriticTcn", kwargs)
         super().__init__()
-
-        self.obs_groups = obs_groups
-        num_actor_obs = 0
-        for obs_group in obs_groups["policy"]:
-            assert len(obs[obs_group].shape) == 2, "The ActorCriticTcn module only supports 1D observations."
-            num_actor_obs += obs[obs_group].shape[-1]
-        num_privileged_obs = 0
-        for obs_group in obs_groups["critic"]:
-            assert len(obs[obs_group].shape) == 2, "The ActorCriticTcn module only supports 1D observations."
-            num_privileged_obs += obs[obs_group].shape[-1]
-
-        self.state_dependent_std = state_dependent_std
+        num_actor_obs, num_privileged_obs = self._count_group_obs(obs, obs_groups)
         self._hidden_c: HiddenState = None
 
         self.memory_a = TcnMemory(
@@ -280,18 +266,12 @@ class ActorCriticTcn(nn.Module):
             concat_current_obs=tcn_concat_current_obs,
         )
         actor_input_dim = self.memory_a.rnn.output_size
-        if self.state_dependent_std:
+        if state_dependent_std:
             self.actor = MLP(actor_input_dim, [2, num_actions], actor_hidden_dims, activation)
         else:
             self.actor = MLP(actor_input_dim, num_actions, actor_hidden_dims, activation)
         print(f"Actor TCN: {self.memory_a.rnn}")
         print(f"Actor MLP: {self.actor}")
-
-        self.actor_obs_normalization = actor_obs_normalization
-        if actor_obs_normalization:
-            self.actor_obs_normalizer = EmpiricalNormalization(num_actor_obs)
-        else:
-            self.actor_obs_normalizer = torch.nn.Identity()
 
         self.use_privileged_encoder = use_privileged_encoder
         if use_privileged_encoder:
@@ -309,45 +289,10 @@ class ActorCriticTcn(nn.Module):
             self.critic = MLP(num_privileged_obs, 1, critic_hidden_dims, activation)
         print(f"Critic MLP: {self.critic}")
 
-        self.critic_obs_normalization = critic_obs_normalization
-        if critic_obs_normalization:
-            self.critic_obs_normalizer = EmpiricalNormalization(num_privileged_obs)
-        else:
-            self.critic_obs_normalizer = torch.nn.Identity()
-
-        self.noise_std_type = noise_std_type
-        if self.state_dependent_std:
-            torch.nn.init.zeros_(self.actor[-2].weight[num_actions:])
-            if self.noise_std_type == "scalar":
-                torch.nn.init.constant_(self.actor[-2].bias[num_actions:], init_noise_std)
-            elif self.noise_std_type == "log":
-                torch.nn.init.constant_(
-                    self.actor[-2].bias[num_actions:], torch.log(torch.tensor(init_noise_std + 1e-7))
-                )
-            else:
-                raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
-        else:
-            if self.noise_std_type == "scalar":
-                self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
-            elif self.noise_std_type == "log":
-                self.log_std = nn.Parameter(torch.log(init_noise_std * torch.ones(num_actions)))
-            else:
-                raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
-
-        self.distribution = None
-        Normal.set_default_validate_args(False)
-
-    @property
-    def action_mean(self) -> torch.Tensor:
-        return self.distribution.mean
-
-    @property
-    def action_std(self) -> torch.Tensor:
-        return self.distribution.stddev
-
-    @property
-    def entropy(self) -> torch.Tensor:
-        return self.distribution.entropy().sum(dim=-1)
+        self._init_normalizers(
+            actor_obs_normalization, critic_obs_normalization, num_actor_obs, num_privileged_obs
+        )
+        self._init_gaussian_noise(num_actions, init_noise_std, noise_std_type, state_dependent_std)
 
     def reset(self, dones: torch.Tensor | None = None) -> None:
         self.memory_a.reset(dones)
@@ -356,42 +301,17 @@ class ActorCriticTcn(nn.Module):
         elif self._hidden_c is not None:
             self._hidden_c[..., dones == 1, :] = 0.0
 
-    def forward(self) -> NoReturn:
-        raise NotImplementedError
-
-    def _update_distribution(self, features: torch.Tensor) -> None:
-        if self.state_dependent_std:
-            mean_and_std = self.actor(features)
-            if self.noise_std_type == "scalar":
-                mean, std = torch.unbind(mean_and_std, dim=-2)
-            elif self.noise_std_type == "log":
-                mean, log_std = torch.unbind(mean_and_std, dim=-2)
-                std = torch.exp(log_std)
-            else:
-                raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
-        else:
-            mean = self.actor(features)
-            if self.noise_std_type == "scalar":
-                std = self.std.expand_as(mean)
-            elif self.noise_std_type == "log":
-                std = torch.exp(self.log_std).expand_as(mean)
-            else:
-                raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
-        self.distribution = Normal(mean, std)
-
     def act(self, obs: TensorDict, masks: torch.Tensor | None = None, hidden_state: HiddenState = None) -> torch.Tensor:
-        obs = self.get_actor_obs(obs)
-        obs = self.actor_obs_normalizer(obs)
-        out_mem = self.memory_a(obs, masks, hidden_state).squeeze(0)
+        ot = self.actor_obs_normalizer(self.get_actor_obs(obs))
+        out_mem = self.memory_a(ot, masks, hidden_state).squeeze(0)
         if masks is None:
             self._ensure_dummy_hidden_c(out_mem)
         self._update_distribution(out_mem)
         return self.distribution.sample()
 
     def act_inference(self, obs: TensorDict) -> torch.Tensor:
-        obs = self.get_actor_obs(obs)
-        obs = self.actor_obs_normalizer(obs)
-        out_mem = self.memory_a(obs).squeeze(0)
+        ot = self.actor_obs_normalizer(self.get_actor_obs(obs))
+        out_mem = self.memory_a(ot).squeeze(0)
         self._ensure_dummy_hidden_c(out_mem)
         if self.state_dependent_std:
             return self.actor(out_mem)[..., 0, :]
@@ -402,40 +322,16 @@ class ActorCriticTcn(nn.Module):
     ) -> torch.Tensor:
         if self.use_privileged_encoder:
             ot = self.actor_obs_normalizer(self.get_actor_obs(obs))
-            xt = self.critic_obs_normalizer(self.get_privileged_obs(obs))
-            latent = self.privileged_encoder(xt)
-            values = self.critic(torch.cat([latent, ot], dim=-1))
-        else:
             xt = self.critic_obs_normalizer(self.get_critic_obs(obs))
-            values = self.critic(xt)
+            values = self.critic(torch.cat([self.privileged_encoder(xt), ot], dim=-1))
+        else:
+            values = self.critic(self.critic_obs_normalizer(self.get_critic_obs(obs)))
         if masks is not None:
             values = unpad_trajectories(values, masks).squeeze(0)
         return values
 
-    def get_actor_obs(self, obs: TensorDict) -> torch.Tensor:
-        return torch.cat([obs[obs_group] for obs_group in self.obs_groups["policy"]], dim=-1)
-
-    def get_privileged_obs(self, obs: TensorDict) -> torch.Tensor:
-        return torch.cat([obs[obs_group] for obs_group in self.obs_groups["critic"]], dim=-1)
-
-    def get_critic_obs(self, obs: TensorDict) -> torch.Tensor:
-        return self.get_privileged_obs(obs)
-
-    def get_actions_log_prob(self, actions: torch.Tensor) -> torch.Tensor:
-        return self.distribution.log_prob(actions).sum(dim=-1)
-
     def get_hidden_states(self) -> tuple[HiddenState, HiddenState]:
         return self.memory_a.hidden_state, self._hidden_c
-
-    def update_normalization(self, obs: TensorDict) -> None:
-        if self.actor_obs_normalization:
-            self.actor_obs_normalizer.update(self.get_actor_obs(obs))
-        if self.critic_obs_normalization:
-            self.critic_obs_normalizer.update(self.get_privileged_obs(obs))
-
-    def load_state_dict(self, state_dict: dict, strict: bool = True) -> bool:
-        super().load_state_dict(state_dict, strict=strict)
-        return True
 
     def _ensure_dummy_hidden_c(self, features: torch.Tensor) -> None:
         """Keep a GRU-shaped dummy critic hidden state so rollout storage stays symmetric."""
@@ -449,9 +345,7 @@ def register_actor_critic_tcn() -> None:
     """Make ``eval("ActorCriticTcn")`` work inside RSL-RL's OnPolicyRunner, and let the
     isaaclab_rl GRU exporter accept :class:`TcnHistory` (same ``h_in`` / ``h_out`` I/O).
     """
-    import rsl_rl.runners.on_policy_runner as on_policy_runner
-
-    on_policy_runner.ActorCriticTcn = ActorCriticTcn
+    register_policy_class("ActorCriticTcn", ActorCriticTcn)
 
     try:
         from isaaclab_rl.rsl_rl import exporter
