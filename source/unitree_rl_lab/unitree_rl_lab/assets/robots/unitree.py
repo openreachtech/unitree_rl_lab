@@ -146,9 +146,23 @@ UNITREE_GO2W_CFG = UnitreeArticulationCfg(
         joint_vel={".*": 0.0},
     ),
     actuators={
+        # effort_limit was a single flat 23.5 N*m for every leg joint until the real/
+        # MuJoCo motor table (2026-08-12/13, go2w Try13/SUMMARY.md) showed that's only
+        # correct for hip/thigh (23.7, matching within rounding) -- calf (knee) is rated
+        # for 45.43 N*m, nearly double, and training had been capping it at roughly half
+        # of what the real robot can deliver on exactly the joint that does the most work
+        # extending/retracting to lift the body. Wheels (".*_foot_.*") are left at 23.5:
+        # MuJoCo's own wheel spec is 15 N*m (ctrlrange="-15 15"), lower not higher, and the
+        # decision there was to raise MuJoCo's side to match Isaac rather than the reverse
+        # (15 was judged too low to climb with) -- see sandbox/SUMMARY.md's open items.
         "GO2HV": IdealPDActuatorCfg(
             joint_names_expr=[".*"],
-            effort_limit=23.5,
+            effort_limit={
+                ".*_hip_.*": 23.7,
+                ".*_thigh_.*": 23.7,
+                ".*_calf_.*": 45.43,
+                ".*_foot_.*": 23.5,
+            },
             velocity_limit=30.0,
             stiffness={
                 ".*_hip_.*": 25.0,

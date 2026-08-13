@@ -550,6 +550,7 @@ def climb_progress_reward(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     max_climb_speed: float = 0.5,
+    command_name: str | None = None,
 ) -> torch.Tensor:
     """Reward vertical (world Z) speed magnitude, clamped to a reasonable max -- a
     direct, continuous incentive to make height-changing progress while crossing
@@ -563,15 +564,28 @@ def climb_progress_reward(
     rewarded in either direction without conditioning on which sub-terrain type a given
     env is currently on.
 
-    Caveat: a robot bouncing vertically in place (no net XY progress) could in principle
-    farm this reward without actually crossing anything. ``forward_stall_penalty``
-    (gated on forward-projected XY speed specifically) provides some counter-pressure
-    against that, but this combination hasn't been stress-tested -- watch for
-    oscillating/bouncing behavior in training results.
+    Caveat (confirmed 2026-08-12 in a Go2W-v1-Phase5-Try10 MuJoCo check -- the policy
+    drove forward under a zero command after as few as 500 iterations): unlike
+    ``forward_command_progress``/``forward_stall_penalty`` in this same file, this term
+    had no command gate, so it paid out in full during standing envs too -- any
+    vertical bob (rough-terrain noise, a step-edge wobble) was rewarded regardless of
+    command, at this reward set's largest weight (+2.0), while
+    ``motion_without_cmd_penalty`` (the only "stop" signal) only ever fires during the
+    ~10 % of segments that are standing envs. That imbalance let "moving is rewarded"
+    win out over "stop when idle" well before the sparser signal could compete,
+    especially on a checkpoint (e.g. resumed from Phase2) that had never seen this term
+    before. Pass ``command_name`` to gate it exactly like its siblings: zero reward
+    below the standing-env command threshold, unchanged everywhere else genuine
+    climbing happens (the lin_vel_x floor keeps cmd_norm > 0.1 for every non-standing
+    env, so gating costs nothing there).
     """
     asset: Articulation = env.scene[asset_cfg.name]
     vertical_speed = torch.abs(asset.data.root_lin_vel_w[:, 2])
-    return vertical_speed.clamp(max=max_climb_speed)
+    reward = vertical_speed.clamp(max=max_climb_speed)
+    if command_name is not None:
+        cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
+        reward = reward * (cmd_norm > 0.1)
+    return reward
 
 
 def stall_penalty(
@@ -783,3 +797,31 @@ def motion_without_cmd_penalty(
     lin_speed = torch.norm(asset.data.root_lin_vel_b[:, :2], dim=1)
     yaw_rate = torch.abs(asset.data.root_ang_vel_b[:, 2])
     return (lin_speed + 0.25 * yaw_rate) * (cmd_norm < cmd_threshold)
+
+
+def wheel_motion_without_cmd_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    command_name: str = "base_velocity",
+    cmd_threshold: float = 0.1,
+) -> torch.Tensor:
+    """Penalize wheel joint velocity directly while (essentially) no velocity is commanded.
+
+    ``motion_without_cmd_penalty`` only sees the *effect* of a wheel command -- resultant
+    base linear/yaw velocity -- not the actuator command itself. A policy can satisfy "base
+    didn't move much" under this sim's friction/load model while still outputting a
+    nontrivial wheel velocity, and a different contact model (e.g. a MuJoCo deploy check)
+    can let that same command actually roll the robot. Confirmed 2026-08-12: probing a
+    Go2W-v1-Phase5-Try11 exported network with a stationary, level, default-pose, zero-
+    command observation still produced nonzero wheel output.
+
+    ``asset_cfg`` must scope ``joint_ids`` to the wheel joints (``WHEEL_JOINT_NAMES``) --
+    this is deliberately not scoped to "robot" by default, unlike this file's other
+    ``asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")`` penalties, because applying it
+    to leg joints too would fight ``joint_position_penalty``'s own (leg-only) stand-still
+    boost and the leg joint-effort penalties, which already handle legs.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
+    wheel_speed = torch.linalg.norm(asset.data.joint_vel[:, asset_cfg.joint_ids], dim=1)
+    return wheel_speed * (cmd_norm < cmd_threshold)

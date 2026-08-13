@@ -4,7 +4,12 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 from isaaclab.utils import configclass
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
+from isaaclab_rl.rsl_rl import (
+    RslRlOnPolicyRunnerCfg,
+    RslRlPpoActorCriticCfg,
+    RslRlPpoActorCriticRecurrentCfg,
+    RslRlPpoAlgorithmCfg,
+)
 
 
 @configclass
@@ -33,4 +38,25 @@ class BasePPORunnerCfg(RslRlOnPolicyRunnerCfg):
         lam=0.95,
         desired_kl=0.01,
         max_grad_norm=1.0,
+    )
+
+
+@configclass
+class GruPPORunnerCfg(BasePPORunnerCfg):
+    """BasePPORunnerCfg with the MLP actor-critic (``ActorCritic``) swapped for RSL-RL's
+    recurrent ``ActorCriticRecurrent``, using a GRU. In that class the RNN sits in front of
+    the same actor/critic MLP (obs -> GRU -> MLP -> output), so ``actor_hidden_dims``/
+    ``critic_hidden_dims`` are left exactly as ``BasePPORunnerCfg``'s -- this only inserts
+    the recurrence, it does not resize the network around it. Algorithm hyperparameters,
+    ``num_steps_per_env``, etc. are all inherited unchanged, so a run using this differs
+    from one using ``BasePPORunnerCfg`` in exactly one place: the network."""
+
+    policy: RslRlPpoActorCriticRecurrentCfg = RslRlPpoActorCriticRecurrentCfg(
+        init_noise_std=1.0,
+        actor_hidden_dims=[512, 256, 128],
+        critic_hidden_dims=[512, 256, 128],
+        activation="elu",
+        rnn_type="gru",
+        rnn_hidden_dim=256,
+        rnn_num_layers=1,
     )

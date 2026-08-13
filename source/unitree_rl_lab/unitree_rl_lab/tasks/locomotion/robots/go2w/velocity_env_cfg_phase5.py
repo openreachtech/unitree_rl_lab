@@ -6,7 +6,11 @@ from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.utils import configclass
 
 from unitree_rl_lab.tasks.locomotion import mdp
-from unitree_rl_lab.tasks.locomotion.robots.go2w.velocity_env_cfg import CurriculumCfg, TerminationsCfg
+from unitree_rl_lab.tasks.locomotion.robots.go2w.velocity_env_cfg import (
+    CurriculumCfg,
+    TerminationsCfg,
+    WHEEL_JOINT_NAMES,
+)
 from unitree_rl_lab.tasks.locomotion.robots.go2w.velocity_env_cfg_phase3 import CommandsCfgPhase3, RewardsCfgPhase3
 from unitree_rl_lab.tasks.locomotion.robots.go2w.velocity_env_cfg_phase4 import (
     RobotEnvCfgPhase4,
@@ -16,17 +20,13 @@ from unitree_rl_lab.tasks.locomotion.robots.go2w.velocity_env_cfg_phase4 import 
 # =============================================================================
 # Phase 5 -- extreme obstacle crossing.
 #
-# This file is the consolidated result of the Go2W Phase5 sandbox (Try 1 - Try 8,
-# 2026-08-02 .. 2026-08-10, since removed). Everything below that differs from Phase4 was
-# validated by a training run; the reasoning for each piece is kept inline so the next
-# change does not have to re-derive it.
+# This file is the consolidated result of the Go2W Phase5 sandbox, two campaigns:
+# Try 1 - Try 9 (2026-08-02 .. 2026-08-11) and Try 10 - Try 14 (2026-08-12 .. 2026-08-13).
+# Every try has been folded in and deleted; see sandbox/SUMMARY.md for the reasoning that
+# would otherwise be lost with them -- especially Lesson 7, which is why this phase's
+# rsl_rl_cfg_entry_point is GruPPORunnerCfg rather than BasePPORunnerCfg (go2w/__init__.py).
 #
-# Best result reached: terrain_levels equilibrated at 9.2 / 19, i.e. **0.44 m steps**, with
-# foot_impact at 3.0 %, base_contact at 4.4 %, 91 % of episodes surviving to time_out, and
-# the velocity-command curriculum saturated at its 1.2 m/s ceiling. Play-mode checks of
-# that policy cleared 0.60 m with the better individuals and failed at 0.70 m.
-#
-# --- What the sandbox actually established -------------------------------------------
+# --- What the first campaign established (Try 1-9) ------------------------------------
 #
 # 1. Terrain *shape* dominated everything else. Three separate runs sat at ~0.36 m no
 #    matter what termination thresholds were relaxed. The cause was geometric, not
@@ -43,8 +43,8 @@ from unitree_rl_lab.tasks.locomotion.robots.go2w.velocity_env_cfg_phase4 import 
 # 2. Curriculum resolution matters. Widening step_height_range without adding rows makes
 #    each promotion a bigger jump, and custom_terrain_levels_climb is a one-way ratchet
 #    (it demotes only below 0.5 m of progress), so a robot promoted past its ability parks
-#    on a row it cannot clear and keeps crashing there. num_rows=20 over 0.10-0.80 m keeps
-#    a 0.035 m step, finer than the 0.04 m the earlier 0.10-0.50 m / 10-row setup had.
+#    on a row it cannot clear and keeps crashing there. num_rows=20 keeps the per-row step
+#    fine enough to matter (see the terrain block below for the current range).
 #
 # 3. Relaxing terminations has sharply diminishing returns. base_contact went
 #    30 -> 80 -> 150 -> 400 N over four runs chasing a plateau that turned out to be
@@ -52,16 +52,33 @@ from unitree_rl_lab.tasks.locomotion.robots.go2w.velocity_env_cfg_phase4 import 
 #    crashed into walls more recklessly rather than climbing). Treat a high termination
 #    rate as a symptom to diagnose, not a threshold to raise.
 #
-# --- Known open items ----------------------------------------------------------------
+# --- What the second campaign established (Try 10-14) ---------------------------------
 #
-# * step_height_range's 0.80 m ceiling is now larger than the policy can use: at the 0.44 m
-#   equilibrium, levels ~13-19 are never reached. Narrowing to (0.10, 0.60) would put the
-#   0.44 m working point near level 13 and tighten resolution to 0.025 m/level. Left at
-#   0.80 because that is the range the best run actually used -- the narrowing is an
-#   untested improvement, not an established one.
-# * the EFGCL wall-bump assist was removed on 2026-08-10 -- disabled since Try1 and never
-#   re-enabled, so it contributed nothing to any result above. See CommandsCfgPhase5 for
-#   what it did and what re-adding it would take.
+# 4. lin_vel_y and lin_vel_x's reverse half were both pinned to a single global range
+#    (mostly zero), terrain-blind, so Phase1-3's strafing was forgotten entirely and
+#    reverse got almost no training exposure. Terrain-*gating* both -- full range on
+#    "rough" columns, forward-only/no-strafe on the stair columns where lateral motion has
+#    no task value -- restores both without touching the climbing setup at all. See
+#    mdp/commands/velocity_command.py's UniformTerrainGatedVelocityCommand.
+#
+# 5. climb_progress_reward had no command gate, unlike its siblings (forward_command_
+#    progress, forward_stall_penalty) -- it paid out in full during standing envs too, at
+#    this reward set's largest weight, which let "moving is rewarded" beat the much
+#    sparser "stop when told to" signal. Gating it, doubling motion_without_cmd's weight,
+#    and adding a wheel-joint-velocity-specific penalty (motion_without_cmd_penalty only
+#    ever saw the base's *resultant* velocity, never the wheel actuator command itself)
+#    together fixed the worst of a MuJoCo-observed zero-command drift.
+#
+# 6. **The policy network mattered more than any of the above.** Try 13 (MLP, every fix
+#    above applied) still drove forward with no command in MuJoCo and failed to climb even
+#    0.20 m there, despite reaching the *highest* terrain_levels of the whole campaign in
+#    Isaac Lab. Try 14, changing nothing but the network (MLP -> GRU), fixed the
+#    command-drift and climbed 0.40 m on the identical environment. terrain_levels (or any
+#    Isaac-Lab-only metric) is not sufficient evidence a change helped -- check MuJoCo.
+#    This is why Go2W-v1-Phase1 through Phase5 all point at GruPPORunnerCfg now, not just
+#    this phase, and why a policy trained here cannot resume from an older MLP checkpoint
+#    (RSL-RL's checkpoint load is a strict state_dict load; ActorCriticRecurrent's
+#    parameters don't match ActorCritic's -- retrain through Phase1 -> Phase2 -> ... again).
 # =============================================================================
 
 # Mix is rough 10 % / pyramid_stairs 20 % / pyramid_stairs_inv 70 % (they sum to 1.0, so
@@ -84,6 +101,12 @@ from unitree_rl_lab.tasks.locomotion.robots.go2w.velocity_env_cfg_phase4 import 
 # promotes past size * 0.35 = 1.925 m, and the rim sits 1.75 m from the spawn point, so
 # promotion now requires fully escaping the pit. On the old 8.0 m tile the rim was at
 # 3.0 m and the 2.80 m threshold could be met while still standing on the final step.
+#
+# step_height_range narrowed (0.10, 0.80) -> (0.10, 0.60) in the second campaign (Try 11):
+# the 0.80 m ceiling was larger than the policy could use (at the ~0.44 m equilibrium the
+# first campaign reached, levels ~13-19 were never reached), so narrowing puts the working
+# point nearer the top of the range and tightens resolution from 0.035 to 0.025 m/level
+# over the span that's actually used. num_rows stays at 20.
 PHASE5_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
     size=(5.5, 5.5),
     border_width=20.0,
@@ -102,7 +125,8 @@ PHASE5_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
         # climb succeeds. Unstructured ground is the thing genuinely absent, and it is
         # also closer to what an obstacle course looks like off the obstacle. Kept mild
         # (+/-3 cm, well under the wheel radius) so it exercises balance without competing
-        # with the stairs for difficulty.
+        # with the stairs for difficulty. Also the only column type where lin_vel_y and
+        # reverse lin_vel_x are active -- see CommandsCfgPhase5 below.
         "rough": terrain_gen.HfRandomUniformTerrainCfg(
             proportion=0.10,
             noise_range=(0.0, 0.03),
@@ -111,7 +135,7 @@ PHASE5_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
         ),
         "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
             proportion=0.20,
-            step_height_range=(0.10, 0.80),
+            step_height_range=(0.10, 0.60),
             step_width=1.00,
             platform_width=2.0,
             border_width=1.0,
@@ -121,7 +145,7 @@ PHASE5_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
         # proportions read directly as percentages of the column grid.
         "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
             proportion=0.70,
-            step_height_range=(0.10, 0.80),
+            step_height_range=(0.10, 0.60),
             step_width=1.00,
             platform_width=2.0,
             border_width=1.0,
@@ -133,11 +157,12 @@ PHASE5_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
 
 @configclass
 class RobotSceneCfgPhase5(RobotSceneCfgPhase4):
-    # max_init_terrain_level=7 is 0.363 m under this 20-row range -- roughly where the
-    # policy actually operates. It matters on every resume, not just a cold start: the
-    # terrain_levels curriculum state is not stored in the checkpoint, so each resume
-    # re-climbs from this value and a lower setting simply burns iterations recovering
-    # ground already covered.
+    # max_init_terrain_level=7 is now ~0.29 m under this narrowed 20-row range (was
+    # ~0.36 m under the old 0.10-0.80 m range) -- a lower, more conservative starting
+    # height, not a change made to compensate for anything. It matters on every resume,
+    # not just a cold start: the terrain_levels curriculum state is not stored in the
+    # checkpoint, so each resume re-climbs from this value and a lower setting simply
+    # burns iterations recovering ground already covered.
     terrain = RobotSceneCfgPhase4().terrain.replace(
         terrain_generator=PHASE5_TERRAIN_CFG,
         max_init_terrain_level=7,
@@ -146,74 +171,89 @@ class RobotSceneCfgPhase5(RobotSceneCfgPhase4):
 
 @configclass
 class CommandsCfgPhase5(CommandsCfgPhase3):
-    """base_velocity: forward-biased, with a slow reverse and no strafing.
+    """base_velocity: forward-biased on stairs, full range (including strafe and reverse)
+    on "rough" columns only.
 
-    lin_vel_y is pinned to exactly zero. The terrain's rings surround the spawn platform
-    symmetrically, so "forward" always means driving straight at whichever face is ahead;
-    strafing has no task value, and lateral motion is the hardest mode for a wheeled
-    quadruped (the legs have to step sideways), so it would cost the most training
-    dilution for the least gain. ang_vel_z is untouched -- turning to square up with a
-    face is still legitimate, and turning is what covers repositioning.
+    lin_vel_y and lin_vel_x's reverse half are both terrain-gated via
+    ``UniformTerrainGatedVelocityCommandCfg`` (mdp/commands/velocity_command.py): full
+    range on "rough" columns, pinned to zero (lin_vel_y) or clamped to the forward floor
+    (lin_vel_x) everywhere else. The terrain's rings surround the spawn platform
+    symmetrically, so on stairs "forward" always means driving straight at whichever face
+    is ahead -- strafing and reversing have no task value there, and lateral motion is the
+    hardest mode for a wheeled quadruped (the legs have to step sideways), so training them
+    on stairs would cost the most dilution for the least gain. But that reasoning is
+    terrain-*specific*: it doesn't hold on the "rough" columns, where strafing/reversing are
+    exactly as valid as they were in Phase1-3, and pinning them globally to zero (as this
+    phase originally did) meant the robot had a full phase of training with zero exposure
+    to either -- it forgot both (sandbox Try10/Try13). ang_vel_z is untouched everywhere --
+    turning to square up with a face is still legitimate, and turning is what covers
+    repositioning.
 
-    lin_vel_x runs (-0.4, 1.2): reverse is allowed but capped well under the forward
-    ceiling, because it is for backing out, not for driving. Added 2026-08-11 (validated
-    as sandbox Try 9, since folded in): a robot nose-first against a step it cannot clear
-    otherwise has turning in place as its only recovery, which is a poor position to be in
-    on hardware. ``ranges`` starts at (0.4, 0.4) and lin_vel_cmd_levels widens it by
-    +/-0.1 per promotion, so training begins forward-only and earns reverse gradually
-    rather than facing the two-sided range cold.
+    lin_vel_y: nonzero on "rough" at Phase3's old pre-Phase5 band, ranges (-0.1, 0.1) /
+    limit (-0.7, 0.7) -- the range the robot actually trained against before this phase
+    zeroed it, not an arbitrary new choice.
+
+    lin_vel_x runs (-0.4, 1.2) *on rough*; reverse is capped well under the forward
+    ceiling everywhere else via ``restricted_lin_vel_x_min=0.4`` because it is for backing
+    out, not for driving, and stairs give reverse nothing to do (backing away from a
+    pyramid_stairs_inv pit just returns to the rim it started from). ``ranges`` starts at
+    (0.4, 0.4) and lin_vel_cmd_levels widens it by +/-0.1 per promotion (both bounds move
+    together, each clamped independently against its own limit), so training begins
+    forward-only and earns the full range gradually. limit_ranges.lin_vel_x is (-1.2, 1.2)
+    -- widened from an earlier (-0.4, 1.2) once reverse was moved to "rough"-only and no
+    longer needed to be timid about stair obstacles it can no longer be commanded into.
 
     lin_vel_x's floor is 0.4 m/s, in ranges *and* limit_ranges (lin_vel_cmd_levels clamps
-    against limit_ranges, so the floor has to be in both to hold). This came out of the
-    terrain_levels plateau: UniformVelocityCommand._resample_command draws lin_vel_x
-    uniformly across the current range every resampling_time_range (10 s, twice per 20 s
-    episode), so a floor of 0.0 meant a large share of episode-segments were commanded at
-    near-zero speed. That is not merely "slower" -- forward_command_progress caps its
-    reward at cmd_norm and track_lin_vel_xy_exp penalises exceeding the command, so a low
-    draw removes the incentive to move on the obstacle at all, while the termination risk
-    of attempting a climb is unchanged. Raising the floor lifted the mean commanded speed
-    from 0.6 to 0.8 m/s.
+    against limit_ranges, so the floor has to be in both to hold, and
+    UniformTerrainGatedVelocityCommand's own floor-clamp on non-"rough" columns uses the
+    same 0.4 via restricted_lin_vel_x_min). This came out of the terrain_levels plateau:
+    UniformVelocityCommand._resample_command draws lin_vel_x uniformly across the current
+    range every resampling_time_range (10 s, twice per 20 s episode), so a floor of 0.0
+    meant a large share of episode-segments were commanded at near-zero speed. That is not
+    merely "slower" -- forward_command_progress caps its reward at cmd_norm and
+    track_lin_vel_xy_exp penalises exceeding the command, so a low draw removes the
+    incentive to move on the obstacle at all, while the termination risk of attempting a
+    climb is unchanged. Raising the floor lifted the mean commanded speed from 0.6 to
+    0.8 m/s.
 
     rel_standing_envs raised 0.01 -> 0.1 to pay for that floor. With lin_vel_x unable to
-    be drawn below 0.4, the *only* way this policy ever sees a zero command is a standing
-    env, and at 1 % that is far too rare to learn from: a 2026-08-10 MuJoCo check of the
+    be drawn below 0.4 on stair columns, the *only* way those envs ever see a zero command
+    is a standing env, and at 1 % that is far too rare to learn from: a MuJoCo check of the
     resulting policy had it driving off the moment it entered the RL state with nothing
     commanded, while a Phase1 policy under the same controller stopped correctly. Phase1's
     lin_vel_x spans (-2.0, 2.0), so roughly a tenth of its draws land near zero and
-    standing is thoroughly trained; here zero is out of distribution and the policy
-    defaults to what it always did, which is drive forward. 0.1 restores about the same
-    zero-command exposure Phase1 gets naturally, at the cost of ~10 % of episode-segments
-    no longer practising the climb. The alternative -- dropping the floor back to 0 --
-    would give that exposure too but re-open the plateau the floor was introduced to fix.
-    Note this is a training-side fix: it only takes effect on a run that starts from here,
-    and no controller-side change can substitute for it, because a policy that has never
-    been told to stop will not stop when the command finally reaches zero.
-
-    Removed 2026-08-10: the EFGCL wall-bump assist (WallBumpAssistCommand plus its
-    wall_bump_assist_decay curriculum, ported from feat/jump --
-    doc/papers/EFGCL_...md). It was switched off at Try1 (assist_force_per_leg=0.0) so the
-    reward-design work would be attributable and was never turned back on, so every result
-    this file records was produced without it and it was pure dead weight in the command
-    manager. A 2026-08-04 ablation had suggested it genuinely accelerated climbing skill
-    rather than inflating terrain_levels, so if assisted exploration is wanted again the
-    idea is worth revisiting -- but it would need re-implementing against the current
-    terrain, which is stairs rather than the thin walls it was written for.
+    standing is thoroughly trained; here zero is out of distribution on stairs and the
+    policy defaults to what it always did, which is drive forward. 0.1 restores about the
+    same zero-command exposure Phase1 gets naturally, at the cost of ~10 % of
+    episode-segments no longer practising the climb. The alternative -- dropping the floor
+    back to 0 -- would give that exposure too but re-open the plateau the floor was
+    introduced to fix. Note this is a training-side fix: it only takes effect on a run
+    that starts from here, and no controller-side change can substitute for it, because a
+    policy that has never been told to stop will not stop when the command finally reaches
+    zero -- see the climb_progress/motion_without_cmd gating in RewardsCfgPhase5, which
+    closes the rest of that gap; the command-distribution fix alone was not sufficient.
     """
 
-    base_velocity = CommandsCfgPhase3().base_velocity.replace(
+    base_velocity = mdp.UniformTerrainGatedVelocityCommandCfg(
+        asset_name=CommandsCfgPhase3().base_velocity.asset_name,
+        resampling_time_range=CommandsCfgPhase3().base_velocity.resampling_time_range,
         rel_standing_envs=0.1,
+        debug_vis=CommandsCfgPhase3().base_velocity.debug_vis,
         ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
-            lin_vel_x=(0.4, 0.4), lin_vel_y=(0.0, 0.0), ang_vel_z=(-1.0, 1.0)
+            lin_vel_x=(0.4, 0.4), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-1.0, 1.0)
         ),
         limit_ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
-            lin_vel_x=(-0.4, 1.2), lin_vel_y=(0.0, 0.0), ang_vel_z=(-1.0, 1.0)
+            lin_vel_x=(-1.2, 1.2), lin_vel_y=(-0.7, 0.7), ang_vel_z=(-1.0, 1.0)
         ),
+        lateral_terrain_names=("rough",),
+        restricted_lin_vel_x_min=0.4,
     )
 
 
 @configclass
 class RewardsCfgPhase5(RewardsCfgPhase3):
-    """Four changes on top of Phase3, all of them about making a climb worth attempting.
+    """On top of Phase3: making a climb worth attempting, and making "stop when told to"
+    actually hold on a wheeled base.
 
     forward_command_progress (+0.8) and forward_stall_penalty (-1.0) replace the inherited
     reward set's reliance on track_lin_vel_xy_exp, whose exponential kernel has almost no
@@ -230,14 +270,19 @@ class RewardsCfgPhase5(RewardsCfgPhase3):
     vel_b . cmd_dir projection forward_command_progress uses, so only genuine forward
     progress counts.
 
-    climb_progress (+2.0) rewards vertical speed directly. Nothing else in the set
-    recognises "you are climbing" as valuable in itself -- crossing an obstacle was only
-    rewarded indirectly, through the net XY displacement it eventually produces. It is
-    magnitude-based so it covers both sub-terrains without conditioning on which one an env
-    is on, and rate-based so it cannot be farmed by reaching a height and camping there.
+    climb_progress (+2.0) rewards vertical speed directly, gated on command
+    (``command_name="base_velocity"``). Nothing else in the set recognises "you are
+    climbing" as valuable in itself -- crossing an obstacle was only rewarded indirectly,
+    through the net XY displacement it eventually produces. It is magnitude-based so it
+    covers both sub-terrains without conditioning on which one an env is on, and rate-based
+    so it cannot be farmed by reaching a height and camping there. The command gate was
+    added after this term (unconditional at the time) turned out to be the main cause of a
+    MuJoCo-observed zero-command drift: any vertical bob (rough-terrain noise, a step-edge
+    wobble) paid out in full during standing envs too, at this reward set's largest weight,
+    which let "moving is rewarded" beat the much sparser motion_without_cmd signal.
     Residual risk, not yet observed but worth watching: a robot bouncing vertically in
-    place could in principle collect it without crossing anything; forward_stall_penalty is
-    the counter-pressure.
+    place could in principle collect it without crossing anything (while commanded);
+    forward_stall_penalty is the counter-pressure there.
 
     flat_orientation_l2 softened -1.0 -> -0.5. It is sum(projected_gravity_b[:, :2]**2),
     i.e. 1.0 at a full 90 deg tilt, so at -1.0 a robot holding a reared-back posture paid
@@ -246,17 +291,32 @@ class RewardsCfgPhase5(RewardsCfgPhase3):
     the main thing keeping the wheeled base level in ordinary driving. Watch for the base
     riding nose-up on flat ground; if that appears, this is the term to restore.
 
-    motion_without_cmd (-1.0) makes "stop when told to stop" an explicit objective. A
-    2026-08-11 MuJoCo check found the policy driving off on its own under a zero command;
-    probing the exported network with a stationary, level, default-pose observation
-    reproduced it offline, with wheel outputs of 20-30 rad/s whether the command was zero,
-    forward or reverse. The reward set had nothing that actually penalised this on a
-    wheeled base: ``feet_contact_without_cmd`` rewards feet *in contact*, which is a sound
-    proxy for standing on a legged robot but is collected in full by a Go2W rolling at
-    speed, so the only remaining pressure was track_lin_vel_xy_exp's kernel, which is
-    already saturated near zero by the time the robot is visibly moving. Raising
-    rel_standing_envs to 0.1 (see CommandsCfgPhase5) gave the policy the *exposure* to
-    zero commands it was missing; this gives it a gradient to learn from once exposed.
+    motion_without_cmd (-2.0) makes "stop when told to stop" an explicit objective, on the
+    base's resultant linear/yaw velocity. A MuJoCo check found the policy driving off on
+    its own under a zero command; probing the exported network with a stationary, level,
+    default-pose observation reproduced it offline, with wheel outputs of 20-30 rad/s
+    whether the command was zero, forward or reverse. The reward set had nothing that
+    actually penalised this on a wheeled base: ``feet_contact_without_cmd`` rewards feet
+    *in contact*, which is a sound proxy for standing on a legged robot but is collected in
+    full by a Go2W rolling at speed, so the only remaining pressure was
+    track_lin_vel_xy_exp's kernel, which is already saturated near zero by the time the
+    robot is visibly moving. Raising rel_standing_envs to 0.1 (see CommandsCfgPhase5) gave
+    the policy the *exposure* to zero commands it was missing; this gives it a gradient to
+    learn from once exposed. Weight doubled from an initial -1.0 once climb_progress's
+    unconditional payout (above) was identified as outweighing it during that exposure.
+
+    wheel_motion_without_cmd (-0.03) closes a gap motion_without_cmd cannot: that term only
+    sees the base's *resultant* velocity, never the wheel actuator command itself. A policy
+    can satisfy "base didn't move much" under Isaac Sim's friction/load model while still
+    outputting a nontrivial wheel command, and a different contact model (MuJoCo) can let
+    that same command actually roll the robot -- confirmed by probing the exported network
+    exactly as above. Scoped to WHEEL_JOINT_NAMES, gated the same way
+    (``cmd_norm < cmd_threshold``), computed on wheel joint velocity directly.
+
+    Even with all of the above, an MLP alone was not sufficient to fully solve
+    "stop when told to" on this task -- see go2w/__init__.py's GruPPORunnerCfg and
+    sandbox/SUMMARY.md's Lesson 7. These reward terms remain necessary (they measurably
+    helped) but were not, on their own, sufficient.
 
     undesired_contacts relaxed -1 -> -0.3 for the same reason base_contact's termination is
     loosened below: climbing something near standing height needs room to touch the
@@ -283,14 +343,23 @@ class RewardsCfgPhase5(RewardsCfgPhase3):
     climb_progress = RewTerm(
         func=mdp.climb_progress_reward,
         weight=2.0,
-        params={"max_climb_speed": 0.5},
+        params={"max_climb_speed": 0.5, "command_name": "base_velocity"},
     )
     motion_without_cmd = RewTerm(
         func=mdp.motion_without_cmd_penalty,
-        weight=-1.0,
+        weight=-2.0,
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot"),
+            "cmd_threshold": 0.1,
+        },
+    )
+    wheel_motion_without_cmd = RewTerm(
+        func=mdp.wheel_motion_without_cmd_penalty,
+        weight=-0.03,
+        params={
+            "command_name": "base_velocity",
+            "asset_cfg": SceneEntityCfg("robot", joint_names=WHEEL_JOINT_NAMES),
             "cmd_threshold": 0.1,
         },
     )
@@ -313,17 +382,19 @@ class TerminationsCfgPhase5(TerminationsCfg):
     plain illegal_contact. That variant splits contacts by direction: resting or pushing
     down on a step's flat top reads as vertical-dominant and is exempt, while slamming
     into a vertical riser reads as horizontal-dominant and still terminates -- so genuine
-    climbing technique is not punished but reckless charging is. Introduced after Try4
-    showed that removing base_contact outright made the policy *more* reckless, not less.
+    climbing technique is not punished but reckless charging is. Introduced after an
+    earlier try showed that removing base_contact outright made the policy *more*
+    reckless, not less.
 
     Thresholds are 400 N for the base and 2500 N for the wheels, against a ~191.5 N total
     body weight. Both are far above where they started (30 N and 1500 N) and the escalation
     was mostly wasted: base_contact climbed 30 -> 80 -> 150 -> 400 N across four runs while
-    the plateau it was chasing turned out to be terrain geometry. They are kept at the
-    values the best run used, but the lesson is the one recorded at the top of this file --
-    diagnose a high termination rate before raising the number. Note also that
-    illegal_contact_excluding_top tests the contact history window's *maximum*, so a brief
-    spike during a forceful but controlled push can trip a threshold well under body weight.
+    the plateau it was chasing turned out to be terrain geometry (see the module docstring's
+    Lesson 1/3). They are kept at the values the best run used, but the lesson is the one
+    recorded there -- diagnose a high termination rate before raising the number. Note also
+    that illegal_contact_excluding_top tests the contact history window's *maximum*, so a
+    brief spike during a forceful but controlled push can trip a threshold well under body
+    weight.
     """
 
     bad_orientation = TerminationsCfg().bad_orientation.replace(params={"limit_angle": 2.0})
@@ -351,6 +422,8 @@ class CurriculumCfgPhase5(CurriculumCfg):
     for partial progress, the equilibrium is every robot parked at the hardest row it can
     still make *some* progress on. The mean is therefore "ability plus a bit", and a
     persistent non-zero termination rate is the normal steady state, not necessarily a bug.
+    Also worth remembering (sandbox Lesson 7): terrain_levels measures Isaac Lab training
+    progress only -- it is not a substitute for checking the policy in MuJoCo.
     """
 
     terrain_levels = CurrTerm(func=mdp.custom_terrain_levels_climb)
@@ -358,8 +431,11 @@ class CurriculumCfgPhase5(CurriculumCfg):
 
 @configclass
 class RobotEnvCfgPhase5(RobotEnvCfgPhase4):
-    """Phase 5: stair-crossing at 0.10-0.80 m steps, forward-only commands with a 0.4 m/s
-    floor, direct climb reward, and top-surface-exempt contact terminations."""
+    """Phase 5: stair-crossing at 0.10-0.60 m steps, terrain-gated commands (full range on
+    "rough", forward-only/no-strafe on stairs), direct climb reward, and top-surface-exempt
+    contact terminations. Trained with a GRU policy (see go2w/__init__.py's
+    GruPPORunnerCfg) -- an MLP was not sufficient to reliably learn "stop when told to" on
+    this task, see sandbox/SUMMARY.md's Lesson 7."""
 
     scene: RobotSceneCfgPhase5 = RobotSceneCfgPhase5(num_envs=4096, env_spacing=2.5)
     commands: CommandsCfgPhase5 = CommandsCfgPhase5()
@@ -388,8 +464,12 @@ class RobotPlayEnvCfgPhase5(RobotEnvCfgPhase5):
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
 
         # Inspection layout: the two stair types only (rough is dropped -- play mode is for
-        # looking at the climb; off-obstacle behaviour is what a deploy sim is for), each at
-        # a fixed 0.60 / 0.70 / 0.80 m step, one per column.
+        # looking at the climb; off-obstacle behaviour, including the lin_vel_y/reverse
+        # gate that "rough" columns exercise, is what a deploy sim is for), each at a fixed
+        # step, one per column. Heights are the top three 0.10 m steps below the trained
+        # (0.10, 0.60) ceiling -- 0.40/0.50/0.60, rescaled down from the first campaign's
+        # 0.60/0.70/0.80 when the training range itself was narrowed (see the module
+        # docstring's Lesson 4/second-campaign notes).
         #
         # The heights are pinned with a degenerate (h, h) step_height_range rather than by
         # difficulty: the generator varies difficulty over *rows* and picks the sub_terrain
@@ -414,5 +494,5 @@ class RobotPlayEnvCfgPhase5(RobotEnvCfgPhase5):
                 ("pyramid", terrain_gen.MeshPyramidStairsTerrainCfg),
                 ("inv", terrain_gen.MeshInvertedPyramidStairsTerrainCfg),
             )
-            for h in (0.60, 0.70, 0.80)
+            for h in (0.40, 0.50, 0.60)
         }
