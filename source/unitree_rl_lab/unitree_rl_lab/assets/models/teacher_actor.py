@@ -1,3 +1,8 @@
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Privileged teacher from Lee et al. 2020, Table S5.
 
 ``PrivilegedMlp`` encodes ``xt``, concatenates proprioception ``ot``, then an MLP.

@@ -131,7 +131,9 @@ import shutil
 import torch
 from datetime import datetime
 
-from unitree_rl_lab.assets.models.modules.runners import UnitreeDistillationRunner, UnitreeOnPolicyRunner
+from rsl_rl.runners import OnPolicyRunner
+
+from unitree_rl_lab.assets.models.modules.runners import UnitreeDistillationRunner
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab.envs import (
@@ -206,7 +208,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env = multi_agent_to_single_agent(env)
 
     # save resume path before creating a new log_dir
-    if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
+    is_distillation = getattr(agent_cfg, "class_name", None) == "DistillationRunner"
+    if agent_cfg.resume or is_distillation:
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
 
     # wrap for video recording
@@ -224,9 +227,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
-    # create runner from rsl-rl (Unitree* wrappers register custom policy / alg classes)
-    if agent_cfg.class_name == "OnPolicyRunner":
-        runner = UnitreeOnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+    # create runner from rsl-rl (UnitreeDistillationRunner registers TCN student/alg classes)
+    if not hasattr(agent_cfg, "class_name") or agent_cfg.class_name == "OnPolicyRunner":
+        runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     elif agent_cfg.class_name == "DistillationRunner":
         runner = UnitreeDistillationRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     else:
@@ -234,7 +237,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
     # load the checkpoint
-    if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
+    if agent_cfg.resume or is_distillation:
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         # load previously trained model
         runner.load(resume_path)

@@ -1,7 +1,12 @@
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
 """TCN-100 student encoder from Lee et al. 2020, Table S5.
 
 Used by PPO (``ActorCriticTcn``) and by teacher-student distillation
-(``StudentTeacher``). Distillation imitates the privileged teacher (action +
+(``TcnStudentTeacher``). Distillation imitates the privileged teacher (action +
 latent matching); PPO can train the same encoder directly.
 """
 
@@ -223,7 +228,7 @@ class ActorCriticTcn(ActorCriticPpoBase):
     then an MLP. Critic defaults to a feedforward MLP on the critic observation. With
     ``use_privileged_encoder``, the critic matches the paper's teacher: encode privileged
     ``xt`` to a latent, concatenate current proprioception ``ot``, then a value MLP.
-    Distillation uses the same TCN via ``StudentTeacher``, not this PPO wrapper.
+    Distillation uses the same TCN via ``TcnStudentTeacher``, not this PPO wrapper.
     """
 
     is_recurrent: bool = True

@@ -21,7 +21,7 @@ from isaaclab_rl.rsl_rl import (
 class TcnStudentTeacherCfg(RslRlDistillationStudentTeacherCfg):
     """Isaac student-teacher policy cfg + TCN / privileged-encoder widths."""
 
-    class_name: str = "StudentTeacher"
+    class_name: str = "TcnStudentTeacher"
     init_noise_std: float = 0.1
     student_obs_normalization: bool = False
     teacher_obs_normalization: bool = False
@@ -41,6 +41,7 @@ class TcnStudentTeacherCfg(RslRlDistillationStudentTeacherCfg):
 class TcnDistillationAlgorithmCfg(RslRlDistillationAlgorithmCfg):
     """Isaac distillation algorithm + paper latent-matching term."""
 
+    class_name: str = "TcnDistillation"
     num_learning_epochs: int = 10
     learning_rate: float = 1.0e-4
     gradient_length: int = 10

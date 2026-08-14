@@ -1,3 +1,8 @@
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
 """TCN student + frozen privileged teacher for rsl-rl Distillation."""
 
 from __future__ import annotations
@@ -5,8 +10,9 @@ from __future__ import annotations
 from typing import Any
 
 import torch
+import torch.nn as nn
 from rsl_rl.modules import StudentTeacher as RslStudentTeacher
-from rsl_rl.networks import MLP, HiddenState
+from rsl_rl.networks import MLP, EmpiricalNormalization, HiddenState
 from tensordict import TensorDict
 from torch.distributions import Normal
 
@@ -14,12 +20,12 @@ from unitree_rl_lab.assets.models.student_actor import TcnMemory
 from unitree_rl_lab.assets.models.teacher_actor import PrivilegedMlp
 
 
-class StudentTeacher(RslStudentTeacher):
+class TcnStudentTeacher(RslStudentTeacher):
     """Lee et al. 2020 student (TCN-100) + frozen teacher actor.
 
-    Extends ``rsl_rl.modules.StudentTeacher``: keeps parent obs grouping,
-    normalizers, action noise, ``load_state_dict()``, and ``train()``. Replaces
-    the MLP student/teacher with:
+    Named ``TcnStudentTeacher`` so rsl-rl's default ``StudentTeacher`` class_name
+    still resolves to the stock MLP. Builds the TCN / ``PrivilegedMlp`` nets
+    directly (does not construct the parent's throwaway MLPs).
 
         student → TCN-100 over proprioception ``ot``, then MLP
         teacher → ``PrivilegedMlp`` (``xt`` encoder concat ``ot``)
@@ -57,22 +63,24 @@ class StudentTeacher(RslStudentTeacher):
         privileged_latent_dim: int = 64,
         **kwargs: dict[str, Any],
     ) -> None:
-        super().__init__(
-            obs,
-            obs_groups,
-            num_actions,
-            student_obs_normalization=student_obs_normalization,
-            teacher_obs_normalization=teacher_obs_normalization,
-            student_hidden_dims=student_hidden_dims,
-            teacher_hidden_dims=teacher_hidden_dims,
-            activation=activation,
-            init_noise_std=init_noise_std,
-            noise_std_type=noise_std_type,
-            **kwargs,
-        )
+        if kwargs:
+            print(
+                "TcnStudentTeacher.__init__ got unexpected arguments, which will be ignored: "
+                + str(list(kwargs.keys()))
+            )
+        nn.Module.__init__(self)
 
-        num_student_obs = sum(obs[group].shape[-1] for group in obs_groups["policy"])
-        num_teacher_obs = sum(obs[group].shape[-1] for group in obs_groups["teacher"])
+        self.loaded_teacher = False
+        self.obs_groups = obs_groups
+        num_student_obs = 0
+        for obs_group in obs_groups["policy"]:
+            assert len(obs[obs_group].shape) == 2, "TcnStudentTeacher only supports 1D observations."
+            num_student_obs += obs[obs_group].shape[-1]
+        num_teacher_obs = 0
+        for obs_group in obs_groups["teacher"]:
+            assert len(obs[obs_group].shape) == 2, "TcnStudentTeacher only supports 1D observations."
+            num_teacher_obs += obs[obs_group].shape[-1]
+
         self.num_proprio = num_student_obs
         self.num_privileged = num_teacher_obs - num_student_obs
         self.tcn_latent_dim = int(tcn_latent_dim)
@@ -112,6 +120,26 @@ class StudentTeacher(RslStudentTeacher):
             param.requires_grad_(False)
         print(f"Teacher privileged encoder: {teacher_encoder}")
         print(f"Teacher MLP: {teacher_mlp}")
+
+        self.student_obs_normalization = student_obs_normalization
+        self.student_obs_normalizer = (
+            EmpiricalNormalization(num_student_obs) if student_obs_normalization else nn.Identity()
+        )
+        self.teacher_obs_normalization = teacher_obs_normalization
+        self.teacher_obs_normalizer = (
+            EmpiricalNormalization(num_teacher_obs) if teacher_obs_normalization else nn.Identity()
+        )
+
+        self.noise_std_type = noise_std_type
+        if self.noise_std_type == "scalar":
+            self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
+        elif self.noise_std_type == "log":
+            self.log_std = nn.Parameter(torch.log(init_noise_std * torch.ones(num_actions)))
+        else:
+            raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
+
+        self.distribution = None
+        Normal.set_default_validate_args(False)
 
     def _student_features(self, obs: TensorDict) -> torch.Tensor:
         ot = self.student_obs_normalizer(self.get_student_obs(obs))
