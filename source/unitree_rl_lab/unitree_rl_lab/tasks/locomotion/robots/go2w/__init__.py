@@ -171,11 +171,15 @@ gym.register(
     },
 )
 
-# TCN-100 student distilled from Go2W-v2-Teacher-Phase5 (Lee et al. 2020 Eq. 1).
-# Phase1 is flat; Phase2 is the Phase5 terrain mix. Same DistillationRunner as
-# feat/wall Go2-v3-Student-Phase*:
+# TCN-100 student distilled from the fully-trained Go2W-v2-Teacher-Phase5 checkpoint
+# (Lee et al. 2020 Eq. 1). The teacher's trunk is transplanted into the student once,
+# at Phase1 (see TcnStudentTeacher.load_state_dict) -- it doesn't change afterwards.
+# Phase1/Phase2/Phase5 instead ramp the student's OWN terrain curriculum (flat ->
+# rough+box -> +wall), same terrain progression as the Teacher/PPO phases, each
+# stage resuming the previous stage's own distillation checkpoint:
 #   --task Go2W-v2-Student-Phase1 --resume --previous-task Go2W-v2-Teacher-Phase5
 #   --task Go2W-v2-Student-Phase2 --resume --previous-task Go2W-v2-Student-Phase1
+#   --task Go2W-v2-Student-Phase5 --resume --previous-task Go2W-v2-Student-Phase2
 gym.register(
     id="Go2W-v2-Student-Phase1",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
@@ -194,17 +198,14 @@ gym.register(
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_v2:RobotEnvCfgV2Phase5",
-        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_v2:RobotPlayEnvCfgV2Phase5",
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_v2:RobotEnvCfgV2Phase2",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_v2:RobotPlayEnvCfgV2Phase2",
         "rsl_rl_cfg_entry_point": (
             "unitree_rl_lab.tasks.locomotion.agents.rsl_rl_distillation_cfg:StudentDistillationRunnerCfg"
         ),
     },
 )
 
-# Same env/runner as Student-Phase2; intended to distill Teacher-Phase5 directly
-# (skip the flat Phase1 warmup):
-#   --task Go2W-v2-Student-Phase5 --resume --previous-task Go2W-v2-Teacher-Phase5
 gym.register(
     id="Go2W-v2-Student-Phase5",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
