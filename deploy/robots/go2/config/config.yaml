@@ -62,10 +62,23 @@ FSM:
     keyboard_transitions:
       Passive: "0"
       FixStand: "1"
-    policy_dir: ../../../logs/rsl_rl/go2_jump_phase2
-    command_duration_s: 0.5
+    # JUMP-ONLY policy (Go2-Jump-MaxHeight-50), trained at target_height 0.50 and
+    # reaching ~0.44m unassisted. parser_policy_dir picks the newest run under this
+    # root that has an `exported` folder.
+    #
+    # WARNING: this policy was trained with enable_backflip / enable_sideflip = False.
+    # Keys [4] and [5] below send pitch/roll targets it has never seen -- off-distribution
+    # and not safe on hardware. Point policy_dir back at go2_jump_phase2 before using them.
+    policy_dir: ../../../logs/rsl_rl/go2_jump_60
+    command_duration_s: 0.6
     time_scale: 1.0
     rearm_delay_s: 0.3
+    # 1 kHz per-joint torque capture, one torque_<motion>_<n>.csv per motion in the
+    # process CWD. The window must outlast the landing: a 0.44m jump touches down around
+    # 0.85s after the trigger and settles by ~1.2s, so 1.0s would cut off the impact.
+    torque_log: true
+    torque_log_pre_s: 0.3
+    torque_log_post_s: 1.5
     # Fall -> Passive guard. The delay is measured from the trigger and must cover the
     # landing and the settle that follows it, not just command_duration_s: a backflip's
     # front feet touch down around 0.8s in, and the guard must not un-gate while the
@@ -76,7 +89,10 @@ FSM:
     motions:
       - key: "3"
         motion: jump
-        target_height: 0.20
+        # Must match the height the policy was TRAINED at, not the height it achieves.
+        # target_height is a policy observation; 0.50 is the only value this policy has
+        # ever seen. Sending 0.45 (the achieved ~0.44) would be off-distribution.
+        target_height: 0.60
       - key: "4"
         motion: backflip
         target_pitch_turns: -1.0

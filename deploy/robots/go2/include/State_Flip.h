@@ -244,6 +244,63 @@ private:
     // orientation guard. Written by the policy thread, read by the FSM thread.
     std::atomic<int> policy_overrun_count_{0};
     std::atomic<float> policy_step_max_ms_{0.0f};
+
+    // --- high-rate torque capture -------------------------------------------
+    // A time series, where the block above keeps only peaks: one row per FSM tick
+    // (1 kHz) over a window around each motion, written to its own CSV. The 50 Hz
+    // telemetry_log_ cannot do this job -- a push-off lasts ~0.15s, which is about
+    // seven policy-rate samples, too few to show either the shape of the torque
+    // curve or its peak.
+    //
+    // BOTH the commanded and the applied torque are recorded, and that is the point
+    // of the whole capture. The applied value alone shows a joint pinned flat at its
+    // limit but not by how far it is over: a controller asking for 46 N*m and one
+    // asking for 200 N*m produce identical saturated traces, and the difference
+    // between those two is exactly whether more torque would buy more height.
+    // tau_cmd is the same expression the MuJoCo bridge evaluates
+    // (unitree_sdk2_bridge.h:186) and the robot's motor firmware applies, so
+    // tau_cmd - tau_app is the amount the clamp threw away.
+    struct TorqueSample
+    {
+        long step;          // FSM tick; converted to seconds-from-trigger at write time
+        float cmd_elapsed;  // command_->elapsed(), i.e. the 50 Hz policy clock
+        int enabled;
+        float base_z;       // world height of the IMU site; see base_height_ below
+        float q[12];
+        float dq[12];
+        float tau_cmd[12];
+        float tau_app[12];
+    };
+
+    void capture_torque_sample();
+    void write_torque_capture();
+
+    // True body height, for comparing the achieved jump against Isaac Lab's
+    // Metrics/jump/max_height. Nothing in LowState carries position -- a real robot does
+    // not know its own height -- but unitree_mujoco publishes MuJoCo's ground truth on
+    // rt/sportmodestate: go2.xml declares a `frame_pos` sensor on the imu site and
+    // unitree_sdk2_bridge.h copies it into SportModeState::position. So this column is
+    // populated in simulation and stays 0 on hardware once the built-in sport service has
+    // been released, which is the intended scope: it exists to check the sim2sim gap.
+    //
+    // The origin is the imu site rather than the base frame, so the absolute value carries
+    // a fixed offset. Height is therefore reported relative to the pre-trigger baseline,
+    // where that offset cancels.
+    std::shared_ptr<unitree::robot::go2::subscription::SportModeState> base_height_;
+
+    bool torque_log_enabled_ = false;   // opt-in via `torque_log: true` in config.yaml
+    float torque_pre_s_ = 0.3f;         // seconds kept before the trigger, as a baseline
+    float torque_post_s_ = 1.5f;        // seconds kept after it -- must outlast the landing
+
+    long fsm_step_ = 0;
+    long torque_trigger_step_ = -1;     // command_->trigger_step this capture belongs to
+    long torque_trigger_fsm_step_ = 0;
+    bool torque_capturing_ = false;
+    int torque_capture_index_ = 0;
+    std::string torque_motion_;         // latched at trigger: targets are zeroed on re-arm
+    std::vector<TorqueSample> torque_pre_;      // rolling pre-trigger baseline
+    size_t torque_pre_head_ = 0;
+    std::vector<TorqueSample> torque_capture_;
 };
 
 REGISTER_FSM(State_Flip)

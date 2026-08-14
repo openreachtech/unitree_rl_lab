@@ -14,6 +14,17 @@ gym.register(
 )
 
 gym.register(
+    id="Go2-Jump-60",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.jump_env_cfg_jump:RobotEnvCfgJump",
+        "play_env_cfg_entry_point": f"{__name__}.jump_env_cfg_jump:RobotPlayEnvCfgJump",
+        "rsl_rl_cfg_entry_point": "unitree_rl_lab.tasks.dynamic.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
+    },
+)
+
+gym.register(
     id="Go2-Jump-Phase2",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
@@ -23,3 +34,4 @@ gym.register(
         "rsl_rl_cfg_entry_point": "unitree_rl_lab.tasks.dynamic.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
     },
 )
+

@@ -261,7 +261,7 @@ class JumpCommand(CommandTerm):
         self.accumulated_roll[active] += self.robot.data.root_ang_vel_b[active, 0] * self._env.step_dt
         self.accumulated_pitch[active] += self.robot.data.root_ang_vel_b[active, 1] * self._env.step_dt
 
-        upright = self.robot.data.projected_gravity_b[:, 2] < -0.8
+        upright = self.robot.data.projected_gravity_b[:, 2] < self.cfg.landing_upright_threshold
         landed = (
             active
             & (self.elapsed_since_trigger >= self.cfg.minimum_landing_time_s)
@@ -461,3 +461,11 @@ class JumpCommandCfg(CommandTermCfg):
     rotation_tolerance_rad: float = 0.30
     landing_height_tolerance: float = 0.10
     landing_vertical_speed_tolerance: float = 0.30
+    landing_upright_threshold: float = -0.8
+    """How upright the robot must be for ``landed`` to count, as a bound on
+    ``projected_gravity_b[2]``. The -0.8 default admits up to 37 degrees of tilt, which is
+    loose enough to hide a systematically crooked jump: a Go2-Jump-60 policy scoring
+    success 0.997 was measured leaving the ground at -0.671 rad/s pitch and +0.366 rad/s
+    roll on all 64 environments -- same sign every time, std under 0.11 -- and peaking at
+    33.7 deg mean tilt, i.e. sitting 0.9 deg under the gate rather than landing cleanly.
+    Tighten it to require a genuinely upright landing; -0.90 is 26 deg, -0.95 is 18 deg."""

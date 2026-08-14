@@ -349,3 +349,60 @@ restored to `(0.20, 0.20)` (previously a backflip-only leftover at
 per episode reset (`JumpCommand._resample_command`). Checkpoint copied from
 `unitree_go2_jump_phase3_try_1/2026-07-24_13-52-13` (same recipe, no
 retrain needed).
+
+---
+
+## 2026-08-12 — the ~0.20m "actuator limit" was a reward artifact; 0.30m reached
+
+**Result: 0.30m, `success` 1.000, `assist_scale` 0.000, `undesired_contacts`
+0.000 — with the BASELINE actuator model, not the 45 N*m knee variant.**
+Task `Go2-Jump-MaxHeight` (`sandbox/jump_max_height.py`), resumed from
+`Go2-Jump-Phase2`'s `model_3298.pt`, 2000 iterations
+(`logs/rsl_rl/go2_jump_maxheight/2026-08-12_12-50-52/model_5297.pt`).
+
+```
+iteration   3300    3500    3700    4300    5200
+max_height  0.191   0.257   0.292   0.295   0.297
+success     0.357   1.000   1.000   1.000   1.000
+```
+
+This retracts "**0.20m accepted as the practical target height**" above. The
+earlier energy estimate in that same section — "unassisted jump capability in
+the 0.3-0.45m range" — was the correct read; the actuator-limit conclusion was
+not. Every prior attempt held `target_height` at 0.20 while `motion_progress`
+scores `|max_height - target|` *two-sided*, so the robot was actively penalized
+for exceeding 0.20 and never asked for more. Simply asking for 0.30 got it in
+~200 iterations.
+
+**The recipe that worked — and two that did not.** All three used the same
+Phase 2 config with only the jump enabled.
+
+1. *Ranged/ratcheting target `(0.20, 0.30)`, from Phase 1, assist 1.0* —
+   collapsed. `max_height` 0.233 -> 0.026, `success` 0.000 by iteration 700,
+   assist decay froze at 0.760. The height reward `exp(-err^2/0.01)` is at 1.8%
+   of peak by 0.2m of error, so environments given different targets share no
+   good behavior and hedging scores ~0 everywhere; once height leaves the basin
+   the only live gradient belongs to the standing/effort penalties, which reward
+   not moving. **Keep the target a point value, never a range.**
+2. *Fixed 0.30, from Phase 2, assist 1.0* — deadlocked. The assist is sized to
+   deliver the entire takeoff velocity alone, so stacked on a policy that
+   already jumps 0.20 it launched to `max_height` **1.125m**. The two-sided
+   reward then made suppressing its own push optimal (1.125 -> 0.861 -> 0.598 ->
+   0.301 over ~400 iterations), and a robot thrown up with unloaded legs cannot
+   land: `undesired_contacts` -0.012 -> -0.881, `landed` never true, `success`
+   0.000, so the 60%-success decay gate never opened and `assist_scale` sat at
+   1.0 for 2000 iterations. Success needs a clean landing, a clean landing needs
+   less assist, less assist needs success.
+3. *Fixed 0.30, from Phase 2, **assist 0.0*** — worked, above. EFGCL's assist
+   exists to bootstrap a motion the robot cannot yet do; resuming from Phase 2
+   that premise is gone, and any nonzero assist re-creates the incentive to
+   under-contribute. With no assist the gradient is ample on its own: at
+   `max_height` 0.20 against a 0.30 target, `motion_progress` = exp(-0.01/0.01)
+   = 0.37, a full e-folding.
+
+**Method for going higher:** one fixed target at a time, no assist, each run
+resuming from the previous. A 0.05m step lands at reward 0.78, a 0.10m step at
+0.37 — the latter is exactly what this run started from, so 0.40 in one step is
+no harder than 0.30 was. `mdp.jump_height_ratchet` exists but is deliberately
+not wired into any task; automating the staircase reintroduces the scheduled
+target that failed in (1).

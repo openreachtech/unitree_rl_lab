@@ -12,6 +12,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <ctime>
 
 std::shared_ptr<State_Flip::FlipCommand> State_Flip::command = nullptr;
 
@@ -105,6 +106,21 @@ State_Flip::State_Flip(int state_mode, std::string state_string)
     if (cfg["fall_check_delay_s"])  fall_check_delay_s_ = cfg["fall_check_delay_s"].as<float>();
     if (cfg["fall_check_hold_s"])   fall_check_hold_s_ = cfg["fall_check_hold_s"].as<float>();
     if (cfg["bad_orientation_limit"]) bad_orientation_limit_ = cfg["bad_orientation_limit"].as<float>();
+
+    // 1 kHz torque capture, off by default: it writes one CSV per motion into the
+    // process CWD, which is not wanted during normal operation.
+    if (cfg["torque_log"])        torque_log_enabled_ = cfg["torque_log"].as<bool>();
+    if (cfg["torque_log_pre_s"])  torque_pre_s_ = cfg["torque_log_pre_s"].as<float>();
+    if (cfg["torque_log_post_s"]) torque_post_s_ = cfg["torque_log_post_s"].as<float>();
+    if (torque_log_enabled_)
+    {
+        // Ground-truth body height, published by unitree_mujoco only. Constructed
+        // regardless so the column exists; it simply stays 0 when nothing publishes.
+        base_height_ = std::make_shared<unitree::robot::go2::subscription::SportModeState>();
+        spdlog::info(
+            "State_{}: 1kHz torque capture ON -- torque_<motion>_<n>.csv, window [-{:.2f}s, +{:.2f}s]",
+            state_string, torque_pre_s_, torque_post_s_);
+    }
 
     // Fill per-motion targets from a `motion` string / explicit targets.
     auto apply_targets = [&](YAML::Node node, const std::string & motion,
@@ -487,4 +503,177 @@ void State_Flip::run()
     {
         lowcmd->msg_.motor_cmd()[env->robot->data.joint_ids_map[i]].q() = action[i];
     }
+
+    // After the q targets are written, so tau_cmd pairs the position command actually
+    // being published this tick with the joint state it will act on.
+    capture_torque_sample();
+}
+
+// SDK motor order for Go2, used only to name the CSV columns. joint_ids_map maps a
+// policy joint index to one of these.
+static const char * kSdkJointNames[12] = {
+    "FR_hip", "FR_thigh", "FR_calf",
+    "FL_hip", "FL_thigh", "FL_calf",
+    "RR_hip", "RR_thigh", "RR_calf",
+    "RL_hip", "RL_thigh", "RL_calf",
+};
+
+void State_Flip::capture_torque_sample()
+{
+    if (!torque_log_enabled_ || !command_)
+    {
+        return;
+    }
+
+    constexpr float kFsmDt = 0.001f;  // CtrlFSM runs run() at 1 kHz
+    fsm_step_ += 1;
+
+    // A new motion opens a capture, seeded with the rolling pre-trigger buffer so the
+    // file carries a standing baseline to measure the push-off against. The motion name
+    // must be latched here: the targets are zeroed again once the command re-arms
+    // (command_duration_s + rearm_delay_s), well before this capture is written out.
+    const long ts = command_->trigger_step;
+    if (ts >= 0 && ts != torque_trigger_step_)
+    {
+        if (torque_capturing_)
+        {
+            write_torque_capture();  // motions chained faster than torque_post_s_
+        }
+        torque_trigger_step_ = ts;
+        torque_trigger_fsm_step_ = fsm_step_;
+        torque_motion_ = "motion";
+        if (command_->target_height != 0.0f)            torque_motion_ = "jump";
+        else if (command_->target_pitch_turns != 0.0f)  torque_motion_ = "backflip";
+        else if (command_->target_roll_turns != 0.0f)   torque_motion_ = "sideflip";
+
+        torque_capture_.clear();
+        const size_t n = torque_pre_.size();
+        for (size_t k = 0; k < n; ++k)
+        {
+            torque_capture_.push_back(torque_pre_[(torque_pre_head_ + k) % n]);
+        }
+        torque_capturing_ = true;
+    }
+
+    TorqueSample s;
+    s.step = fsm_step_;
+    s.cmd_elapsed = command_->elapsed();
+    s.enabled = command_->enabled ? 1 : 0;
+    s.base_z = base_height_ ? static_cast<float>(base_height_->msg_.position()[2]) : 0.0f;
+    for (int i = 0; i < 12; ++i)
+    {
+        const int sdk_index = static_cast<int>(env->robot->data.joint_ids_map[i]);
+        const auto & motor = lowstate->msg_.motor_state()[sdk_index];
+        const auto & cmd = lowcmd->msg_.motor_cmd()[sdk_index];
+        s.q[i] = motor.q();
+        s.dq[i] = motor.dq();
+        s.tau_app[i] = motor.tau_est();
+        s.tau_cmd[i] = cmd.tau() + cmd.kp() * (cmd.q() - motor.q()) + cmd.kd() * (cmd.dq() - motor.dq());
+    }
+
+    if (torque_capturing_)
+    {
+        torque_capture_.push_back(s);
+        if ((fsm_step_ - torque_trigger_fsm_step_) * kFsmDt >= torque_post_s_)
+        {
+            write_torque_capture();
+        }
+        return;
+    }
+
+    // Idle: keep a rolling window so the next trigger has a baseline to prepend.
+    const size_t cap = static_cast<size_t>(torque_pre_s_ / kFsmDt);
+    if (cap == 0)
+    {
+        return;
+    }
+    if (torque_pre_.size() < cap)
+    {
+        torque_pre_.push_back(s);
+    }
+    else
+    {
+        torque_pre_[torque_pre_head_] = s;
+        torque_pre_head_ = (torque_pre_head_ + 1) % cap;
+    }
+}
+
+void State_Flip::write_torque_capture()
+{
+    torque_capturing_ = false;
+    // Drop the stale baseline: the next motion should be prefixed by the standing
+    // torques immediately before it, not by the tail of this landing.
+    torque_pre_.clear();
+    torque_pre_head_ = 0;
+
+    if (torque_capture_.empty())
+    {
+        return;
+    }
+
+    constexpr float kFsmDt = 0.001f;
+
+    // Height is reported relative to the pre-trigger baseline, which cancels the fixed
+    // offset between the imu site and the base frame. Averaged over the samples before
+    // the trigger; falls back to the first sample if no baseline was captured.
+    float baseline_z = torque_capture_.front().base_z;
+    {
+        double sum = 0.0;
+        int n = 0;
+        for (const auto & s : torque_capture_)
+        {
+            if (s.step < torque_trigger_fsm_step_) { sum += s.base_z; ++n; }
+        }
+        if (n > 0) baseline_z = static_cast<float>(sum / n);
+    }
+
+    // Timestamped, because the per-motion counter restarts with the process: two sessions
+    // in the same directory used to silently overwrite each other's captures.
+    char stamp[32];
+    const std::time_t now = std::time(nullptr);
+    std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", std::localtime(&now));
+    const std::string path = "torque_" + torque_motion_ + "_" + stamp + "_" +
+                             std::to_string(torque_capture_index_++) + ".csv";
+    std::ofstream out(path, std::ios::out | std::ios::trunc);
+    if (!out)
+    {
+        spdlog::warn("State_Flip: could not open {} for torque capture", path);
+        torque_capture_.clear();
+        return;
+    }
+
+    out << "t,cmd_elapsed,enabled,base_z,height_delta";
+    const char * fields[4] = {"q", "dq", "tau_cmd", "tau_app"};
+    for (int f = 0; f < 4; ++f)
+    {
+        for (int i = 0; i < 12; ++i)
+        {
+            const int sdk_index = static_cast<int>(env->robot->data.joint_ids_map[i]);
+            out << "," << kSdkJointNames[sdk_index] << "_" << fields[f];
+        }
+    }
+    out << "\n";
+
+    for (const auto & s : torque_capture_)
+    {
+        out << (s.step - torque_trigger_fsm_step_) * kFsmDt << "," << s.cmd_elapsed << "," << s.enabled
+            << "," << s.base_z << "," << (s.base_z - baseline_z);
+        for (int i = 0; i < 12; ++i) out << "," << s.q[i];
+        for (int i = 0; i < 12; ++i) out << "," << s.dq[i];
+        for (int i = 0; i < 12; ++i) out << "," << s.tau_cmd[i];
+        for (int i = 0; i < 12; ++i) out << "," << s.tau_app[i];
+        out << "\n";
+    }
+    out.close();
+
+    float peak_delta = 0.0f;
+    for (const auto & s : torque_capture_) peak_delta = std::max(peak_delta, s.base_z - baseline_z);
+    spdlog::info("State_Flip: peak height above standing = {:.3f} m  (compare Isaac Lab's "
+                 "Metrics/jump/max_height; 0.000 means nothing published body position)",
+                 peak_delta);
+    spdlog::info("State_Flip: wrote {} ({} rows, {:.2f}s .. {:.2f}s around trigger)",
+                 path, torque_capture_.size(),
+                 (torque_capture_.front().step - torque_trigger_fsm_step_) * kFsmDt,
+                 (torque_capture_.back().step - torque_trigger_fsm_step_) * kFsmDt);
+    torque_capture_.clear();
 }
