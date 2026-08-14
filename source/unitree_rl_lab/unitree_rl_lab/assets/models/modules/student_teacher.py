@@ -36,8 +36,12 @@ class TcnStudentTeacher(RslStudentTeacher):
         teacher obs          = ``concat(ot, xt)``  (policy + critic groups)
 
     Loading a PPO ``ActorCriticTeacher`` checkpoint copies ``actor.*`` into
-    ``teacher`` (same ``PrivilegedMlp`` keys). A previous distillation
-    checkpoint resumes the student.
+    ``teacher`` (same ``PrivilegedMlp`` keys), then copies ``teacher.mlp``
+    (the trained trunk) into ``student`` and freezes it -- Table S4's layers
+    "copied from the teacher to learners after the teacher training". Only
+    ``memory_s`` (the TCN encoder) trains from that point on. A previous
+    distillation checkpoint (this class's own ``state_dict``) resumes the
+    student instead, re-applying the same freeze.
     """
 
     is_recurrent = True
@@ -140,6 +144,48 @@ class TcnStudentTeacher(RslStudentTeacher):
 
         self.distribution = None
         Normal.set_default_validate_args(False)
+
+    def load_state_dict(self, state_dict: dict, strict: bool = True) -> bool:
+        """Bootstrap from a teacher checkpoint, or resume a distillation checkpoint.
+
+        ``rsl_rl``'s ``OnPolicyRunner.load`` treats a truthy return as "this was a
+        resume": it then also restores the optimizer and iteration count. A raw
+        ``ActorCriticTeacher`` checkpoint is not a distillation checkpoint -- its
+        keys (``actor.*``) don't match this class's own ``state_dict``, and its
+        optimizer covers PPO's actor+critic, not the student's parameters -- so we
+        do the teacher import ourselves and return ``False``.
+        """
+        is_teacher_checkpoint = any(key.startswith("actor.") for key in state_dict)
+        if is_teacher_checkpoint:
+            teacher_dict = {key[len("actor.") :]: value for key, value in state_dict.items() if key.startswith("actor.")}
+            self.teacher.load_state_dict(teacher_dict, strict=strict)
+            self._copy_teacher_trunk_into_student()
+            self.loaded_teacher = True
+            return False
+
+        result = super().load_state_dict(state_dict, strict=strict)
+        self._copy_teacher_trunk_into_student()
+        self.loaded_teacher = True
+        return result
+
+    def _copy_teacher_trunk_into_student(self) -> None:
+        """Copy the teacher's trained trunk (``teacher.mlp``) into ``student`` and freeze it.
+
+        Requires ``student_hidden_dims == teacher_hidden_dims`` and
+        ``tcn_latent_dim == privileged_latent_dim`` so the two MLPs are
+        structurally identical (same input width, same layer widths).
+        """
+        try:
+            self.student.load_state_dict(self.teacher.mlp.state_dict())
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "Cannot copy the teacher's trunk into the student action MLP for the "
+                "Table S4 weight transplant: `student_hidden_dims` must match "
+                "`teacher_hidden_dims`, and `tcn_latent_dim` must match "
+                f"`privileged_latent_dim`. Underlying error: {exc}"
+            ) from exc
+        for param in self.student.parameters():
+            param.requires_grad_(False)
 
     def _student_features(self, obs: TensorDict) -> torch.Tensor:
         ot = self.student_obs_normalizer(self.get_student_obs(obs))
