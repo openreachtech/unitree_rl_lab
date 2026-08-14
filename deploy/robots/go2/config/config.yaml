@@ -97,6 +97,13 @@ FSM:
     # of them.
     tilt_limit: 1.0
     biped_tilt_limit: 2.6
+    # Same diagnostics as BipedFront (see there). Kept on for this state because it is
+    # the *working* hardware stance: a trace of a rise that succeeds is the reference
+    # the front-stance trace has to be read against -- tilt, torque and tracking numbers
+    # mean little without knowing what they look like when it works.
+    telemetry: true
+    torque_log: true
+    torque_log_s: 8.0
     # No timestamp -- parser_policy_dir picks the latest run under here with an
     # `exported/` folder, i.e. whichever Go2-Biped-Phase1 checkpoint was trained most
     # recently.
@@ -120,6 +127,16 @@ FSM:
       front_biped: "j"
     tilt_limit: 1.0
     biped_tilt_limit: 2.6
+    # Diagnostics for the sim2real gap on this stance (it rises in Isaac Lab and in
+    # MuJoCo but not on hardware). `<state>_telemetry_<stamp>.csv` is one row per policy
+    # step (50 Hz) for the whole time the state is active; `<state>_torque_<stamp>.csv`
+    # is one row per FSM tick (1 kHz) over the first torque_log_s seconds, i.e. the rise
+    # attempt, and is the only one that can resolve a torque clamp. Both land in the
+    # process CWD unless log_dir is set. The one-line summary on exit is printed either
+    # way. Turn these off for normal operation.
+    telemetry: true
+    torque_log: true
+    torque_log_s: 8.0
     # No timestamp -- parser_policy_dir picks the latest run under here with an
     # `exported/` folder.
     policy_dir: ../../../logs/rsl_rl/go2_biped_front

@@ -7,6 +7,8 @@
 #include "isaaclab/envs/mdp/actions/joint_actions.h"
 #include "isaaclab/envs/mdp/terminations.h"
 
+#include <atomic>
+
 class State_RLBase : public FSMState
 {
 public:
@@ -24,6 +26,11 @@ public:
         }
 
         env->robot->update();
+
+        policy_step_max_ms_.store(0.0f);
+        policy_step_last_ms_.store(0.0f);
+        policy_overrun_count_.store(0);
+
         // Start policy thread
         policy_thread_running = true;
         policy_thread = std::thread([this]{
@@ -37,7 +44,22 @@ public:
 
             while (policy_thread_running)
             {
+                const auto work_start = clock::now();
+
                 env->step();
+                on_policy_step();
+
+                const float work_ms =
+                    std::chrono::duration<float, std::milli>(clock::now() - work_start).count();
+                policy_step_last_ms_.store(work_ms);
+                if (work_ms > policy_step_max_ms_.load())
+                {
+                    policy_step_max_ms_.store(work_ms);
+                }
+                if (work_ms > env->step_dt * 1e3f)
+                {
+                    policy_overrun_count_.fetch_add(1);
+                }
 
                 // Sleep
                 std::this_thread::sleep_until(sleepTill);
@@ -65,10 +87,24 @@ protected:
         return isaaclab::mdp::bad_orientation(env.get(), tilt_limit_);
     }
 
+    // Called on the policy thread immediately after each env->step(), i.e. once per
+    // control step with the action the FSM thread is about to publish. Default no-op;
+    // overridden by states that record per-step diagnostics.
+    virtual void on_policy_step() {}
+
     std::unique_ptr<isaaclab::ManagerBasedRLEnv> env;
 
     // Tilt of the base away from vertical [rad] treated as a fall.
     float tilt_limit_ = 1.0;
+
+    // Policy-loop health. The loop targets step_dt per iteration but runs ONNX
+    // inference -- and, for a state that overrides on_policy_step(), a file write --
+    // inline. Once an iteration overruns, sleep_until stops sleeping and the effective
+    // control rate silently drops; that cannot happen in simulation, so it is measured
+    // rather than assumed. Written by the policy thread, read by the FSM thread.
+    std::atomic<float> policy_step_max_ms_{0.0f};
+    std::atomic<float> policy_step_last_ms_{0.0f};
+    std::atomic<int> policy_overrun_count_{0};
 
 private:
     std::thread policy_thread;
