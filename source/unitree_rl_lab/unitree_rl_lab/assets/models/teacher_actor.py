@@ -1,17 +1,8 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
+"""Privileged teacher from Lee et al. 2020, Table S5.
 
-"""PPO actor-critic whose actor is Lee et al. 2020's privileged teacher.
-
-Lee, Hwangbo, Wellhausen, Koltun, Hutter, "Learning Quadrupedal Locomotion over
-Challenging Terrain", Science Robotics 2020 (Table S5, Teacher).
-
-The paper's teacher encodes privileged ``xt`` to a 64-d latent, concatenates
-proprioception ``ot``, and outputs actions. Here the same split is trained with
-PPO: the actor is that teacher; the critic uses the same encoder-concat MLP as a
-value head. No imitation / distillation. Feedforward (not recurrent).
+``PrivilegedMlp`` encodes ``xt``, concatenates proprioception ``ot``, then an MLP.
+``ActorCriticTeacher`` trains that split with PPO (actor and critic do not share
+encoder weights). Distillation loads the actor half as the frozen teacher.
 
 Export (JIT/ONNX) copies ``policy.actor``. That module's ``forward`` therefore
 takes ``concat(ot, xt)`` — not proprioception alone. This policy is sim-only.

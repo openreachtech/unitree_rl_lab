@@ -1,18 +1,8 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
-# All rights reserved.
-#
-# SPDX-License-Identifier: BSD-3-Clause
+"""TCN-100 student encoder from Lee et al. 2020, Table S5.
 
-"""PPO actor-critic whose actor is the TCN student encoder from Lee et al. 2020.
-
-Lee, Hwangbo, Wellhausen, Koltun, Hutter, "Learning Quadrupedal Locomotion over
-Challenging Terrain", Science Robotics 2020 (Table S5, TCN-N student).
-
-The paper trains that TCN by imitating a privileged teacher. This module keeps the
-same encoder and trains it with PPO instead: the actor is the TCN over a proprioceptive
-history. The critic is either a feedforward MLP on the critic observation, or (when
-``use_privileged_encoder`` is set) the paper's teacher MLP: privileged ``xt`` encoded
-to a latent, concatenated with current proprioception ``ot``, then a value head.
+Used by PPO (``ActorCriticTcn``) and by teacher-student distillation
+(``StudentTeacher``). Distillation imitates the privileged teacher (action +
+latent matching); PPO can train the same encoder directly.
 """
 
 from __future__ import annotations
@@ -164,8 +154,8 @@ class TcnHistory(nn.Module):
 class TcnMemory(nn.Module):
     """``Memory``-compatible wrapper around :class:`TcnHistory`.
 
-    ``self.rnn`` is the name isaaclab_rl's exporter looks up (``policy.memory_a.rnn``);
-    the module itself is :class:`TcnHistory`, not an RNN.
+    ``self.rnn`` is the name isaaclab_rl's exporter looks up (``policy.memory_a.rnn`` /
+    ``policy.memory_s.rnn``); the module itself is :class:`TcnHistory`, not an RNN.
     """
 
     def __init__(
@@ -211,20 +201,29 @@ class TcnMemory(nn.Module):
         out, self.hidden_state = self.rnn(input.unsqueeze(0), self.hidden_state)
         return out
 
-    def reset(self, dones: torch.Tensor | None = None) -> None:
+    def reset(self, dones: torch.Tensor | None = None, hidden_state: HiddenState = None) -> None:
         if dones is None:
-            self.hidden_state = None
+            self.hidden_state = hidden_state
         elif self.hidden_state is not None:
             self.hidden_state[..., dones == 1, :] = 0.0
 
+    def detach_hidden_state(self, dones: torch.Tensor | None = None) -> None:
+        if self.hidden_state is None:
+            return
+        if dones is None:
+            self.hidden_state = self.hidden_state.detach()
+        else:
+            self.hidden_state[..., dones == 1, :] = self.hidden_state[..., dones == 1, :].detach()
+
 
 class ActorCriticTcn(ActorCriticPpoBase):
-    """TCN actor (student) with an MLP critic.
+    """TCN actor (student) with an MLP critic, trained with PPO.
 
     Actor: TCN over proprioceptive history, concatenated with the current observation,
     then an MLP. Critic defaults to a feedforward MLP on the critic observation. With
     ``use_privileged_encoder``, the critic matches the paper's teacher: encode privileged
     ``xt`` to a latent, concatenate current proprioception ``ot``, then a value MLP.
+    Distillation uses the same TCN via ``StudentTeacher``, not this PPO wrapper.
     """
 
     is_recurrent: bool = True
@@ -353,12 +352,13 @@ def register_actor_critic_tcn() -> None:
         return
 
     def _alias_tcn_as_gru(policy: object):
-        rnn = getattr(getattr(policy, "memory_a", None), "rnn", None)
-        if rnn is None or type(rnn).__name__ != "TcnHistory":
-            return None, None
-        orig_cls = type(rnn)
-        rnn.__class__ = type("GRU", (orig_cls,), {})
-        return rnn, orig_cls
+        for mem_name in ("memory_a", "memory_s"):
+            rnn = getattr(getattr(policy, mem_name, None), "rnn", None)
+            if rnn is not None and type(rnn).__name__ == "TcnHistory":
+                orig_cls = type(rnn)
+                rnn.__class__ = type("GRU", (orig_cls,), {})
+                return rnn, orig_cls
+        return None, None
 
     orig_onnx_init = exporter._OnnxPolicyExporter.__init__
     orig_jit_init = exporter._TorchPolicyExporter.__init__

@@ -170,3 +170,50 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:TeacherPPORunnerCfg",
     },
 )
+
+# TCN-100 student distilled from Go2W-v2-Teacher-Phase5 (Lee et al. 2020 Eq. 1).
+# Phase1 is flat; Phase2 is the Phase5 terrain mix. Same DistillationRunner as
+# feat/wall Go2-v3-Student-Phase*:
+#   --task Go2W-v2-Student-Phase1 --resume --previous-task Go2W-v2-Teacher-Phase5
+#   --task Go2W-v2-Student-Phase2 --resume --previous-task Go2W-v2-Student-Phase1
+gym.register(
+    id="Go2W-v2-Student-Phase1",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_v2:RobotEnvCfgV2Phase1",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_v2:RobotPlayEnvCfgV2Phase1",
+        "rsl_rl_cfg_entry_point": (
+            "unitree_rl_lab.tasks.locomotion.agents.rsl_rl_distillation_cfg:StudentDistillationRunnerCfg"
+        ),
+    },
+)
+
+gym.register(
+    id="Go2W-v2-Student-Phase2",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_v2:RobotEnvCfgV2Phase5",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_v2:RobotPlayEnvCfgV2Phase5",
+        "rsl_rl_cfg_entry_point": (
+            "unitree_rl_lab.tasks.locomotion.agents.rsl_rl_distillation_cfg:StudentDistillationRunnerCfg"
+        ),
+    },
+)
+
+# Same env/runner as Student-Phase2; intended to distill Teacher-Phase5 directly
+# (skip the flat Phase1 warmup):
+#   --task Go2W-v2-Student-Phase5 --resume --previous-task Go2W-v2-Teacher-Phase5
+gym.register(
+    id="Go2W-v2-Student-Phase5",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_v2:RobotEnvCfgV2Phase5",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_v2:RobotPlayEnvCfgV2Phase5",
+        "rsl_rl_cfg_entry_point": (
+            "unitree_rl_lab.tasks.locomotion.agents.rsl_rl_distillation_cfg:StudentDistillationRunnerCfg"
+        ),
+    },
+)

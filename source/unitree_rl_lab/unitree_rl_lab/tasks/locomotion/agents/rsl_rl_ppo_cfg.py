@@ -11,8 +11,8 @@ from isaaclab_rl.rsl_rl import (
     RslRlPpoAlgorithmCfg,
 )
 
-from unitree_rl_lab.tasks.locomotion.agents.actor_critic_teacher import ActorCriticTeacher  # noqa: F401
-from unitree_rl_lab.tasks.locomotion.agents.actor_critic_tcn import ActorCriticTcn  # noqa: F401
+from unitree_rl_lab.assets.models.student_actor import ActorCriticTcn  # noqa: F401
+from unitree_rl_lab.assets.models.teacher_actor import ActorCriticTeacher  # noqa: F401
 
 
 @configclass
