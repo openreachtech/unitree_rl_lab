@@ -82,9 +82,14 @@ def main() -> None:
     by_kind = {k: [j for j in joints if joint_kind(j) == k] for k in ("hip", "thigh", "calf")}
     by_kind = {k: v for k, v in by_kind.items() if v}
 
-    fig, axes = plt.subplots(len(by_kind) + 1, 1, figsize=(12, 3.2 * (len(by_kind) + 1)), sharex=True)
-    if len(by_kind) + 1 == 1:
+    # Captures made before the attitude columns existed still plot; they just lose the
+    # last panel.
+    has_attitude = "roll_turns" in cols
+    n_panels = len(by_kind) + 1 + int(has_attitude)
+    fig, axes = plt.subplots(n_panels, 1, figsize=(12, 3.2 * n_panels), sharex=True)
+    if n_panels == 1:
         axes = [axes]
+    util_ax = axes[len(by_kind)]
 
     # --- one panel per joint kind: applied torque solid, commanded dashed -------------
     for ax, (kind, names) in zip(axes, by_kind.items()):
@@ -101,28 +106,59 @@ def main() -> None:
         ax.legend(fontsize=7, ncol=4, loc="upper right")
 
     # --- utilisation: |applied| / clamp, so 1.0 means pinned -------------------------
-    ax = axes[-1]
+    ax = util_ax
     for name in joints:
         limit = TORQUE_LIMIT[joint_kind(name)]
         ax.plot(t, [abs(v) / limit for v in cols[f"{name}_tau_app"]], lw=1.0, label=name)
     ax.axhline(1.0, color="crimson", ls=":", lw=1.2)
     ax.axvline(0.0, color="0.4", lw=0.8)
     ax.set_ylabel("utilisation\n|tau| / clamp")
-    ax.set_xlabel("time from jump trigger [s]")
     ax.grid(alpha=0.25)
     ax.legend(fontsize=7, ncol=6, loc="upper right")
+    axes[-1].set_xlabel("time from trigger [s]")
 
     # --- height, when the capture carries it (simulation only) -----------------------
     if "height_delta" in cols and max(cols["height_delta"]) > 0.005:
         h = cols["height_delta"]
         peak = max(h)
         peak_t = t[h.index(peak)]
-        ax2 = axes[-1].twinx()
+        ax2 = util_ax.twinx()
         ax2.plot(t, h, color="0.25", lw=1.6, ls="-", alpha=0.8)
         ax2.set_ylabel("height above standing [m]")
         ax2.annotate(f"peak {peak:.3f} m @ {peak_t:.2f}s", xy=(peak_t, peak),
                      xytext=(peak_t + 0.12, peak), color="0.25", fontsize=9,
                      arrowprops=dict(arrowstyle="->", color="0.25", lw=0.8))
+
+    # --- attitude, when the capture carries it ----------------------------------------
+    # A flip that fails and one that succeeds have nearly the same torque trace; what
+    # separates them is where the rotation stopped. roll_turns is the same quantity the
+    # training side calls accumulated_roll, so it can be read against the task's target
+    # directly, and grav_z says which way up the robot finished: -1 upright, 0 on its
+    # side, +1 inverted.
+    if has_attitude:
+        att = axes[-1]
+        for key, label, colour in (
+            ("roll_turns", "roll (sideflip axis)", "tab:blue"),
+            ("pitch_turns", "pitch (backflip axis)", "tab:orange"),
+        ):
+            if any(abs(v) > 1e-3 for v in cols[key]):
+                att.plot(t, cols[key], lw=1.6, color=colour, label=label)
+        final_roll = cols["roll_turns"][-1]
+        for turn in sorted({round(final_roll)} | {-1.0, -2.0, 1.0, 2.0}):
+            if abs(turn) <= max(2.5, abs(final_roll) + 0.5) and turn != 0:
+                att.axhline(turn, color="0.75", ls=":", lw=0.9)
+        att.axhline(0.0, color="0.4", lw=0.8)
+        att.axvline(0.0, color="0.4", lw=0.8)
+        att.set_ylabel("rotation [turns]")
+        att.set_xlabel("time from trigger [s]")
+        att.grid(alpha=0.25)
+        att.legend(fontsize=8, loc="upper left")
+        gz = att.twinx()
+        gz.plot(t, cols["grav_z"], color="0.35", lw=1.2, alpha=0.8, label="grav_z")
+        gz.axhline(-0.9, color="seagreen", ls="--", lw=1.0)
+        gz.text(t[0], -0.9, " upright gate -0.9", color="seagreen", va="top", fontsize=8)
+        gz.set_ylabel("grav_z  (-1 upright, +1 inverted)")
+        gz.set_ylim(-1.15, 1.15)
 
     fig.suptitle(f"{args.csv.name} - dashed = commanded (pre-clamp), solid = applied", fontsize=11)
     fig.tight_layout()
@@ -155,6 +191,18 @@ def main() -> None:
         else:
             print("\npeak height above standing: not recorded (nothing published body position;"
                   " expected on hardware, unexpected under unitree_mujoco)")
+
+    if "roll_turns" in cols:
+        roll, gz, tilt = cols["roll_turns"], cols["grav_z"], cols["tilt_deg"]
+        peak_roll = max(roll, key=abs)
+        print(f"\nrotation: peak {peak_roll:+.2f} turns, final {roll[-1]:+.2f} turns"
+              f"   (roll rate peaked at {max(cols['wx'], key=abs):+.1f} rad/s)")
+        print(f"attitude at rest: grav_z {gz[-1]:+.2f}, tilt {tilt[-1]:.0f} deg"
+              f"   -- upright is grav_z <= -0.9")
+        if gz[-1] > -0.9:
+            short = abs(abs(peak_roll) - round(abs(peak_roll)))
+            print(f"  -> did NOT finish upright. Rotation ended {short:.2f} turns off a whole"
+                  " turn; falling short by even 0.1 lands the robot on its flank.")
 
     print("\n'over%' is peak COMMANDED torque as a share of the clamp. Near 100% means the")
     print("controller was only just short and more torque would help; far above means the")

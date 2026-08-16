@@ -100,23 +100,6 @@ def jump_progress_reward(
     return torch.exp(-torch.square(error) / scale) * attempted.float()
 
 
-def jump_progress_standing_reward(
-    env,
-    command_name: str = "jump",
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    height_scale: float = 0.01,
-    joint_scale: float = 0.25,
-) -> torch.Tensor:
-    """Product of jump progress and post-jump standing quality."""
-    command = env.command_manager.get_term(command_name)
-    asset: Articulation = env.scene[asset_cfg.name]
-    task_progress = jump_progress_reward(env, command_name)
-    height_term = torch.exp(-torch.square(command.height_delta) / height_scale)
-    joint_error = torch.sum(torch.square(asset.data.joint_pos - asset.data.default_joint_pos), dim=1)
-    pose_term = torch.exp(-joint_error / joint_scale)
-    return task_progress * (height_term + pose_term)
-
-
 def motion_progress_reward(
     env,
     command_name: str = "jump",

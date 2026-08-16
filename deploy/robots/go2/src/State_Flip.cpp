@@ -541,11 +541,17 @@ void State_Flip::capture_torque_sample()
         }
         torque_trigger_step_ = ts;
         torque_trigger_fsm_step_ = fsm_step_;
+        // Rotation is tested before height. A flip is not a zero-height command: the
+        // training side puts `flip_target_height` into target_height on every flip episode
+        // (0.60 for the two-turn sideflip), so a height-first test names every flip "jump"
+        // and the capture lands in the wrong file.
         torque_motion_ = "motion";
-        if (command_->target_height != 0.0f)            torque_motion_ = "jump";
-        else if (command_->target_pitch_turns != 0.0f)  torque_motion_ = "backflip";
-        else if (command_->target_roll_turns != 0.0f)   torque_motion_ = "sideflip";
+        if (command_->target_roll_turns != 0.0f)         torque_motion_ = "sideflip";
+        else if (command_->target_pitch_turns != 0.0f)   torque_motion_ = "backflip";
+        else if (command_->target_height != 0.0f)        torque_motion_ = "jump";
 
+        capture_roll_rad_ = 0.0f;
+        capture_pitch_rad_ = 0.0f;
         torque_capture_.clear();
         const size_t n = torque_pre_.size();
         for (size_t k = 0; k < n; ++k)
@@ -560,6 +566,26 @@ void State_Flip::capture_torque_sample()
     s.cmd_elapsed = command_->elapsed();
     s.enabled = command_->enabled ? 1 : 0;
     s.base_z = base_height_ ? static_cast<float>(base_height_->msg_.position()[2]) : 0.0f;
+
+    // Integrated only once the motion is under way, so the counters read zero at the
+    // trigger and match what the training side reports for the same instant.
+    const auto & gravity = env->robot->data.projected_gravity_b;
+    const auto & omega = env->robot->data.root_ang_vel_b;
+    s.gravity_b[0] = gravity.x();
+    s.gravity_b[1] = gravity.y();
+    s.gravity_b[2] = gravity.z();
+    s.ang_vel_b[0] = omega.x();
+    s.ang_vel_b[1] = omega.y();
+    s.ang_vel_b[2] = omega.z();
+    if (torque_capturing_)
+    {
+        capture_roll_rad_ += omega.x() * kFsmDt;
+        capture_pitch_rad_ += omega.y() * kFsmDt;
+    }
+    s.roll_turns = capture_roll_rad_ / (2.0f * static_cast<float>(M_PI));
+    s.pitch_turns = capture_pitch_rad_ / (2.0f * static_cast<float>(M_PI));
+    s.tilt_deg = tilt_deg();
+
     for (int i = 0; i < 12; ++i)
     {
         const int sdk_index = static_cast<int>(env->robot->data.joint_ids_map[i]);
@@ -642,7 +668,8 @@ void State_Flip::write_torque_capture()
         return;
     }
 
-    out << "t,cmd_elapsed,enabled,base_z,height_delta";
+    out << "t,cmd_elapsed,enabled,base_z,height_delta"
+           ",grav_x,grav_y,grav_z,wx,wy,wz,roll_turns,pitch_turns,tilt_deg";
     const char * fields[4] = {"q", "dq", "tau_cmd", "tau_app"};
     for (int f = 0; f < 4; ++f)
     {
@@ -658,6 +685,9 @@ void State_Flip::write_torque_capture()
     {
         out << (s.step - torque_trigger_fsm_step_) * kFsmDt << "," << s.cmd_elapsed << "," << s.enabled
             << "," << s.base_z << "," << (s.base_z - baseline_z);
+        for (int i = 0; i < 3; ++i) out << "," << s.gravity_b[i];
+        for (int i = 0; i < 3; ++i) out << "," << s.ang_vel_b[i];
+        out << "," << s.roll_turns << "," << s.pitch_turns << "," << s.tilt_deg;
         for (int i = 0; i < 12; ++i) out << "," << s.q[i];
         for (int i = 0; i < 12; ++i) out << "," << s.dq[i];
         for (int i = 0; i < 12; ++i) out << "," << s.tau_cmd[i];

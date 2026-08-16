@@ -208,6 +208,10 @@ private:
     std::ofstream telemetry_log_;
     long telemetry_step_ = 0;
     float accumulated_pitch_deg_ = 0.0f;
+    // Integrated at the 1 kHz capture rate and reset on each trigger, mirroring
+    // JumpCommand.accumulated_roll / accumulated_pitch. Written to the torque CSV in turns.
+    float capture_roll_rad_ = 0.0f;
+    float capture_pitch_rad_ = 0.0f;
     void log_telemetry_row();
 
     // --- landing-impact diagnostics -----------------------------------------
@@ -266,6 +270,17 @@ private:
         float cmd_elapsed;  // command_->elapsed(), i.e. the 50 Hz policy clock
         int enabled;
         float base_z;       // world height of the IMU site; see base_height_ below
+        // Attitude, without which a failed flip cannot be told apart from a successful
+        // one: torque and joint angles look much the same whether the robot completed the
+        // rotation, stopped short and landed on its flank, or over-rotated past vertical.
+        // gravity_b is the same projected_gravity the policy observes -- z is -1 upright,
+        // 0 on its side, +1 inverted -- and roll_turns integrates the roll rate exactly as
+        // JumpCommand.accumulated_roll does, so both are directly comparable to Isaac Lab.
+        float gravity_b[3];
+        float ang_vel_b[3];
+        float roll_turns;
+        float pitch_turns;
+        float tilt_deg;
         float q[12];
         float dq[12];
         float tau_cmd[12];

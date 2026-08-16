@@ -62,15 +62,20 @@ FSM:
     keyboard_transitions:
       Passive: "0"
       FixStand: "1"
-    # JUMP-ONLY policy (Go2-Jump-MaxHeight-50), trained at target_height 0.50 and
-    # reaching ~0.44m unassisted. parser_policy_dir picks the newest run under this
-    # root that has an `exported` folder.
+    # SIDEFLIP-ONLY policy (Go2-Sideflip-Double): two rotations, unassisted, landing
+    # upright on 64/64 randomised robots with assist_scale decayed to 0.000. It jumps
+    # ~0.42m, which is a means to the rotation rather than the goal.
+    # parser_policy_dir picks the newest run under this root that has an `exported` folder.
     #
-    # WARNING: this policy was trained with enable_backflip / enable_sideflip = False.
-    # Keys [4] and [5] below send pitch/roll targets it has never seen -- off-distribution
-    # and not safe on hardware. Point policy_dir back at go2_jump_phase2 before using them.
-    policy_dir: ../../../logs/rsl_rl/go2_jump_60
-    command_duration_s: 0.6
+    # WARNING: trained with enable_jump / enable_backflip = False. Keys [3] and [4] below
+    # send height/pitch targets it has never seen -- off-distribution, and not safe on
+    # hardware. Point policy_dir back at go2_jump_60 (jump) or go2_jump_phase2 (all three)
+    # before using them.
+    policy_dir: ../../../logs/rsl_rl/go2_sideflip_double
+    # Must equal JumpCommandCfg.command_duration_s, which this task leaves at its 0.50
+    # default: it is when `enabled` drops back to 0 and takes the three targets in the
+    # observation down with it. 0.6 held the command 0.1s longer than the policy ever saw.
+    command_duration_s: 0.5
     time_scale: 1.0
     rearm_delay_s: 0.3
     # 1 kHz per-joint torque capture, one torque_<motion>_<n>.csv per motion in the
@@ -84,7 +89,12 @@ FSM:
     # front feet touch down around 0.8s in, and the guard must not un-gate while the
     # robot is still absorbing that impact. The hold time then requires a sustained
     # tilt, so an IMU transient from the touchdown shock alone cannot trip it.
-    fall_check_delay_s: 1.2
+    # Raised from 1.2 for the two-turn sideflip, which is a longer motion than anything
+    # deployed so far. Measured from the trigger in Isaac Lab over 32 randomised robots:
+    # take-off 0.36s, touchdown 0.94s, upright and settled 1.19s (worst 1.30s). At 1.2 the
+    # guard armed in the middle of that settle -- the same mistake that forced the real
+    # backflip out of policy when it armed exactly at minimum_landing_time_s.
+    fall_check_delay_s: 1.5
     fall_check_hold_s: 0.1
     motions:
       - key: "3"
@@ -98,4 +108,9 @@ FSM:
         target_pitch_turns: -1.0
       - key: "5"
         motion: sideflip
-        target_roll_turns: -1.0
+        # BOTH targets are required. A sideflip in training does not carry a zero height:
+        # `flip_target_height` puts 0.60 into target_height on every sideflip episode, so
+        # that is what the policy has always seen alongside the roll target. Sending the
+        # roll alone would leave observation[1] at 0.0, a combination it has never met.
+        target_height: 0.60
+        target_roll_turns: -2.0

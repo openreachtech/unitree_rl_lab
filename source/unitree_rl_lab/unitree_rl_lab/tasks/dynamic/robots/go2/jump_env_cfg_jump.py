@@ -46,6 +46,8 @@ extension, but changing both at once would make the result unattributable. It is
 knob if the knee still under-contributes.
 """
 
+import math
+
 from isaaclab.assets import ArticulationCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
@@ -348,3 +350,161 @@ class RobotPlayEnvCfgJump(RobotEnvCfgJump):
         # does unaided rather than what the assist is still doing for it.
         self.commands.jump.state_file = None
         self.commands.jump.initial_assist_scale = 0.0
+
+
+
+
+# --- sideflip, two rotations ------------------------------------------------------------
+# Trained from Phase 1. Two full rotations unassisted, landing upright on 64/64 randomised
+# robots, sim2sim-validated in MuJoCo. It jumps ~0.42 m, which is a means to the rotation
+# rather than the goal.
+#
+# What it inherits, and why:
+#
+#   from Go2-Jump-60   the crouch-and-extend machinery -- pre_jump_standing_reward instead
+#                      of the windup variant (which paid the robot to hold still through
+#                      exactly the window a crouch needs), joint_torques removed,
+#                      action_rate relaxed, and mass/gain randomisation
+#   from Phase 2       non_target_rotation at -0.05. Under MOTION_SIDEFLIP that penalty is
+#                      omega_y^2 + omega_z^2, and a sideflip cannot avoid some pitch/yaw
+#                      coupling. At the -1.0 that fixed the jump's crooked take-off, a
+#                      sideflip measured -0.464 against motion_progress of 0.030 and the
+#                      policy stopped jumping at all (max_height 0.609 -> 0.010,
+#                      base_contact on every episode). What helps a vertical jump actively
+#                      prevents this motion.
+#
+# It took ten attempts to get assist_scale off 1.000, and every one of the nine failures had
+# the same shape: the assist could not itself demonstrate two rotations, so `success` never
+# fired and the 60%-success decay gate never opened. The policy was never the blocker. Three
+# separate things were wrong with the assist and all three had to be fixed:
+#
+#   1. the couple fired while the feet were still planted, and the ground absorbed it
+#   2. the couple block sat inside `assist_active`, so delaying it past that window stopped
+#      it firing at all
+#   3. it was sized against a roll inertia inferred from a one-sided force, understated 2.6x
+#
+# And the sizing itself was then measured wrong twice more, by taking the peak rotation over
+# the whole episode -- which counts the tumble after landing. Measured properly, over the
+# airborne phase only, on the Phase 1 standing policy:
+#
+#    900 N  -1.91 turns   grav_z at rest -0.23   lands on its side
+#   1100 N  -2.04 turns   grav_z at rest -0.88   very nearly upright
+#   1300 N  -2.49 turns   grav_z at rest +0.51   past vertical, lands inverted
+#
+# Completing the two turns and arriving upright are the same condition, not two: stopping a
+# tenth of a turn short IS landing on your flank. That is why every run that fell short of
+# the rotation also failed `landed`, and why the fix was one number rather than a reward
+# change.
+#
+# Verify the assist before training, always, and measure it rather than trusting the eye or
+# the arithmetic -- both were wrong here, repeatedly. Nine training runs were spent on an
+# assist that a five-minute check would have ruled out. The check: play this task with a
+# Phase 1 checkpoint and initial_assist_scale forced to 1.0. Phase 1 does nothing but hold a
+# stand, so whatever the robot does is the external force's doing, and the rotation it
+# produces has to reach the target before any policy is asked to learn from it.
+#
+#   cfg = parse_env_cfg("Go2-Sideflip-Double", num_envs=16)
+#   cfg.commands.jump.initial_assist_scale = 1.0
+#   cfg.commands.jump.state_file = None
+#
+# What the assist applies, in order, on the four hip bodies:
+#
+#   0.00 - 0.12 s   crouch   150 N down, triangular
+#   0.12 - 0.34 s   launch   derived from flip_launch_height = 1.50, symmetric (no roll)
+#   0.26 - 0.36 s   couple   1100 N up on FR/RR, 1100 N down on FL/RL (roll, no lift)
+SIDEFLIP_TURNS = -2.0
+
+
+@configclass
+class CommandsCfgSideflipDouble(CommandsCfgJump):
+    jump = CommandsCfgJump().jump.replace(
+        enable_jump=False,
+        enable_sideflip=True,
+        target_height_range=(0.0, 0.0),
+        target_roll_turns_range=(SIDEFLIP_TURNS, SIDEFLIP_TURNS),
+        # Lift and spin come from separately sized mechanisms:
+        #
+        #   flip_launch_height    -> the launch force, symmetric across all four hips
+        #   sideflip_couple_force -> pure torque, no translation at all
+        #   sideflip_assist_force -> 0. The one-sided force does both at once, and mixing it
+        #                            in re-adds uncontrolled lift on top of the launch;
+        #                            doubling it for a second turn once reached 2.351 m.
+        #
+        # flip_target_height is what the reward asks for and flip_launch_height is what the
+        # force is sized for. They were a single number, and raising it to buy flight time
+        # moved the reward target out of reach at the same time: height_progress is
+        # exp(-(max_height - target)^2 / 0.16), which reads 0.975 against 0.60 m and 0.012
+        # against 1.50 m. The launch at 1.50 delivers 0.669 m on the standing policy.
+        flip_target_height=0.60,
+        flip_launch_height=1.50,
+        sideflip_assist_force=0.0,
+        sideflip_couple_force=1100.0,
+        # Take-off is at 0.24 s under this launch, and the couple waits for it. Spending the
+        # couple against the ground is what wasted the first several attempts.
+        sideflip_couple_delay_s=0.26,
+        sideflip_couple_duration_s=0.10,
+        # 0.30 rad is 4.8% of one turn but only 2.4% of two, tight enough that a rotation
+        # could complete and still be scored a failure -- which would stall the assist decay.
+        rotation_tolerance_rad=0.60,
+        # Touchdown is at 0.94 s, well past the 0.80 s the single-rotation tasks assume.
+        # Judging `landed` before the robot is down keeps success at 0.
+        minimum_landing_time_s=1.0,
+        state_file="logs/rsl_rl/go2_sideflip_double/jump_curriculum_state.json",
+    )
+
+
+# Both widened terms are needed together, and each was run alone first:
+#
+#   rotation_scale (2*pi)^2   motion_progress climbed 0.053 -> 0.255, so the robot did start
+#                             chasing the rotation -- but max_height collapsed to 0.023 m.
+#                             With a gradient on rotation and none on height, spinning on the
+#                             spot is cheaper than spinning in the air.
+#   height_progress at 0.16   max_height rose 0.086 -> 0.195 -> 0.322 m, confirming height
+#                             only ever failed to appear because nothing rewarded it. But
+#                             with rotation still at exp(-16) from a two-turn target, there
+#                             was no reason to use the air once it had it.
+#
+# They are the two halves of one deadlock: air time is worthless without a reason to rotate,
+# and rotation is unreachable without air time.
+@configclass
+class SideflipDoubleRewardsCfg(JumpRewardsCfg):
+    motion_progress = RewTerm(
+        func=mdp.motion_progress_reward,
+        weight=1.0,
+        params={"command_name": "jump", "rotation_scale": (2.0 * math.pi) ** 2},
+    )
+    height_progress = RewTerm(
+        func=mdp.jump_progress_reward,
+        weight=1.0,
+        params={"command_name": "jump", "scale": 0.16},
+    )
+    non_target_rotation = RewTerm(
+        func=mdp.non_target_angular_velocity_penalty,
+        weight=-0.05,
+        params={"command_name": "jump", "asset_cfg": SceneEntityCfg("robot")},
+    )
+
+
+@configclass
+class RobotEnvCfgSideflipDouble(RobotEnvCfgJump):
+    """Sideflip, two rotations. Train from Phase 1."""
+
+    commands: CommandsCfgSideflipDouble = CommandsCfgSideflipDouble()
+    rewards: SideflipDoubleRewardsCfg = SideflipDoubleRewardsCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        # Flight is longer than any previous motion here; give the episode room for the
+        # landing and the settle that `landed` checks for.
+        self.episode_length_s = 5.0
+
+
+@configclass
+class RobotPlayEnvCfgSideflipDouble(RobotEnvCfgSideflipDouble):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 32
+        self.observations.policy.enable_corruption = False
+        self.commands.jump.state_file = None
+        self.commands.jump.initial_assist_scale = 0.0
+
