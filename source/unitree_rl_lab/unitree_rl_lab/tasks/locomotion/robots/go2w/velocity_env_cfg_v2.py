@@ -5,7 +5,6 @@ observation is privileged ``xt`` only (foot-local height scans and contacts), an
 ``TcnTeacherPPORunnerCfg`` encodes ``xt`` then concatenates proprioception ``ot``.
 """
 
-import isaaclab.terrains as terrain_gen
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import SceneEntityCfg
@@ -285,42 +284,13 @@ class RobotPlayEnvCfgV2Phase5(RobotPlayEnvCfgPhase5):
         super().__post_init__()
         _set_foot_scanner_periods(self)
 
-        # Requested layout: a genuine 2-column (pyramid | inv) x 3-row (20/40/60 cm) grid,
-        # matching the real MuJoCo wall heights (terrain_generator_go2w.py:
-        # HEIGHTS = (0.20, 0.40, 0.60)) -- unlike RobotPlayEnvCfgPhase5's 6-columns-in-one-
-        # row layout, which exists because IsaacLab ties sub-terrain *type* to column and
-        # *difficulty* to row: with num_rows=3, terrain_generator.py's
-        # difficulty = (row + U(0,1)) / num_rows means each row is a randomized *band*
-        # centered on, not pinned to, a height -- there is no way to get an exact per-row
-        # value with a real row axis (only a degenerate num_rows=1 + per-column (h, h)
-        # range can pin exact values, which is what the 6-column layout does instead).
-        #
-        # step_height_range=(0.10, 0.70) with num_rows=3 and difficulty_range=(0.0, 1.0)
-        # (Phase5's default) puts each row's band edges at exactly 0.10/0.30/0.50/0.70 m,
-        # i.e. bands [0.10, 0.30) / [0.30, 0.50) / [0.50, 0.70) m -- centered exactly on
-        # 0.20 / 0.40 / 0.60 m, each +/-0.10 m wide. Solved from: row r's band midpoint is
-        # lo + ((r + 0.5) / num_rows) * (hi - lo); requiring midpoints 0.20/0.40/0.60 for
-        # r=0,1,2 gives lo=0.10, hi=0.70.
-        self.scene.terrain.max_init_terrain_level = 2  # num_rows - 1, so play envs spawn
-        # across all 3 rows -- left at Phase5's training value (7) this would index past
-        # the end of a 3-row terrain_origins array.
-        self.scene.terrain.terrain_generator.num_rows = 3
-        self.scene.terrain.terrain_generator.num_cols = 2
-        self.scene.terrain.terrain_generator.sub_terrains = {
-            "pyramid": terrain_gen.MeshPyramidStairsTerrainCfg(
-                proportion=1.0,
-                step_height_range=(0.10, 0.70),
-                step_width=1.00,
-                platform_width=2.0,
-                border_width=1.0,
-                holes=False,
-            ),
-            "inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
-                proportion=1.0,
-                step_height_range=(0.10, 0.70),
-                step_width=1.00,
-                platform_width=2.0,
-                border_width=1.0,
-                holes=False,
-            ),
-        }
+        # 2026-08-18: this override used to pin a 2-column (pyramid | inv) x 3-row
+        # (20/40/60 cm) stairs grid, matching the real MuJoCo wall heights of the *old*
+        # pyramid_stairs training terrain that RobotEnvCfgPhase5 used at the time. That
+        # training terrain is gone (folded to thin_wall -- see velocity_env_cfg_phase5.py's
+        # module docstring), so this stale override is replaced with the same wall-only,
+        # pinned-30/40/50/60cm layout RobotPlayEnvCfgPhase5's own __post_init__ already
+        # sets up (already applied by the super().__post_init__() call above) -- nothing
+        # left to override here for the terrain itself. Kept as an explicit no-op comment
+        # rather than silently deleting the whole method, so a future reader doesn't
+        # wonder whether this class still needs a terrain override at all (it doesn't).

@@ -46,6 +46,18 @@ gym.register(
     },
 )
 
+# 2026-08-18: folded in from the Go2W-v1-Phase5-Try15 sandbox experiment -- thin_wall
+# terrain + goal-directed command (MixedGoalVelocityCommand) + ANYmal-Parkour-style
+# goal-tracking rewards, replacing the pyramid_stairs/UniformTerrainGatedVelocityCommand/
+# climb_progress-style design the Try1-14 campaigns had converged on. Confirmed in
+# MuJoCo: controls correctly, no runaway under a zero command, crosses 0.40 m. See
+# velocity_env_cfg_phase5.py's module docstring for the full history (including which
+# lessons from the old campaigns still apply and which are now superseded). Go2W-v2-*
+# (velocity_env_cfg_v2.py's RobotEnvCfgV2Phase5, inheriting this unchanged) picked up
+# the same redesign as a result -- a deliberate choice, not an oversight, since the old
+# V2 Teacher/Student Phase5 pipeline was already known to have the same "won't stop"
+# problem this redesign fixes. Sandbox tries against this phase (Try15/16/17) are
+# registered in sandbox/__init__.py, not here.
 gym.register(
     id="Go2W-v1-Phase5",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
@@ -171,15 +183,25 @@ gym.register(
     },
 )
 
-# TCN-100 student distilled from the fully-trained Go2W-v2-Teacher-Phase5 checkpoint
-# (Lee et al. 2020 Eq. 1). The teacher's trunk is transplanted into the student once,
-# at Phase1 (see TcnStudentTeacher.load_state_dict) -- it doesn't change afterwards.
-# Phase1/Phase2/Phase5 instead ramp the student's OWN terrain curriculum (flat ->
-# rough+box -> +wall), same terrain progression as the Teacher/PPO phases, each
-# stage resuming the previous stage's own distillation checkpoint:
-#   --task Go2W-v2-Student-Phase1 --resume --previous-task Go2W-v2-Teacher-Phase5
+# TCN-100 student distilled from a teacher checkpoint (Lee et al. 2020 Eq. 1). The
+# teacher's trunk is transplanted into the student once, at Phase1 (see
+# TcnStudentTeacher.load_state_dict) -- it doesn't change afterwards. Phase1/Phase2/Phase5
+# instead ramp the student's OWN terrain curriculum (flat -> rough+box -> +wall), same
+# terrain progression as the Teacher/PPO phases, each stage resuming the previous stage's
+# own distillation checkpoint.
+#
+# 2026-08-16: trunk source switched to Go2W-v2-Teacher-Phase5-Try1 (confirmed in Isaac Lab
+# play mode to stop correctly, including over a 60 cm wall) instead of the old
+# Go2W-v2-Teacher-Phase5. Because the transplanted trunk itself changes, Phase1 and Phase2
+# have to be redistilled from scratch -- a Student-Phase1/Phase2 checkpoint trained against
+# the old teacher's trunk is not a valid resume target for a run whose trunk now comes from
+# a different teacher. The old Go2W-v2-Student-Phase5 (thin_wall/goal-directed's Student
+# counterpart) is replaced by Go2W-v2-Student-Phase5-Try1 (sandbox/__init__.py), reusing
+# Teacher-Phase5-Try1's own env cfg (env cfg is otherwise identical between Teacher and
+# Student -- only rsl_rl_cfg_entry_point differs):
+#   --task Go2W-v2-Student-Phase1 --resume --previous-task Go2W-v2-Teacher-Phase5-Try1
 #   --task Go2W-v2-Student-Phase2 --resume --previous-task Go2W-v2-Student-Phase1
-#   --task Go2W-v2-Student-Phase5 --resume --previous-task Go2W-v2-Student-Phase2
+#   --task Go2W-v2-Student-Phase5-Try1 --resume --previous-task Go2W-v2-Student-Phase2
 gym.register(
     id="Go2W-v2-Student-Phase1",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",

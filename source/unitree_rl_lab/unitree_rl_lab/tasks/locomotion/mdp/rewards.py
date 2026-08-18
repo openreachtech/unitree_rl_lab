@@ -7,6 +7,7 @@ try:
     from isaaclab.utils.math import quat_apply_inverse
 except ImportError:
     from isaaclab.utils.math import quat_rotate_inverse as quat_apply_inverse
+import isaaclab.utils.math as math_utils
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
@@ -546,48 +547,6 @@ def forward_command_progress(
     return progress * (cmd_norm > 0.1)
 
 
-def climb_progress_reward(
-    env: ManagerBasedRLEnv,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    max_climb_speed: float = 0.5,
-    command_name: str | None = None,
-) -> torch.Tensor:
-    """Reward vertical (world Z) speed magnitude, clamped to a reasonable max -- a
-    direct, continuous incentive to make height-changing progress while crossing
-    stairs, mirroring ``forward_command_progress``'s design: velocity-based (so it
-    doesn't saturate near zero the way an exponential-kernel reward would) and a rate,
-    not a state, so it doesn't create a "camp at a height and collect reward every
-    remaining step" exploit the way a raw height-achieved reward would.
-
-    Magnitude, not signed to a single "up" direction, because a mixed pyramid_stairs
-    (climbing up) / pyramid_stairs_inv (descending) terrain needs genuine progress
-    rewarded in either direction without conditioning on which sub-terrain type a given
-    env is currently on.
-
-    Caveat (confirmed 2026-08-12 in a Go2W-v1-Phase5-Try10 MuJoCo check -- the policy
-    drove forward under a zero command after as few as 500 iterations): unlike
-    ``forward_command_progress``/``forward_stall_penalty`` in this same file, this term
-    had no command gate, so it paid out in full during standing envs too -- any
-    vertical bob (rough-terrain noise, a step-edge wobble) was rewarded regardless of
-    command, at this reward set's largest weight (+2.0), while
-    ``motion_without_cmd_penalty`` (the only "stop" signal) only ever fires during the
-    ~10 % of segments that are standing envs. That imbalance let "moving is rewarded"
-    win out over "stop when idle" well before the sparser signal could compete,
-    especially on a checkpoint (e.g. resumed from Phase2) that had never seen this term
-    before. Pass ``command_name`` to gate it exactly like its siblings: zero reward
-    below the standing-env command threshold, unchanged everywhere else genuine
-    climbing happens (the lin_vel_x floor keeps cmd_norm > 0.1 for every non-standing
-    env, so gating costs nothing there).
-    """
-    asset: Articulation = env.scene[asset_cfg.name]
-    vertical_speed = torch.abs(asset.data.root_lin_vel_w[:, 2])
-    reward = vertical_speed.clamp(max=max_climb_speed)
-    if command_name is not None:
-        cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
-        reward = reward * (cmd_norm > 0.1)
-    return reward
-
-
 def stall_penalty(
     env: ManagerBasedRLEnv,
     command_name: str = "base_velocity",
@@ -612,37 +571,6 @@ def stall_penalty(
     cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
     body_speed = torch.norm(asset.data.root_lin_vel_b[:, :2], dim=1)
     stall = torch.exp(-body_speed / speed_scale)
-    return stall * (cmd_norm > 0.1)
-
-
-def forward_stall_penalty(
-    env: ManagerBasedRLEnv,
-    command_name: str = "base_velocity",
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    speed_scale: float = 0.1,
-) -> torch.Tensor:
-    """Like ``stall_penalty``, but gates on forward-projected speed (the same
-    ``vel_b . cmd_dir`` projection ``forward_command_progress`` uses) instead of raw
-    planar speed magnitude.
-
-    ``stall_penalty``'s ``norm(root_lin_vel_b[:, :2])`` is direction-agnostic: any
-    planar motion -- forward, sideways, backward, or the center-of-mass wobble produced
-    by rotating in place near an obstacle -- reduces it, even with zero net progress.
-    Observed on a 2026-08-05 Go2W wall-climb run: instead of committing to the wall,
-    the policy span in place, plausibly because off-axis CoM wobble during rotation
-    gave ``stall_penalty`` enough nonzero body_speed to soften it without genuine
-    forward progress, while ``track_ang_vel_z`` (decoupled from ``lin_vel_x``) gave an
-    independent, easier-to-satisfy reward for turning at all. Clamping the projection
-    at 0 before the exponential means backward motion is scored the same as standing
-    still (full penalty), not "not stalled" -- only genuine forward progress counts.
-    """
-    asset: Articulation = env.scene[asset_cfg.name]
-    cmd_xy = env.command_manager.get_command(command_name)[:, :2]
-    cmd_norm = torch.norm(cmd_xy, dim=1)
-    cmd_dir = cmd_xy / cmd_norm.clamp(min=1e-3).unsqueeze(1)
-    vel_b = asset.data.root_lin_vel_b[:, :2]
-    forward_speed = torch.sum(vel_b * cmd_dir, dim=1).clamp(min=0.0)
-    stall = torch.exp(-forward_speed / speed_scale)
     return stall * (cmd_norm > 0.1)
 
 
@@ -769,59 +697,148 @@ def joint_mirror(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, mirror_joint
     return reward
 
 
-def motion_without_cmd_penalty(
+"""
+Goal-directed rewards (mdp.commands.MixedGoalVelocityCommand).
+
+Direct ports of ANYmal Parkour's Table S2 terms (Hoeller/Rudin et al. 2023,
+doc/papers/ANYmal_Parkour_Learning_Agile_Navigation_for_Quadrupedal_Robots.md), promoted
+here from the Go2W-v2-Teacher-Phase5-Try1 sandbox module once Go2W-v1-Phase5-Try15 (the
+same design, ported to the v1/GRU line) was folded into this project's permanent
+Go2W-v1-Phase5 -- see velocity_env_cfg_phase5.py's module docstring for that fold's
+reasoning and MuJoCo validation. All four read the goal straight off the command term's
+``goal_pos_w`` (a MixedGoalVelocityCommand attribute) rather than treating
+``command_manager.get_command(...)`` (the synthesized steering velocity) as the target,
+since the paper's r*/psi* are positions/headings, not velocities. All four are explicitly
+zeroed on "rough" (``command_term.rough_env_mask``) envs when that attribute is present
+(MixedGoalVelocityCommand splits by column; ``goal_pos_w`` is only ever written for
+wall-column envs, staying at its zero-initialised value -- the world origin, not a real
+target -- for "rough" envs otherwise).
+"""
+
+
+def _rough_env_mask(command_term) -> torch.Tensor | None:
+    """MixedGoalVelocityCommand exposes rough_env_mask; plain GoalDirectedVelocityCommand
+    (no "rough"/"wall" column split -- every env is goal-directed) does not. Returns None
+    in the latter case so callers can skip the "rough" exemption entirely."""
+    return getattr(command_term, "rough_env_mask", None)
+
+
+def goal_move_in_direction_reward(
     env: ManagerBasedRLEnv,
     command_name: str = "base_velocity",
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    cmd_threshold: float = 0.1,
 ) -> torch.Tensor:
-    """Penalize body motion while (essentially) no velocity is commanded.
+    """Table S2 "Move in direction": cos<v_b, r*-r>, weight +1 in the paper.
 
-    The mirror image of :func:`stall_penalty`, and the direct counterpart to
-    ``feet_contact_without_cmd``. That existing term is the only thing rewarding "stand
-    still when told to" -- but it rewards *feet in contact*, which is a sound proxy for
-    standing on a legged robot and a meaningless one on a wheeled base: a Go2W rolling at
-    2 m/s still has all four wheels on the ground and collects it in full. So on Go2W the
-    reward set had no term that actually distinguished stopped from moving under a zero
-    command, leaving only ``track_lin_vel_xy_exp``'s implicit gradient, which saturates to
-    ~0 well before the robot is anywhere near stationary and so stops pushing exactly when
-    the remaining error is what a human notices.
-
-    Penalizes the magnitude of planar body velocity (linear, plus yaw rate scaled to a
-    comparable size) rather than an exponential kernel, so the pressure grows with how far
-    from stopped the robot is instead of flattening out. Gated on the command being near
-    zero, so it never interferes with commanded motion.
+    No time/arrival gating on wall envs -- a stationary robot (v_b ~ 0) contributes ~0 by
+    construction (see the division below), and the low-speed regime this can be noisy in
+    is already covered by ``goal_dont_wait_penalty``'s much larger per-step pressure,
+    exactly as in the paper. Explicitly zeroed on "rough" envs, if the command term has
+    that concept -- see the module-level docstring above.
     """
-    asset: Articulation = env.scene[asset_cfg.name]
-    cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
-    lin_speed = torch.norm(asset.data.root_lin_vel_b[:, :2], dim=1)
-    yaw_rate = torch.abs(asset.data.root_ang_vel_b[:, 2])
-    return (lin_speed + 0.25 * yaw_rate) * (cmd_norm < cmd_threshold)
+    command_term = env.command_manager.get_term(command_name)
+    asset = env.scene[asset_cfg.name]
+    goal_vec_w = command_term.goal_pos_w - asset.data.root_pos_w[:, :2]
+    goal_dir_w = goal_vec_w / torch.norm(goal_vec_w, dim=-1, keepdim=True).clamp(min=1e-6)
+    vel_w = asset.data.root_lin_vel_w[:, :2]
+    vel_dir_w = vel_w / torch.norm(vel_w, dim=-1, keepdim=True).clamp(min=1e-6)
+    reward = (vel_dir_w * goal_dir_w).sum(dim=-1)
+    rough_env_mask = _rough_env_mask(command_term)
+    if rough_env_mask is None:
+        return reward
+    return torch.where(rough_env_mask, torch.zeros_like(reward), reward)
 
 
-def wheel_motion_without_cmd_penalty(
+def goal_position_tracking_reward(
     env: ManagerBasedRLEnv,
-    asset_cfg: SceneEntityCfg,
     command_name: str = "base_velocity",
-    cmd_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    arrival_deadline_s: float = 8.0,
+    activation_window: float = 1.0,
 ) -> torch.Tensor:
-    """Penalize wheel joint velocity directly while (essentially) no velocity is commanded.
+    """Table S2 "Position tracking": 1[t*<1] * (1 - 0.5*||r_xy - r_xy*||), weight +10.
 
-    ``motion_without_cmd_penalty`` only sees the *effect* of a wheel command -- resultant
-    base linear/yaw velocity -- not the actuator command itself. A policy can satisfy "base
-    didn't move much" under this sim's friction/load model while still outputting a
-    nontrivial wheel velocity, and a different contact model (e.g. a MuJoCo deploy check)
-    can let that same command actually roll the robot. Confirmed 2026-08-12: probing a
-    Go2W-v1-Phase5-Try11 exported network with a stationary, level, default-pose, zero-
-    command observation still produced nonzero wheel output.
+    t* is remaining time until ``arrival_deadline_s`` -- a deadline *shorter* than the
+    episode, not the episode's own remaining time. Gating on the full episode's remaining
+    time put the only "did you get there" pressure in the episode's final second, with a
+    goal only ~2 m away: most of the episode would be completely free, unhurried travel
+    time before that one window, i.e. no reward for arriving *quickly*, only for
+    eventually being close by the time the episode ends. Decoupling the arrival deadline
+    from the episode length restores urgency while still leaving time after the deadline
+    to test "stays stopped" via ``goal_dont_wait_penalty`` (gated off once arrived) and
+    the existing ``joint_position_penalty``/``track_lin_vel_xy_exp`` -- this term does
+    not need to, and does not, keep firing after the deadline; that is deliberately left
+    to those other terms.
 
-    ``asset_cfg`` must scope ``joint_ids`` to the wheel joints (``WHEEL_JOINT_NAMES``) --
-    this is deliberately not scoped to "robot" by default, unlike this file's other
-    ``asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")`` penalties, because applying it
-    to leg joints too would fight ``joint_position_penalty``'s own (leg-only) stand-still
-    boost and the leg joint-effort penalties, which already handle legs.
+    ``t_star`` goes negative once the deadline has passed (the episode does *not* end
+    there), so ``active`` is explicitly bounded to ``0 <= t_star < activation_window`` --
+    without the lower bound this would fire for the rest of the episode, not just the one
+    window right before the deadline.
     """
-    asset: Articulation = env.scene[asset_cfg.name]
-    cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
-    wheel_speed = torch.linalg.norm(asset.data.joint_vel[:, asset_cfg.joint_ids], dim=1)
-    return wheel_speed * (cmd_norm < cmd_threshold)
+    command_term = env.command_manager.get_term(command_name)
+    asset = env.scene[asset_cfg.name]
+    distance = torch.norm(command_term.goal_pos_w - asset.data.root_pos_w[:, :2], dim=-1)
+    t_star = arrival_deadline_s - env.episode_length_buf * env.step_dt
+    active = (t_star >= 0.0) & (t_star < activation_window)
+    rough_env_mask = _rough_env_mask(command_term)
+    if rough_env_mask is not None:
+        active = active & ~rough_env_mask
+    return torch.where(active, 1.0 - 0.5 * distance, torch.zeros_like(distance))
+
+
+def goal_heading_tracking_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str = "base_velocity",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    arrival_deadline_s: float = 8.0,
+    activation_window: float = 1.0,
+) -> torch.Tensor:
+    """Table S2 "Heading tracking": 1[t*<1] * (1 - 0.5*|psi - psi*|), weight +5.
+
+    Same ``arrival_deadline_s``/window logic as ``goal_position_tracking_reward`` -- see
+    its docstring. psi* is the bearing toward the goal (matching
+    GoalDirectedVelocityCommand's own ``desired_heading`` computation in
+    ``_update_command``), not a separately commanded orientation -- this task has no
+    independent heading target.
+    """
+    command_term = env.command_manager.get_term(command_name)
+    asset = env.scene[asset_cfg.name]
+    goal_vec_w = command_term.goal_pos_w - asset.data.root_pos_w[:, :2]
+    desired_heading = torch.atan2(goal_vec_w[:, 1], goal_vec_w[:, 0])
+    heading_error = torch.abs(math_utils.wrap_to_pi(desired_heading - asset.data.heading_w))
+    t_star = arrival_deadline_s - env.episode_length_buf * env.step_dt
+    active = (t_star >= 0.0) & (t_star < activation_window)
+    rough_env_mask = _rough_env_mask(command_term)
+    if rough_env_mask is not None:
+        active = active & ~rough_env_mask
+    return torch.where(active, 1.0 - 0.5 * heading_error, torch.zeros_like(heading_error))
+
+
+def goal_dont_wait_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str = "base_velocity",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    speed_threshold: float = 0.2,
+) -> torch.Tensor:
+    """Adapted from Table S2 "Don't wait" (1(||v_b||<0.2), weight -1).
+
+    Gated off once arrived, unlike the paper's unconditional version. In the paper, a
+    *separate* high-level navigation module decides when a skill's job is done (it simply
+    stops issuing that skill/goal); the locomotion reward alone has no concept of "we're
+    done, stop asking for movement" and doesn't need one. GoalDirectedVelocityCommand/
+    MixedGoalVelocityCommand deliberately keep one goal live for the whole episode to test
+    "arrived -> stop and hold", so an unconditional Don't-wait would pay -1 for the entire
+    remainder of every episode after arrival -- the opposite of the behaviour this term
+    exists to produce. Also gated off entirely on "rough" envs, if the command term has
+    that concept.
+    """
+    command_term = env.command_manager.get_term(command_name)
+    asset = env.scene[asset_cfg.name]
+    distance = torch.norm(command_term.goal_pos_w - asset.data.root_pos_w[:, :2], dim=-1)
+    arrived = distance < command_term.cfg.arrival_radius
+    rough_env_mask = _rough_env_mask(command_term)
+    if rough_env_mask is not None:
+        arrived = arrived | rough_env_mask
+    speed = torch.norm(asset.data.root_lin_vel_b[:, :2], dim=-1)
+    too_slow = (speed < speed_threshold).float()
+    return torch.where(arrived, torch.zeros_like(too_slow), too_slow)
