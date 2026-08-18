@@ -58,6 +58,19 @@ class TowAssistCommand(CommandTerm):
         self.metrics["assist_scale"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["force_x"] = torch.zeros(self.num_envs, device=self.device)
 
+        # Held-out environments that never receive the tow, so something in the run is always
+        # measuring unaided ability. A velocity curriculum reading the *assisted* population
+        # cannot tell "the robot runs this fast" from "the robot is towed this fast", and will
+        # happily ratchet the command past what the robot can do -- which is how sandbox Try 11
+        # reached a commanded 4.8 m/s with a real top speed of 1.78. Point
+        # ``lin_vel_cmd_levels(assist_free_only=True)`` at this mask to break that loop.
+        # Deterministic (a contiguous block, not a random draw) so the split is identical across
+        # a --resume, and empty by default so existing tasks are unaffected.
+        self.eval_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        num_eval = int(self.num_envs * cfg.eval_env_fraction)
+        if num_eval > 0:
+            self.eval_mask[:num_eval] = True
+
     def __str__(self) -> str:
         msg = "TowAssistCommand:\n"
         msg += f"\tAssist scale: {self.assist_scale}\n"
@@ -86,6 +99,7 @@ class TowAssistCommand(CommandTerm):
 
         force_x = (self.cfg.gain * vx_error * self.assist_scale).clamp(max=self.cfg.max_force)
         force_x = torch.where(cmd_norm > 0.1, force_x, torch.zeros_like(force_x))
+        force_x = torch.where(self.eval_mask, torch.zeros_like(force_x), force_x)
         self._last_force_x = force_x
 
         forces = torch.zeros(self.num_envs, len(self.body_ids), 3, dtype=torch.float, device=self.device)
@@ -123,6 +137,12 @@ class TowAssistCommandCfg(CommandTermCfg):
     max_force: float = MISSING  # type: ignore[assignment]
     """Clamp on the (pre-``assist_scale``) forward force, in N."""
     initial_assist_scale: float = 1.0
+
+    eval_env_fraction: float = 0.0
+    """Fraction of environments that never receive the tow force, reserved as an honest
+    measurement of unaided ability (see :attr:`TowAssistCommand.eval_mask`). They still train
+    normally -- they simply get no help. Defaults to 0 (no held-out set), so tasks that do not
+    ask for one are unchanged."""
 
     state_file: str | None = None
     """Path used to persist/restore the EFGCL assist-force curriculum across process

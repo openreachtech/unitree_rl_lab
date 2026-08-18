@@ -128,6 +128,86 @@ UNITREE_GO2_CFG = UnitreeArticulationCfg(
     # fmt: on
 )
 
+
+# --- Go2 with the actuator model corrected to match unitree_mujoco's go2.xml ----------------
+# Promoted verbatim from sandbox Try 8/9 (which in turn ported it from feat/jump), and now the
+# model used by the Go2-Run task. Kept as a SEPARATE cfg rather than edited into
+# UNITREE_GO2_CFG above: that would silently change the physics under Phase1-4, the biped
+# tasks, and every existing Go2 checkpoint trained against the stock model.
+#
+# Three differences from UNITREE_GO2_CFG, each one closing a gap against
+# ``unitree_mujoco/unitree_robots/go2/go2.xml`` -- i.e. this is the variant whose dynamics the
+# sim2sim/deploy path actually reproduces:
+#
+#   calf torque    Y1/Y2 20.2/23.4 -> 39.22/45.43 N*m   go2.xml gives the knee its own
+#                                                       ctrlrange +/-45.43 (vs +/-23.7
+#                                                       elsewhere); the calf reaches roughly
+#                                                       double through its linkage. Running
+#                                                       fast is knee-extension-dominated, so
+#                                                       the stock value makes any top-speed
+#                                                       number a measurement of a weak knee.
+#   joint friction Fs/Fd 0/0 (PhysX friction 0.01)      go2.xml: frictionloss=0.2, damping=0.1
+#                  -> Fs 0.2 / Fd 0.1, friction 0.0     on every joint. PhysX's own `friction`
+#                                                       goes to 0 because it is a second dry-
+#                                                       friction mechanism -- keeping it at
+#                                                       0.01 alongside Fs would double-count
+#                                                       what MuJoCo models once.
+#   armature       0.0122 -> 0.01                       go2.xml: armature=0.01. The empirical
+#                                                       GO-M8010-6 value is 0.0122, but a 4.6x
+#                                                       knee-inertia gap between simulators
+#                                                       produced a sim2sim tumble in the jump
+#                                                       work, so simulator agreement wins here.
+#
+# ``unitree_mujoco/simulate/config.yaml``'s ``torque_speed_curves`` already mirrors these
+# Y1/Y2/X1/X2 values, so the two simulators agree end to end. PD gains (stiffness 25 / damping
+# 0.5) and the 0.25 action scale are unchanged -- those already match, since deploy reads them
+# from the exported ``params/deploy.yaml`` and hands them to the motors as kp/kd.
+_GO2_CALF_PEAK_TORQUE = 45.43
+_GO2_CALF_PUSH_TORQUE = 45.43 * (20.2 / 23.4)  # keep the stock Y1/Y2 ratio (0.863) -> 39.22
+
+UNITREE_GO2_CORRECTED_CFG: ArticulationCfg = UNITREE_GO2_CFG.replace(
+    actuators={
+        "GO2HV": unitree_actuators.UnitreeActuatorCfg_Go2HV(
+            joint_names_expr=[".*"],
+            stiffness=25.0,
+            damping=0.5,
+            friction=0.0,
+            Fs=0.2,
+            Fd=0.1,
+            Y1={
+                ".*_hip_joint": 20.2,
+                ".*_thigh_joint": 20.2,
+                ".*_calf_joint": _GO2_CALF_PUSH_TORQUE,  # 39.22
+            },
+            Y2={
+                ".*_hip_joint": 23.4,
+                ".*_thigh_joint": 23.4,
+                ".*_calf_joint": _GO2_CALF_PEAK_TORQUE,  # 45.43
+            },
+            # X1/X2 stay at the motor's 13.5 / 30.0 rad/s on the calf too: the knee's extra
+            # torque is modelled as a stronger actuator, not as a gear reduction. An earlier
+            # jump revision divided them by r = 45.43/23.4 = 1.94 and made the knee unusable
+            # (ceiling collapsed to 7-16 N*m over a third of the push-off, and the policy
+            # rationally left the knee idle). unitree_mujoco's config.yaml carries the same
+            # note. If a high-speed policy leaves the knee idle, re-examine this first.
+            X1={
+                ".*_hip_joint": 13.5,
+                ".*_thigh_joint": 13.5,
+                ".*_calf_joint": 13.5,
+            },
+            X2={
+                ".*_hip_joint": 30.0,
+                ".*_thigh_joint": 30.0,
+                ".*_calf_joint": 30.0,
+            },
+            armature={
+                ".*_hip_joint": 0.01,
+                ".*_thigh_joint": 0.01,
+                ".*_calf_joint": 0.01,
+            },
+        ),
+    },
+)
 UNITREE_GO2W_CFG = UnitreeArticulationCfg(
     # spawn=UnitreeUrdfFileCfg(
     #     asset_path=f"{UNITREE_ROS_DIR}/robots/go2w_description/urdf/go2w_description.urdf",

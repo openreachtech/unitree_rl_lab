@@ -1,20 +1,17 @@
+from isaaclab.assets import ArticulationCfg
 from isaaclab.managers import CurriculumTermCfg as CurrTerm
-from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 
+from unitree_rl_lab.assets.robots.unitree import UNITREE_GO2_CORRECTED_CFG
 from unitree_rl_lab.tasks.locomotion import mdp
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import CurriculumCfg
-from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_go2 import (
-    CriticCfgGo2,
-    ObservationsCfgGo2,
-    PolicyCfgGo2,
-    RewardsCfgGo2,
-)
+from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_go2 import RewardsCfgGo2
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_phase1 import (
     CommandsCfgPhase1,
     RobotEnvCfgPhase1,
+    RobotSceneCfgPhase1,
 )
 
 # Canonical gait phase offsets (theta_FR, theta_RL, theta_RR; FL fixed at 0), from cheetah/quadruped
@@ -28,114 +25,6 @@ GAIT_GALLOP_ROTARY = (0.1, 0.6, 0.5)
 GAIT_GALLOP_TRANSVERSE = (0.4, 0.6, 0.1)
 
 _GAIT_FEET = ["FL_foot", "FR_foot", "RL_foot", "RR_foot"]
-
-
-@configclass
-class CommandsCfgGo2Run(CommandsCfgPhase1):
-    base_velocity = CommandsCfgPhase1().base_velocity.replace(
-        limit_ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
-            lin_vel_x=(-3.5, 3.5), lin_vel_y=(-0.8, 0.8), ang_vel_z=(-1.2, 1.2)
-        ),
-    )
-
-    # Gait style is itself a command (Walk These Ways): frequency/phase-offsets/duty cycle are
-    # sampled per env and re-rolled on the same cadence as base_velocity, so a single policy
-    # learns to produce whatever pattern it's told -- trot, pace, bound, or a gallop -- rather
-    # than the network overfitting to one gait. Ranges are wide open-cycle-fraction coverage
-    # (0-1) so the canonical gaits above are all reachable in training, not just at their
-    # exact corner values.
-    gait_command = mdp.GaitCommandCfg(
-        resampling_time_range=(10.0, 10.0),
-        debug_vis=False,
-        ranges=mdp.GaitCommandCfg.Ranges(
-            frequency=(1.5, 4.0),
-            theta_fr=(0.0, 1.0),
-            theta_rl=(0.0, 1.0),
-            theta_rr=(0.0, 1.0),
-            duty_cycle=(0.3, 0.7),
-        ),
-    )
-
-
-@configclass
-class PolicyCfgGo2Run(PolicyCfgGo2):
-    gait_commands = ObsTerm(func=mdp.generated_commands, clip=(-100, 100), params={"command_name": "gait_command"})
-    gait_clock = ObsTerm(func=mdp.gait_clock_obs, clip=(-100, 100), params={"command_name": "gait_command"})
-
-
-@configclass
-class CriticCfgGo2Run(CriticCfgGo2):
-    gait_commands = ObsTerm(func=mdp.generated_commands, clip=(-100, 100), params={"command_name": "gait_command"})
-    gait_clock = ObsTerm(func=mdp.gait_clock_obs, clip=(-100, 100), params={"command_name": "gait_command"})
-
-
-@configclass
-class ObservationsCfgGo2Run(ObservationsCfgGo2):
-    policy: PolicyCfgGo2Run = PolicyCfgGo2Run()
-    critic: CriticCfgGo2Run = CriticCfgGo2Run()
-
-
-@configclass
-class RewardsCfgGo2Run(RewardsCfgGo2):
-    """Go2-Run reward tuning: swap the trot-symmetric shaping for a commandable gait-tracking
-    term so the same policy can be driven into a bound/gallop-style pattern instead of only
-    ever trotting faster.
-    """
-
-    # air_time_variance enforces equal air/contact time across all four feet, which directly
-    # fights a bound/gallop pattern where front and hind pairs move on different schedules.
-    # gait_tracking (below) replaces it with a term that tracks whatever pattern is commanded.
-    air_time_variance = RewardsCfgGo2().air_time_variance.replace(weight=0.0)
-
-    # Loosened so the natural vertical bounce / pitch of a bound-style flight phase isn't
-    # stamped flat by penalty weights tuned for a slow, level walk.
-    base_linear_velocity = RewardsCfgGo2().base_linear_velocity.replace(weight=-1.0)
-    flat_orientation_l2 = RewardsCfgGo2().flat_orientation_l2.replace(weight=-1.25)
-
-    gait_tracking = RewTerm(
-        func=mdp.gait_tracking_reward,
-        weight=-0.3,
-        params={
-            # preserve_order=True is required here: SceneEntityCfg otherwise resolves body_names
-            # in the articulation's own body order, not the [FL, FR, RL, RR] order GaitCommand
-            # assumes, silently misaligning feet with the wrong commanded phase.
-            "asset_cfg": SceneEntityCfg("robot", body_names=_GAIT_FEET, preserve_order=True),
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=_GAIT_FEET, preserve_order=True),
-            "command_name": "gait_command",
-            "kappa": 6.0,
-            "force_scale": 0.01,
-        },
-    )
-
-
-@configclass
-class RobotEnvCfgGo2Run(RobotEnvCfgPhase1):
-    """Flat terrain, same as Phase1, with the x-velocity ceiling raised to 3.5 m/s for running,
-    and gait style (trot/pace/bound/gallop/...) exposed as a command so the same policy can be
-    driven into a cheetah-style gallop instead of a faster trot."""
-
-    commands: CommandsCfgGo2Run = CommandsCfgGo2Run()
-    observations: ObservationsCfgGo2Run = ObservationsCfgGo2Run()
-    rewards: RewardsCfgGo2Run = RewardsCfgGo2Run()
-
-
-@configclass
-class RobotPlayEnvCfgGo2Run(RobotEnvCfgGo2Run):
-    def __post_init__(self):
-        super().__post_init__()
-        self.scene.num_envs = 32
-        self.scene.terrain.terrain_generator.num_rows = 3
-        self.scene.terrain.terrain_generator.num_cols = 5
-        self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
-        # Default the play/eval task to showcase the rotary gallop rather than a random style.
-        theta_fr, theta_rl, theta_rr = GAIT_GALLOP_ROTARY
-        self.commands.gait_command.ranges = mdp.GaitCommandCfg.Ranges(
-            frequency=(3.0, 3.0),
-            theta_fr=(theta_fr, theta_fr),
-            theta_rl=(theta_rl, theta_rl),
-            theta_rr=(theta_rr, theta_rr),
-            duty_cycle=(0.3, 0.3),
-        )
 
 
 @configclass
@@ -155,8 +44,8 @@ class CurriculumCfgGo2Gallop(CurriculumCfg):
 
 @configclass
 class CommandsCfgGo2GallopPhase1(CommandsCfgPhase1):
-    """Promoted from sandbox Try 6. Inherits directly from ``CommandsCfgPhase1`` (not
-    ``CommandsCfgGo2Run``), so there's no ``gait_command`` term at all:
+    """Promoted from sandbox Try 6. Inherits directly from ``CommandsCfgPhase1``, so there is no
+    ``gait_command`` term at all (unlike the original gait-commandable Go2-Run, replaced below):
     ``RewardsCfgGo2GallopPhase1``'s self-referential ``paired_gait`` reward (see
     ``mdp.paired_gait_reward``) stands in for ``gait_tracking_reward`` instead, needing no
     external absolute-phase reference to grade against.
@@ -194,7 +83,7 @@ class CommandsCfgGo2GallopPhase1(CommandsCfgPhase1):
 
 @configclass
 class RewardsCfgGo2GallopPhase1(RewardsCfgGo2):
-    """Loosened further than Go2-Run's already-loosened values, and feet_air_time weighted up --
+    """Loosened further than ``RewardsCfgGo2``'s walk-tuned values, and feet_air_time weighted up --
     playtesting found the gallop looked more like a fast shuffle than a hop; these penalties were
     the main things left stamping out vertical bounce/pitch and discouraging air time.
     ``paired_gait`` (self-referential, see ``mdp.paired_gait_reward``) stands in for
@@ -220,8 +109,9 @@ class RewardsCfgGo2GallopPhase1(RewardsCfgGo2):
 class RobotEnvCfgGo2GallopPhase1(RobotEnvCfgPhase1):
     """Forward-only gallop-style running -- promoted from sandbox Try 6 (see
     ``CommandsCfgGo2GallopPhase1``/``RewardsCfgGo2GallopPhase1``). Observations are plain
-    ``ObservationsCfgGo2`` (via ``RobotEnvCfgPhase1``) -- no gait-style inputs, unlike Go2-Run,
-    which observes ``gait_commands``/``gait_clock``. Terrain is Phase1's, unchanged.
+    ``ObservationsCfgGo2`` (via ``RobotEnvCfgPhase1``) -- no gait-style inputs. Terrain is
+    Phase1's, unchanged. Go2-Run below is this config minus the gallop shaping, plus the
+    mujoco-matched actuator model -- and it measured faster; see its note.
     """
 
     commands: CommandsCfgGo2GallopPhase1 = CommandsCfgGo2GallopPhase1()
@@ -325,5 +215,145 @@ class RobotPlayEnvCfgGo2GallopPhase2(RobotEnvCfgGo2GallopPhase2):
         self.scene.terrain.terrain_generator.num_rows = 3
         self.scene.terrain.terrain_generator.num_cols = 5
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
+        self.commands.tow_assist.state_file = None
+        self.commands.tow_assist.initial_assist_scale = 0.0
+
+
+# =============================================================================================
+# Go2-Run -- promoted from sandbox Try 9 (``Go2-Speed-Free-Try-9``), the fastest Go2 policy
+# measured so far: 3.72 m/s unaided, clean trot, tracking to 3.5 m/s with 0.08 m/s error.
+#
+# It replaces the previous Go2-Run, which was a different idea entirely (gait style exposed as a
+# Walk-These-Ways-style command, with ``gait_command``/``gait_clock`` observations and
+# ``gait_tracking_reward``). That went unused; the gait-command machinery itself is still in
+# ``mdp`` and the canonical offsets above are still here, so it can be rebuilt if wanted. See
+# git history for the old config.
+#
+# WHAT MAKES IT FAST -- three things, in order of measured importance:
+#   1. the corrected actuator model (``UNITREE_GO2_CORRECTED_CFG``): the stock model gives the
+#      calf less than half its real torque, and running fast is knee-extension-dominated
+#   2. the tow assist (inherited from Go2-Gallop-Phase1): it physically drags the robot up to
+#      speed early so it can learn footfall timing there before it can generate that speed --
+#      then decays itself to exactly 0 by iteration ~1200, so the final policy is unaided
+#   3. NO gait prescription. Try 8 was this same config with ``paired_gait`` at 0.2 (gallop
+#      shaping) and lost at every commanded speed, collapsing to 0.71 m/s at a commanded 7.0
+#      where this one still held 2.63. Go2's rigid trunk gets none of the spinal extension that
+#      pays for a gallop in animals; told nothing, PPO picks a trot and the trot is faster.
+#
+# TWO DELIBERATE DEVIATIONS FROM TRY 9 AS RUN. Both are protective, and both come from Try 9's
+# own post-mortem (see ``sandbox/try8.py``):
+#
+#   limit_ranges.lin_vel_x  8.0 -> 3.8 m/s
+#       Try 9 used 8.0 to find out where the ratchet would stall on its own. That answered the
+#       question and then destroyed the policy: resumed to iteration 5299, the commanded range
+#       reached 4.6 against a robot topping out near 3.7, and the policy gave up and stood still
+#       (3.72 -> 1.94 m/s, unrecoverable). Four later sandbox runs collapsed the same way, at a
+#       commanded 4.6 / 4.1 / 3.9 / 4.4 -- so 3.8 sits just under the earliest observed collapse.
+#       A low ceiling is a SAFETY DEVICE here, not a cap on ambition: it clamps the command
+#       before it can outrun the reward. It also sets the deploy-time keyboard maximum
+#       (0.8 x 3.8 = 3.04 m/s), which is about what the robot can actually hold.
+#       Do not raise this to explore higher speeds -- that experiment belongs in sandbox, with
+#       the curriculum/reward fixes it needs.
+#
+#   lin_vel_cmd_levels      one-way -> two-way, and persisted across --resume
+#       ``decrease_threshold`` lets the commanded range step back down when tracking degrades
+#       (dead band 0.6-0.8 x the reward weight), instead of only ever ratcheting up; Try 9's
+#       one-way ratchet is why its collapse could not recover. ``state_file`` keeps the range
+#       across a restart -- rsl_rl checkpoints store only network weights, so without it a
+#       --resume re-climbs from 1.0 m/s (Try 9's resume wasted ~1300 iterations that way).
+#
+# Train from scratch (~1300 iterations reaches 3.72 m/s; the ratchet only fires once per
+# episode cycle, ~42 iterations, so the command level cannot climb faster than that):
+#
+#     python scripts/rsl_rl/train_and_aggregate.py --task Go2-Run --max_iterations 1500
+#
+# To pick up Try 9's existing best weights instead:
+#     ... --previous-task Go2-Speed-Free-Try-9
+#
+# Measure what it actually does (assist off, per-commanded-speed achieved speed, gait, torque):
+#     python scripts/rsl_rl/measure_run_speed.py --task Go2-Run --headless \
+#         --speeds 1,2,3,3.5,4 --checkpoint logs/rsl_rl/go2_run/<run>/model_1499.pt
+# Repeated sweeps of the SAME checkpoint vary by ~0.2 m/s -- treat smaller differences as noise.
+#
+# NOT omnidirectional: forward + yaw only (``lin_vel_y`` is pinned to 0 in both ranges and
+# limits, because ``lin_vel_cmd_levels`` widens x and y by the same step and a non-zero y limit
+# would silently introduce lateral commands as x climbed). Go2-Gallop-Phase2 is the
+# omnidirectional variant.
+# =============================================================================================
+
+RUN_SPEED_CEILING = 3.8
+"""Forward command ceiling, m/s. See the note above before changing it."""
+
+_RUN_LOG_DIR = "logs/rsl_rl/go2_run"
+
+
+@configclass
+class RobotSceneCfgGo2Run(RobotSceneCfgPhase1):
+    """Phase1's flat terrain, with the mujoco-matched actuator model swapped in for the robot."""
+
+    robot: ArticulationCfg = UNITREE_GO2_CORRECTED_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+
+
+@configclass
+class CommandsCfgGo2Run(CommandsCfgGo2GallopPhase1):
+    """Go2-Gallop-Phase1's forward-only commands + tow assist, with the ceiling at
+    ``RUN_SPEED_CEILING``. Starting range stays at Phase1's (0.0, 1.0) and climbs from there."""
+
+    base_velocity = CommandsCfgGo2GallopPhase1().base_velocity.replace(
+        limit_ranges=CommandsCfgPhase1().base_velocity.limit_ranges.replace(
+            lin_vel_x=(0.0, RUN_SPEED_CEILING), lin_vel_y=(0.0, 0.0)
+        ),
+    )
+
+    tow_assist = CommandsCfgGo2GallopPhase1().tow_assist.replace(
+        state_file=f"{_RUN_LOG_DIR}/tow_assist_state.json"
+    )
+
+
+@configclass
+class CurriculumCfgGo2Run(CurriculumCfgGo2Gallop):
+    """Tow-assist decay (inherited) plus a two-way, persisted velocity ratchet."""
+
+    lin_vel_cmd_levels = CurrTerm(
+        func=mdp.lin_vel_cmd_levels,
+        params={
+            "decrease_threshold": 0.6,
+            "state_file": f"{_RUN_LOG_DIR}/lin_vel_cmd_state.json",
+        },
+    )
+
+
+@configclass
+class RewardsCfgGo2Run(RewardsCfgGo2GallopPhase1):
+    """Go2-Gallop-Phase1's rewards with the gallop shaping switched off -- the one substantive
+    difference between Try 8 and Try 9, and the reason this task exists.
+
+    ``air_time_variance`` stays at 0.0 too (inherited): it penalises unequal air/contact time
+    across the four feet, which is a *trot* prescription. Leaving it off is what makes this
+    prescription-free rather than a swap of one imposed gait for another.
+    """
+
+    paired_gait = RewardsCfgGo2GallopPhase1().paired_gait.replace(weight=0.0)
+
+
+@configclass
+class RobotEnvCfgGo2Run(RobotEnvCfgGo2GallopPhase1):
+    """Forward-only running, no footfall prescription, mujoco-matched actuators."""
+
+    scene: RobotSceneCfgGo2Run = RobotSceneCfgGo2Run(num_envs=4096, env_spacing=2.5)
+    commands: CommandsCfgGo2Run = CommandsCfgGo2Run()
+    curriculum: CurriculumCfgGo2Run = CurriculumCfgGo2Run()
+    rewards: RewardsCfgGo2Run = RewardsCfgGo2Run()
+
+
+@configclass
+class RobotPlayEnvCfgGo2Run(RobotEnvCfgGo2Run):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 32
+        self.scene.terrain.terrain_generator.num_rows = 3
+        self.scene.terrain.terrain_generator.num_cols = 5
+        self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
+        # Assist off: what the robot can do unaided is the whole point of this task.
         self.commands.tow_assist.state_file = None
         self.commands.tow_assist.initial_assist_scale = 0.0

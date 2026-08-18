@@ -17,27 +17,97 @@ def lin_vel_cmd_levels(
     env: ManagerBasedRLEnv,
     env_ids: Sequence[int],
     reward_term_name: str = "track_lin_vel_xy",
+    increase_threshold: float = 0.8,
+    decrease_threshold: float | None = None,
+    step: float = 0.1,
+    state_file: str | None = None,
+    assist_free_only: bool = False,
+    tow_command_name: str = "tow_assist",
 ) -> torch.Tensor:
+    """Widen the commanded velocity range as tracking improves.
+
+    ``decrease_threshold`` and ``state_file`` both default to off, so passing neither reproduces
+    the original one-way, non-persisted behaviour exactly -- this term is shared by go2, h1, and
+    g1, and no existing task should change because these were added.
+
+    ``decrease_threshold`` (a fraction of the reward term's weight, like ``increase_threshold``)
+    makes the ratchet two-way: below it, the range steps back *down*, never past the range the
+    task started with. Without it the ratchet only ever adds, which is a trap when paired with an
+    exponential tracking reward. Sandbox Try 9 walked into exactly that: the range reached 4.6 m/s
+    against a robot that topped out near 3.7, ``exp(-error^2/0.25)`` went numerically to zero over
+    most of the command distribution, and with no tracking gradient left but every penalty still
+    live, the reward-maximizing policy became "stand still". It then lost the speeds it *had*
+    mastered -- 3.72 m/s down to 1.94 m/s -- and 2600 further iterations produced no recovery,
+    because nothing could lower the range again. Set this on any task whose ``limit_ranges``
+    ceiling is above what the robot can actually do.
+
+    ``assist_free_only`` judges the range using ONLY the environments held out from the tow
+    assist (``TowAssistCommandCfg.eval_env_fraction``), so the commanded speed rises only once
+    the robot can hold it *unaided*. Without this the curriculum reads a reward the assist force
+    is inflating, and cannot distinguish "runs this fast" from "is towed this fast": sandbox
+    Try 11 ratcheted to a commanded 4.8 m/s on a policy whose real top speed was 1.78, because a
+    frozen assist kept the reward high. Gating on the held-out set breaks that loop at the
+    measurement, which also keeps the tracking error -- and therefore the error-proportional tow
+    force -- small, since the command never runs far ahead of the robot.
+
+    ``state_file`` persists the range across ``--resume``. rsl_rl checkpoints store only network
+    weights, and this function mutates ``command_term.cfg.ranges`` in memory, so without it every
+    resume restarts the range from the task's initial value -- Try 9's resume spent ~1300
+    iterations re-climbing ground it had already covered. Same rationale as
+    ``TowAssistCommandCfg.state_file``.
+    """
     command_term = env.command_manager.get_term("base_velocity")
     ranges = command_term.cfg.ranges
     limit_ranges = command_term.cfg.limit_ranges
+
+    # Remember where the task started, so the down-step has a floor and cannot shrink the range
+    # away to nothing. Captured on first call, before any mutation below has run.
+    if not hasattr(command_term, "_initial_lin_vel_ranges"):
+        command_term._initial_lin_vel_ranges = (tuple(ranges.lin_vel_x), tuple(ranges.lin_vel_y))
+        if state_file is not None and os.path.isfile(state_file):
+            with open(state_file) as f:
+                saved = json.load(f)
+            ranges.lin_vel_x = list(saved["lin_vel_x"])
+            ranges.lin_vel_y = list(saved["lin_vel_y"])
+
+    if assist_free_only:
+        eval_mask = env.command_manager.get_term(tow_command_name).eval_mask
+        ids = torch.as_tensor(env_ids, device=env.device, dtype=torch.long)
+        env_ids = ids[eval_mask[ids]]
+        if len(env_ids) == 0:
+            # No held-out environment reset this cycle -- no honest sample, so leave the range be
+            # rather than judging on assisted ones.
+            return torch.tensor(ranges.lin_vel_x[1], device=env.device)
 
     reward_term = env.reward_manager.get_term_cfg(reward_term_name)
     reward = torch.mean(env.reward_manager._episode_sums[reward_term_name][env_ids]) / env.max_episode_length_s
 
     if env.common_step_counter % env.max_episode_length == 0:
-        if reward > reward_term.weight * 0.8:
-            delta_command = torch.tensor([-0.1, 0.1], device=env.device)
-            ranges.lin_vel_x = torch.clamp(
-                torch.tensor(ranges.lin_vel_x, device=env.device) + delta_command,
-                limit_ranges.lin_vel_x[0],
-                limit_ranges.lin_vel_x[1],
-            ).tolist()
-            ranges.lin_vel_y = torch.clamp(
-                torch.tensor(ranges.lin_vel_y, device=env.device) + delta_command,
-                limit_ranges.lin_vel_y[0],
-                limit_ranges.lin_vel_y[1],
-            ).tolist()
+        direction = 0.0
+        if reward > reward_term.weight * increase_threshold:
+            direction = 1.0
+        elif decrease_threshold is not None and reward < reward_term.weight * decrease_threshold:
+            direction = -1.0
+
+        if direction != 0.0:
+            delta_command = torch.tensor([-step, step], device=env.device) * direction
+            initial_x, initial_y = command_term._initial_lin_vel_ranges
+            # Clamp to limit_ranges going up, and to the task's initial range going down. The
+            # per-axis min/max keeps a shrinking range from crossing over itself.
+            new_x = torch.tensor(ranges.lin_vel_x, device=env.device) + delta_command
+            new_y = torch.tensor(ranges.lin_vel_y, device=env.device) + delta_command
+            ranges.lin_vel_x = [
+                min(max(new_x[0].item(), limit_ranges.lin_vel_x[0]), initial_x[0]),
+                max(min(new_x[1].item(), limit_ranges.lin_vel_x[1]), initial_x[1]),
+            ]
+            ranges.lin_vel_y = [
+                min(max(new_y[0].item(), limit_ranges.lin_vel_y[0]), initial_y[0]),
+                max(min(new_y[1].item(), limit_ranges.lin_vel_y[1]), initial_y[1]),
+            ]
+            if state_file is not None:
+                os.makedirs(os.path.dirname(state_file) or ".", exist_ok=True)
+                with open(state_file, "w") as f:
+                    json.dump({"lin_vel_x": ranges.lin_vel_x, "lin_vel_y": ranges.lin_vel_y}, f)
 
     return torch.tensor(ranges.lin_vel_x[1], device=env.device)
 

@@ -84,6 +84,14 @@ gym.register(
     },
 )
 
+# Promoted from sandbox Try 9: the fastest Go2 policy measured so far (3.72 m/s unaided, clean
+# trot). Forward-only running with NO footfall prescription -- the matched Try 8, which shaped a
+# gallop, was slower at every commanded speed -- on the mujoco-matched actuator model
+# (UNITREE_GO2_CORRECTED_CFG), bootstrapped by the self-decaying tow assist. Two protective
+# deviations from Try 9 as run (3.8 m/s ceiling, two-way persisted velocity ratchet) are
+# explained in velocity_env_cfg_run.py. This replaces the earlier Go2-Run, which exposed gait
+# style as a command (gait_command/gait_clock observations + gait_tracking_reward) and went
+# unused; recover it from git history if wanted.
 gym.register(
     id="Go2-Run",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
