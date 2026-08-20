@@ -23,6 +23,7 @@ def lin_vel_cmd_levels(
     state_file: str | None = None,
     assist_free_only: bool = False,
     tow_command_name: str = "tow_assist",
+    min_episodes: int | None = None,
 ) -> torch.Tensor:
     """Widen the commanded velocity range as tracking improves.
 
@@ -50,6 +51,13 @@ def lin_vel_cmd_levels(
     measurement, which also keeps the tracking error -- and therefore the error-proportional tow
     force -- small, since the command never runs far ahead of the robot.
 
+    ``min_episodes`` is the number of completed episodes to average before each decision;
+    ``None`` means "one full sweep of the judging population", i.e. all envs normally and the
+    held-out set under ``assist_free_only``. That keeps the historical cadence of at most one
+    +/-``step`` per episode cycle while making each decision from ~1000 episodes rather than from
+    whichever handful of envs happened to reset on one particular simulation step -- see the long
+    comment in the body for why the old version could stop firing altogether.
+
     ``state_file`` persists the range across ``--resume``. rsl_rl checkpoints store only network
     weights, and this function mutates ``command_term.cfg.ranges`` in memory, so without it every
     resume restarts the range from the task's initial value -- Try 9's resume spent ~1300
@@ -64,25 +72,62 @@ def lin_vel_cmd_levels(
     # away to nothing. Captured on first call, before any mutation below has run.
     if not hasattr(command_term, "_initial_lin_vel_ranges"):
         command_term._initial_lin_vel_ranges = (tuple(ranges.lin_vel_x), tuple(ranges.lin_vel_y))
+        command_term._lin_vel_reward_sum = 0.0
+        command_term._lin_vel_episode_count = 0
+        command_term._lin_vel_judge = float("nan")
+        command_term._lin_vel_start_step = env.common_step_counter
         if state_file is not None and os.path.isfile(state_file):
             with open(state_file) as f:
                 saved = json.load(f)
             ranges.lin_vel_x = list(saved["lin_vel_x"])
             ranges.lin_vel_y = list(saved["lin_vel_y"])
 
+    # Ignore the first episode cycle. rsl_rl's ``init_at_random_ep_len`` starts every env at a
+    # random point in its episode, so the first environments to "time out" have only accumulated
+    # part of an episode's reward -- measured at 0.731 against the 1.466 the same policy scores
+    # once episodes are whole. Judging on that would step the range DOWN at every restart.
+    if env.common_step_counter - command_term._lin_vel_start_step < env.max_episode_length:
+        return torch.tensor(ranges.lin_vel_x[1], device=env.device)
+
+    ids = torch.as_tensor(env_ids, device=env.device, dtype=torch.long)
+    qualifying = env.num_envs
     if assist_free_only:
         eval_mask = env.command_manager.get_term(tow_command_name).eval_mask
-        ids = torch.as_tensor(env_ids, device=env.device, dtype=torch.long)
-        env_ids = ids[eval_mask[ids]]
-        if len(env_ids) == 0:
-            # No held-out environment reset this cycle -- no honest sample, so leave the range be
-            # rather than judging on assisted ones.
-            return torch.tensor(ranges.lin_vel_x[1], device=env.device)
+        ids = ids[eval_mask[ids]]
+        qualifying = int(eval_mask.sum().item())
 
-    reward_term = env.reward_manager.get_term_cfg(reward_term_name)
-    reward = torch.mean(env.reward_manager._episode_sums[reward_term_name][env_ids]) / env.max_episode_length_s
+    # Judge on completed episodes only. An env that fell at step 300 carries 30% of an episode's
+    # reward, and counting it would read as bad tracking rather than as a fall.
+    if len(ids) > 0:
+        ids = ids[env.episode_length_buf[ids] >= env.max_episode_length]
 
-    if env.common_step_counter % env.max_episode_length == 0:
+    if len(ids) > 0:
+        episode_sums = env.reward_manager._episode_sums[reward_term_name]
+        command_term._lin_vel_reward_sum += (episode_sums[ids].sum() / env.max_episode_length_s).item()
+        command_term._lin_vel_episode_count += len(ids)
+
+    # Decide once per full sweep of the judging population -- i.e. about once per episode cycle,
+    # the same cadence as before, but on a sample of ~1000 episodes instead of whatever happened
+    # to reset on one particular simulation step.
+    #
+    # THIS IS NOT COSMETIC. The previous version acted only when
+    # ``common_step_counter % max_episode_length == 0``, which assumes environments reset together.
+    # They do not: ``train.py`` calls ``runner.learn(..., init_at_random_ep_len=True)``, so rsl_rl
+    # scatters every env's episode phase at the start of training and each env keeps that offset.
+    # With 4096 envs spread over 1000 steps only ~4 reset on any given step, and after the
+    # ``assist_free_only`` filter that is ~1 -- so the commanded range was being raised or held on
+    # the evidence of a SINGLE episode. Worse, an env only changes phase by terminating early, so
+    # once a policy stops falling the phase histogram freezes; if nothing sits on the exact step
+    # the modulo selects, the ratchet stops for good. That is what happened to sandbox Try 16:
+    # the range froze at 1.9 m/s at the iteration where falls ceased and never moved again over
+    # 1500 further iterations, while tracking stayed at 1.43 -- far above the 1.2 raise threshold.
+    if command_term._lin_vel_episode_count >= max(1, min_episodes or qualifying):
+        reward = command_term._lin_vel_reward_sum / command_term._lin_vel_episode_count
+        command_term._lin_vel_judge = reward
+        command_term._lin_vel_reward_sum = 0.0
+        command_term._lin_vel_episode_count = 0
+
+        reward_term = env.reward_manager.get_term_cfg(reward_term_name)
         direction = 0.0
         if reward > reward_term.weight * increase_threshold:
             direction = 1.0

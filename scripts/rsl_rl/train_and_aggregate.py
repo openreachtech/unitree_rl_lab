@@ -20,6 +20,23 @@ def parse_args() -> argparse.Namespace:
         help="Previous task ID. If set, train.py resumes from this task's latest checkpoint.",
     )
     parser.add_argument(
+        "--load_run",
+        default=None,
+        help=(
+            "Run directory inside --previous-task's log root to resume from. Without it, the most "
+            "recently modified run is used."
+        ),
+    )
+    parser.add_argument(
+        "--checkpoint",
+        default=None,
+        help=(
+            "Checkpoint file name to resume from, e.g. model_1900.pt. Without it, the LAST "
+            "checkpoint is used -- which for these speed runs is usually the decayed one, since "
+            "they peak mid-run. Sweep with measure_run_speed.py and name the peak explicitly."
+        ),
+    )
+    parser.add_argument(
         "--max_iterations",
         type=int,
         default=3000,
@@ -74,6 +91,10 @@ def main() -> None:
     ]
     if args.previous_task:
         train_cmd.extend(["--resume", "--previous-task", args.previous_task])
+    if args.load_run:
+        train_cmd.extend(["--load_run", args.load_run])
+    if args.checkpoint:
+        train_cmd.extend(["--checkpoint", args.checkpoint])
 
     run_quiet(train_cmd, "train.py")
 

@@ -154,3 +154,53 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
     },
 )
+
+# =============================================================================================
+# Go2-Speed-Phase1 / Phase2 -- the top-speed pair, promoted from sandbox Try 8 and Try 20.
+# Measured end to end: 5.31 m/s, tracking a commanded 5.5 m/s within 0.5 m/s.
+#
+# Two phases because one run cannot do both jobs. Phase 1 trains FROM SCRATCH with the
+# gait reward on and a modest 4.0 m/s ceiling, and comes out with an asymmetric footfall
+# pattern (front pair 0.15 of a cycle apart, hind pair 0.06). From-scratch is the
+# mechanism, not a detail: paired_gait_reward grades pairs through a Gaussian, so a
+# policy that already trots sits where that reward is ~1e-20 with a matching derivative,
+# which is why the three sandbox runs that resumed from a walker (Try 13, 14, 18) could
+# not move the gait at all.
+#
+# Phase 2 resumes from Phase 1, switches the gait reward OFF entirely, and spends the
+# whole budget on speed: forward_command_progress 0.8, joint_pos -0.3, the four effort
+# taxes (joint_vel, joint_acc, joint_torques, energy) at zero, ceiling 6.0. The gait is
+# then free to revert to a trot and does not -- it stays 0.83 of a cycle from canonical
+# trot, reaching 5.31 m/s with a 1.18 m stride at 4.5 Hz, against the best trot-gaited
+# policy's 5.15-5.19 m/s at a 1.09 m stride and 4.8 Hz.
+#
+# SPRINT ONLY: Phase 2 removes every penalty that limits motor effort, and no thermal or
+# battery model exists in Isaac Lab or unitree_mujoco. Restore joint_vel / joint_acc /
+# joint_torques / energy before deriving any general-purpose task from it.
+#
+#   python scripts/rsl_rl/train_and_aggregate.py --task Go2-Speed-Phase1 --max_iterations 1300
+#   python scripts/rsl_rl/train_and_aggregate.py --task Go2-Speed-Phase2 \
+#       --previous-task Go2-Speed-Phase1 --max_iterations 2000
+# =============================================================================================
+
+gym.register(
+    id="Go2-Speed-Phase1",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_speed:RobotEnvCfgSpeedPhase1",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_speed:RobotPlayEnvCfgSpeedPhase1",
+        "rsl_rl_cfg_entry_point": "unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Go2-Speed-Phase2",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_speed:RobotEnvCfgSpeedPhase2",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_speed:RobotPlayEnvCfgSpeedPhase2",
+        "rsl_rl_cfg_entry_point": "unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
+    },
+)

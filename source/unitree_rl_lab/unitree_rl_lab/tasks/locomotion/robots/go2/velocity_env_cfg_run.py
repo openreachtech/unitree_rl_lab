@@ -357,3 +357,10 @@ class RobotPlayEnvCfgGo2Run(RobotEnvCfgGo2Run):
         # Assist off: what the robot can do unaided is the whole point of this task.
         self.commands.tow_assist.state_file = None
         self.commands.tow_assist.initial_assist_scale = 0.0
+        # And the velocity ratchet's state file off, for the same reason. The curriculum manager
+        # still runs at play time, and the line above has just set the command range to
+        # limit_ranges -- so a single play or measure_run_speed session would rewrite the training
+        # state file with the ceiling, and the next --resume would start training with the command
+        # already past what the robot can do. Observed on the sandbox tries (try13's file held 7.9
+        # against a training value of 3.9).
+        self.curriculum.lin_vel_cmd_levels.params["state_file"] = None

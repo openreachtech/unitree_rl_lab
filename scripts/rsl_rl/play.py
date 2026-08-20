@@ -30,6 +30,16 @@ parser.add_argument(
     help="Use the pre-trained checkpoint from Nucleus.",
 )
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
+parser.add_argument(
+    "--pin_vel_x",
+    type=float,
+    default=None,
+    help=(
+        "Pin the forward velocity command to this value (m/s) for every env, with lateral and yaw "
+        "commands zeroed and no standing envs. Without it, the play cfg samples commands over the "
+        "task's whole limit range, so watching a fast policy means waiting for a fast draw."
+    ),
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -93,6 +103,14 @@ def main():
     log_dir = os.path.dirname(resume_path)
 
     # create isaac environment
+    if args_cli.pin_vel_x is not None:
+        v = args_cli.pin_vel_x
+        env_cfg.commands.base_velocity.ranges.lin_vel_x = (v, v)
+        env_cfg.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
+        env_cfg.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
+        env_cfg.commands.base_velocity.rel_standing_envs = 0.0
+        print(f"[INFO] forward velocity command pinned to {v} m/s on every env")
+
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
 
     # convert to single-agent instance if required by the RL algorithm
