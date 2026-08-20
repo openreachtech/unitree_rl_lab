@@ -233,3 +233,117 @@ recorded here because they are easy to reintroduce:
   and `reset()` reproduced call 1 bit-for-bit. Also verified no regression on an existing
   MLP robot (`go2`) whose export happens to have 4 outputs (none recurrent) — `action` is
   still exactly output 0, deterministic across repeated calls.
+
+---
+
+## 2026-08-18: superseded by the thin_wall / goal-directed redesign
+
+The pyramid_stairs terrain, `UniformTerrainGatedVelocityCommand`, and climb_progress/
+motion_without_cmd-style reward set this file documents were never fully able to solve
+"stop when told to" in MuJoCo, even with the GRU network (Lesson 7). A Student built on
+the TCN/V2 equivalent of this same design was later found still driving off under a zero
+command in MuJoCo, prompting a full redesign rather than another round of reward tuning:
+
+* Terrain: pyramid_stairs/pyramid_stairs_inv → a single free-standing thin_wall ring on
+  flat ground (no pit), matching the real MuJoCo test scene directly.
+* Command: `UniformTerrainGatedVelocityCommand` → `MixedGoalVelocityCommand` -- "rough"
+  columns keep a full omnidirectional command, wall columns get a goal placed just beyond
+  the wall with the command dropping to exactly zero on arrival.
+* Reward: `forward_command_progress`/`forward_stall_penalty`/`climb_progress`/
+  `motion_without_cmd`/`wheel_motion_without_cmd` all removed, replaced with direct ports
+  of ANYmal Parkour's (Hoeller/Rudin et al. 2023) Table S2 goal-tracking terms.
+
+Developed as `Go2W-v2-Teacher-Phase5-Try1` (V2/Teacher line) then
+`Go2W-v1-Phase5-Try15` (this v1/GRU line, sandbox/velocity_env_cfg_phase5_try15.py).
+Try15 confirmed in MuJoCo: controls correctly, no runaway under a zero command, crosses
+0.40 m (stalls at 0.50 m -- the front legs get up onto the wall, but the robot can't
+drive the rear end up and over; still unsolved as of this entry, see
+Try16/Try17). Folded into the permanent `velocity_env_cfg_phase5.py` on 2026-08-18 --
+see that file's own module docstring for which Lessons above are now obsolete (1, 2 --
+terrain-shape-specific to the pyramid) versus still load-bearing (3, 6 -- re-confirmed
+independently against the new terrain too). `Go2W-v2-Phase5`/`Go2W-v2-Teacher-Phase5`/
+`Go2W-v2-Student-Phase5` inherit this fold as well (deliberate, not an oversight -- their
+old pipeline had the same unsolved problem).
+
+Try15's own file was *not* deleted after folding, unlike every prior fold recorded above
+-- Try16/Try17 (chasing the 0.50 m stall) import `CommandsCfgPhase5Try15` from it
+directly. Delete it once that investigation concludes.
+
+---
+
+## 2026-08-19: Try16-19 wrap-up and sandbox cleared
+
+The 0.50 m stall investigation (Try16/Try17) did not reach a fix, and a follow-up thin-
+wall-thickness experiment (Try18/Try19) came back inconclusive-to-negative. Per direct
+instruction, the whole sandbox is cleared here (all six `velocity_env_cfg_*_try*.py`
+files deleted, including `velocity_env_cfg_v2_teacher_phase5_try1.py`) rather than left
+half-finished — this section is what would otherwise be lost with them.
+
+**Try16** (continued from Try15's own checkpoint): added `front_leg_push_reward`, a
+height-based detector for "front feet on the wall, rear feet dangling" meant to reward
+pushing the front feet down in that exact stuck posture. Hit a `KeyError: 'thin_wall'` in
+Play (a hardcoded sub-terrain name that doesn't exist under Play's per-height column
+naming) — fixed with a generic column → sub-terrain lookup. Even after the fix, the
+reward logged exactly `0.000` across two full training runs; root cause never
+conclusively identified (suspected `FR_foot`/`RR_foot` `body_pos_w` reference-point
+mismatch against the approximated wall height, not confirmed). Also disabled
+`base_contact` for training to let the policy survive longer at the stuck position —
+`terrain_levels` *regressed* instead of improving (re-confirming Lesson 2/3's "removing
+base_contact backfires" finding against the new thin_wall terrain too), reverted.
+Terrain grid shrunk 20x20 → 4x10 and rough/thin_wall reproportioned 30/70 → 25/75 for
+memory — this part *was* kept, folded into the default `velocity_env_cfg_phase5.py` on
+2026-08-18/19 independently of the reward work.
+
+**Try17** (restarted fresh from `Go2W-v1-Phase2`, not continuing Try16's checkpoint):
+MuJoCo showed the Try15→Try16 checkpoint chain had picked up a real regression (more
+prone to tipping/inverting, harder to control), so this Try branched from the last known-
+good common ancestor instead of stacking further. Redesigned `front_leg_push_reward` as
+a pure contact-sensor test (front feet in contact, rear feet not) instead of the
+height-based approximation — also logged `0.000` across its full run; tentatively
+attributed to insufficient training depth (terrain_levels never reached the difficulty
+row where "stuck" actually occurs) rather than a code bug, but never confirmed by further
+training. Also relaxed `base_contact`'s `illegal_contact_excluding_top` `vertical_margin`
+20.0 → 60.0 N (Play showed the base getting killed while visibly resting on the wall's
+top surface). Over 2300 iterations from the same Phase2 start Try15 used,
+`terrain_levels` *declined* 4.6 → 3.4, versus Try15's climb 4.5 → 12 — suspected the
+`vertical_margin` relaxation backfired the same way Try16's full `base_contact` removal
+did, just at smaller scale, but this was never isolated as a standalone variable before
+the sandbox was cleared. **Open item for whoever picks this up next**: re-try
+`front_leg_push_reward` (either formulation) with `base_contact` and `vertical_margin`
+left at Try15's own values, so the reward is the only variable, and train long enough to
+confirm whether it fires at all before judging it.
+
+**Try18** (wall thickness pinned to a constant 1 cm, "steel plate", vs. the default's
+fixed 40 cm) and **Try19** (thickness graded 10 cm → 1 cm by the same per-row difficulty
+that already drives `wall_height_range` -- `thin_wall_terrain`'s `_lerp` already
+supported this, just never used) both trained 3300 iterations from `Go2W-v1-Phase2`,
+everything else identical to the post-shrink default (4x10 grid, rough 25 % / thin_wall
+75 %). Results came back essentially identical to each other and both concerning:
+
+| metric | Try18 (1 cm fixed) | Try19 (10→1 cm graded) | default Phase5 (40 cm, for reference) |
+| --- | --- | --- | --- |
+| `terrain_levels` (start → end) | ~4.49 → 3.24 (declined) | ~4.49 → 3.17 (declined) | climbs |
+| `base_contact` termination | 72.2 % | 71.6 % | far lower |
+| `time_out` | 27.6 % | 28.2 % | — |
+| `goal_position_tracking` reward | 0.0114 | 0.0158 | — |
+
+Gradual thinning (Try19) showed **no measurable advantage** over jumping straight to
+1 cm (Try18) -- the premise that a curriculum would make thinning easier was not borne
+out at this training budget. Both show the same "regressing instead of climbing" +
+"very high base_contact rate" signature as every prior over-relaxation in this file
+(Lesson 2/3), which reads as "1 cm is simply too hard for 3300 iterations from Phase2,"
+but an untested alternative explanation was raised and never ruled out: a wall this thin
+may interact badly with `illegal_contact_excluding_top`'s existing thresholds/contact-
+history-window logic in a way the 40 cm baseline never exercised (e.g. a knife-edge
+contact behaving differently from a wide flat-top rest). **Neither Try was checked in
+Play or MuJoCo before the sandbox was cleared** -- the Isaac-Lab-only numbers above are
+suggestive, not conclusive (Lesson 6: check MuJoCo before trusting a training-metric
+reading). Not folded into the default; revisit by re-implementing from this record if the
+thin-wall deploy target is still a priority.
+
+`velocity_env_cfg_v2_teacher_phase5_try1.py` (the V2/Teacher-line original of Try15,
+whose `goal_*` reward functions were long since promoted to `mdp/rewards.py` and whose
+own registered task `Go2W-v2-Teacher-Phase5-Try1`/`Go2W-v2-Student-Phase5-Try1` had
+become redundant with the default `Go2W-v2-Teacher-Phase5` once the fold made their env
+configs identical) was deleted in the same pass, along with its two now-pointless
+registrations.

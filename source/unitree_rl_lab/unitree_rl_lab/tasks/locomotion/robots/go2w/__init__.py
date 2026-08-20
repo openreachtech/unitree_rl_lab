@@ -56,8 +56,9 @@ gym.register(
 # (velocity_env_cfg_v2.py's RobotEnvCfgV2Phase5, inheriting this unchanged) picked up
 # the same redesign as a result -- a deliberate choice, not an oversight, since the old
 # V2 Teacher/Student Phase5 pipeline was already known to have the same "won't stop"
-# problem this redesign fixes. Sandbox tries against this phase (Try15/16/17) are
-# registered in sandbox/__init__.py, not here.
+# problem this redesign fixes. Follow-up sandbox tries against this phase (thin_wall
+# thickness variants, a still-unsolved 0.50 m stall) are recorded in sandbox/SUMMARY.md --
+# none are currently registered (cleared 2026-08-19, see sandbox/__init__.py).
 gym.register(
     id="Go2W-v1-Phase5",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",

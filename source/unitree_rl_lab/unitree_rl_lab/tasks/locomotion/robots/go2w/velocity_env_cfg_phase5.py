@@ -24,15 +24,16 @@ from unitree_rl_lab.tasks.locomotion.robots.go2w.velocity_env_cfg_phase4 import 
 # --- Terrain/command/reward redesign (2026-08-18) --------------------------------------
 #
 # Folded in from the Go2W-v1-Phase5-Try15 sandbox experiment (2026-08-17/18), itself a
-# port of Go2W-v2-Teacher-Phase5-Try1 (see that file, still in the sandbox, for the full
-# original reasoning) to this v1/GRU line. Confirmed in MuJoCo: controls correctly, no
-# runaway under a zero command, crosses 0.40 m. This replaces the pyramid_stairs terrain,
-# UniformTerrainGatedVelocityCommand, and climb_progress/motion_without_cmd-style reward
-# set the two campaigns below (Try 1-14) had converged on -- those were never able to
-# fully solve "stop when told to" on this task even with a GRU (a Student built on top of
-# the TCN/V2 equivalent of that design was later found still driving off under a zero
-# command in MuJoCo, prompting this whole redesign; see sandbox/velocity_env_cfg_v2_
-# teacher_phase5_try1.py's context section for that investigation).
+# port of Go2W-v2-Teacher-Phase5-Try1 (deleted 2026-08-19 after folding; see sandbox/
+# SUMMARY.md for the original reasoning) to this v1/GRU line. Confirmed in MuJoCo:
+# controls correctly, no runaway under a zero command, crosses 0.40 m. This replaces the
+# pyramid_stairs terrain, UniformTerrainGatedVelocityCommand, and climb_progress/
+# motion_without_cmd-style reward set the two campaigns below (Try 1-14) had converged on
+# -- those were never able to fully solve "stop when told to" on this task even with a
+# GRU (a Student built on top of the TCN/V2 equivalent of that design was later found
+# still driving off under a zero command in MuJoCo, prompting this whole redesign; see
+# sandbox/SUMMARY.md's "2026-08-18: superseded by the thin_wall / goal-directed redesign"
+# section for that investigation).
 #
 # What changed:
 #   * Terrain: pyramid_stairs/pyramid_stairs_inv -> a single free-standing thin_wall ring
@@ -82,8 +83,9 @@ from unitree_rl_lab.tasks.locomotion.robots.go2w.velocity_env_cfg_phase4 import 
 # 2. Curriculum resolution matters. Widening step_height_range without adding rows makes
 #    each promotion a bigger jump, and custom_terrain_levels_climb is a one-way ratchet
 #    (it demotes only below 0.5 m of progress), so a robot promoted past its ability parks
-#    on a row it cannot clear and keeps crashing there. num_rows=20 keeps the per-row step
-#    fine enough to matter (see the terrain block below for the current range).
+#    on a row it cannot clear and keeps crashing there -- see the terrain block below for
+#    the current num_rows/height range (reduced from this era's 20 on 2026-08-18 for
+#    memory; the per-row step is correspondingly coarser now, see that block's own note).
 #
 # 3. Relaxing terminations has sharply diminishing returns. base_contact went
 #    30 -> 80 -> 150 -> 400 N over four runs chasing a plateau that turned out to be
@@ -132,16 +134,25 @@ from unitree_rl_lab.tasks.locomotion.robots.go2w.velocity_env_cfg_phase4 import 
 # per side -- one wall to cross, matching the single-wall MuJoCo lanes this design was
 # validated against. wall_thickness_range is held ~fixed (not scaled thin-at-high-
 # difficulty) at roughly MuJoCo's actual wall thickness; only wall_height_range carries
-# the difficulty curriculum. "rough" at 30% (not the old design's 10%) also gets its own
-# full omnidirectional command (see CommandsCfgPhase5 below), so it is no longer just a
-# mild balance exercise between wall crossings -- worth a bigger share of the column grid
-# on its own terms. Tile size still sets the curriculum's promotion distance
-# (custom_terrain_levels_climb promotes past size * 0.35 = 1.925 m from spawn).
+# the difficulty curriculum. "rough" at 25% also gets its own full omnidirectional
+# command (see CommandsCfgPhase5 below), so it is no longer just a mild balance exercise
+# between wall crossings -- worth a real share of the column grid on its own terms. Tile
+# size still sets the curriculum's promotion distance (custom_terrain_levels_climb
+# promotes past size * 0.35 = 1.925 m from spawn).
+#
+# Grid shrunk 20x20 -> 4x10 (2026-08-18, memory) with rough/thin_wall reproportioned
+# 30/70 -> 25/75 -- ported from the Go2W-v1-Phase5-Try16 sandbox experiment (terrain only;
+# Try16's own front_leg_push_reward/base_contact changes were not folded in). Halving
+# num_rows halves the wall-height curriculum's resolution (per-row step ~0.028 -> ~0.056
+# m) and, since max_init_terrain_level below is an absolute row index unaffected by this
+# change, roughly doubles the *fraction* of the height range a resumed/fresh run starts
+# at on average (level 7 was ~35% of a 0-19 row range, now ~70% of a 0-9 one) -- not
+# reduced to compensate; flag if that starts too hard.
 PHASE5_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
     size=(5.5, 5.5),
     border_width=20.0,
-    num_cols=20,
-    num_rows=20,
+    num_cols=4,
+    num_rows=10,
     horizontal_scale=0.1,
     vertical_scale=0.005,
     slope_threshold=0.75,
@@ -149,13 +160,13 @@ PHASE5_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
     use_cache=False,
     sub_terrains={
         "rough": terrain_gen.HfRandomUniformTerrainCfg(
-            proportion=0.30,
+            proportion=0.25,
             noise_range=(0.0, 0.03),
             noise_step=0.01,
             border_width=0.25,
         ),
         "thin_wall": terrains.MeshThinWallTerrainCfg(
-            proportion=0.70,
+            proportion=0.75,
             wall_height_range=(0.10, 0.60),
             wall_thickness_range=(0.40, 0.40),
             wall_spacing=1.00,
