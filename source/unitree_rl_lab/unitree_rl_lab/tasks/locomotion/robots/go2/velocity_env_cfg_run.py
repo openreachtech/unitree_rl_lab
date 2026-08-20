@@ -241,7 +241,7 @@ class RobotPlayEnvCfgGo2GallopPhase2(RobotEnvCfgGo2GallopPhase2):
 #      pays for a gallop in animals; told nothing, PPO picks a trot and the trot is faster.
 #
 # TWO DELIBERATE DEVIATIONS FROM TRY 9 AS RUN. Both are protective, and both come from Try 9's
-# own post-mortem (see ``sandbox/try8.py``):
+# own post-mortem:
 #
 #   limit_ranges.lin_vel_x  8.0 -> 3.8 m/s
 #       Try 9 used 8.0 to find out where the ratchet would stall on its own. That answered the

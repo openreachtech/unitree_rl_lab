@@ -34,4 +34,23 @@ FSM:
       Passive: LT + B.on_pressed
     keyboard_transitions:
       Passive: "0"
-    policy_dir: ../../../logs/rsl_rl/go2_gallop_phase2
+    policy_dir: ../../../logs/rsl_rl/go2_speed_phase2
+    # Keyboard driving. Both override the values exported into the policy's params/deploy.yaml,
+    # which is regenerated on every training export and therefore not a good place to keep an
+    # operator setting.
+    #   keyboard_vel_scale : fraction of the exported command range that F/B/L/R/Y/U ask for.
+    #                        Default 0.8, i.e. F = 4.8 m/s against a [0, 6] range. Set 1.0 to
+    #                        command the full range, which is what a top-speed measurement wants.
+    #   keyboard_alpha     : low-pass on the command; higher = smoother and slower to build up.
+    keyboard_vel_scale: 1.0
+    # keyboard_alpha: 0.15
+
+    # 1 kHz speed / torque capture -> speed_<n>_YYYYMMDD-HHMMSS.csv in the CWD (stamped at the
+    # trigger), one file per run, from the moment a forward command is latched until the robot has
+    # stopped. Plot with
+    # scripts/plot_speed_capture.py. Off by default; it writes a couple of MB per run.
+    speed_log: true
+    # speed_log_pre_s: 0.5        # pre-roll kept before the trigger, so the standing start is in
+    # speed_log_stop_speed: 0.2   # m/s under which the robot counts as stopped
+    # speed_log_stop_hold_s: 0.3  # how long that has to hold before the capture closes
+    # speed_log_max_s: 30.0       # hard cap, for a capture that never sees a stop

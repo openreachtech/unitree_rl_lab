@@ -85,8 +85,12 @@ DEVIATIONS FROM THE SANDBOX RUNS THEY WERE PROMOTED FROM
 --------------------------------------------------------
   Phase 1 ceiling 8.0 -> 4.0   Try 8 used 8.0 but only ever reached a commanded 3.5 in its 1300
                                iterations. A ceiling above what the phase can use is a trap for
-                               longer runs (see ``sandbox/try8.py``'s post-mortem), and Phase 1 has
-                               no progress term to protect it.
+                               longer runs, and Phase 1 has no progress term to protect it: an
+                               earlier sandbox run left the ceiling at 8.0, let the commanded range
+                               reach 4.6 against a robot topping out near 3.7, and the policy gave
+                               up and stood still -- 3.72 -> 1.94 m/s, unrecoverable, because the
+                               exponential tracking kernel pays almost nothing that far from its
+                               target while every penalty still applies.
   both phases                  the velocity curriculum judges on the held-out unassisted
                                environments and can step DOWN as well as up, and it accumulates
                                ~1000 episodes per decision. Try 8 ran with the original one-way
