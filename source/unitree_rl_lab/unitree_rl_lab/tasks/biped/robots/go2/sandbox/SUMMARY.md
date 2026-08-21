@@ -151,3 +151,173 @@ further.
 | 5 | Added `termination_penalty` (`mdp.is_terminated`, weight -200.0 -- matches `isaaclab_tasks`' own h1/g1/cassie `rough_env_cfg.py`, which share our exact `step_dt=0.02s`) on top of Try-4's config. | Fixed the collapse completely (100-iteration diagnostic: time_out 0.996, base_contact 0.004). Full 2000-iteration run: front-foot ground-contact time dropped 41% -> 14% -> 6% and was still trending down; tilt_reward ~0.72-0.74, time_out ~0.99. Resumed for another 2000 iterations (4000 total): front-foot contact kept falling to ~6%, velocity tracking *improved* to ~0.88. Resumed again (6000 total): plateaued -- front-foot contact stopped improving (~5%, no longer trending down), everything else held steady. Play testing confirmed real 2-leg balancing, but inconsistent (some robots on 2 legs, most still tripod-ish). |
 | 6 | Compared our velocity command range (`lin_vel_x` +-0.4, `lin_vel_y` +-0.2, `ang_vel_z` +-0.4) against the reference's own validated config (same `test_reward` config as Try-2): `lin_vel_x/y` +-1.0, `ang_vel_yaw` +-1.0. Widened to `lin_vel_x` +-1.0, `lin_vel_y` +-0.5 (user's choice, narrower than the reference's y), `ang_vel_z` +-1.0, on top of Try-5's reward recipe. Trained fresh (10000 iterations, matching the reference's own `BipedalBaseCfgPPO.runner.max_iterations`). | **Best result across every attempt.** front-foot contact fell far below Try-5's plateau, down to ~0.5-0.8% (roughly 6-10x lower) and was still gently improving at 10000 iterations; tilt_reward ~0.78 (higher than Try-5); tracking held up on a much harder task. Play testing **confirmed genuine, sustained 2-leg walking for the first time**. Hypothesis: at the old slower demanded pace, a tripod shuffle could still track the command well enough that there was little pressure to commit to a full swinging 2-leg gait -- that pressure only appears once the required pace exceeds what dragging a foot can sustain. **Promoted into the default `Go2-Biped` task.** |
 | 7 | Play testing on Try-6 showed a remaining issue: the robot tends to sidestep rather than walk forward/backward (plausibly because the hind legs are naturally spaced side-by-side, making lateral weight-shift the more mechanically stable balance direction -- closer to tandem/heel-to-toe walking than ordinary forward walking, for a human analogy). `track_lin_vel_xy_yaw_frame_exp` computes one *combined* `sum((cmd_xy-actual_xy)^2)` error, so it can't express "x accuracy matters more than y." Split into `track_lin_vel_x` (weight 1.0) and `track_lin_vel_y` (weight 0.5), trained fresh, 7000 iterations. | Did **not** resolve the sidestepping (still observed in play testing). Raw x-tracking accuracy (~0.89-0.91) was only modestly better than y (~0.84-0.88) -- the split addresses relative priority when both are commanded simultaneously, but likely doesn't touch a "sideways gait as default mechanism" habit. Also, front-foot-contact progress was measurably slower than Try-6 at the same iteration count (~0.044 vs ~0.005), plausibly because splitting the tracking term raised the total achievable tracking reward from 1.0 to 1.5, diluting `front_contact_force`'s relative weight in the mix. **Not promoted** -- Try-6 remains the default's reward/command basis; the sidestepping issue is still open.
+
+## Fourth round, Try-1: the front stance's hardware failure was actuation delay
+
+`Go2-Biped-Front` rose reliably in Isaac Lab and in MuJoCo but could not get into the
+handstand on hardware -- it crept to ~55 deg of tilt and stalled. Placed in the pose by
+hand it held it indefinitely, so the failure was specific to the dynamic rise.
+
+Deploy-side telemetry was added for this (`State_BipedRL`: a 50 Hz per-policy-step CSV, a
+1 kHz `tau_cmd`/`tau_app` capture over the rise, and an always-on summary line) and the
+hardware trace was read against an Isaac Lab play trace of the same checkpoint:
+
+| | hardware | Isaac Lab, same checkpoint |
+|---|---|---|
+| sagittal lean reached | 43 deg | 72 deg |
+| lateral lean | 33 deg (leads the sagittal rise) | 15 deg |
+| stance-shoulder `dq_des` RMS/step | 0.51-0.58 rad | 0.05-0.07 rad |
+| stance-shoulder tracking error | 0.89-0.93 rad (2.5 peak) | 0.11-0.36 rad |
+| stance-shoulder `|dq|` max | 24-31 rad/s | 3-8 rad/s |
+| stance-shoulder net power | ~39 W each | 0.4-1.2 W each |
+| `action_rate_l2` | 12.08 | 0.98 |
+
+The policy's rise strategy is to hold the stance shoulders at the torque ceiling and let
+the load set the speed -- in simulation they sit pinned at exactly Y1 = 20.2 N*m at only
+3-7 rad/s, which has almost no phase margin. On hardware that became a 4-6 Hz saturated
+limit cycle; because the two shoulders oscillated incoherently (torque cross-correlation
+-0.05) the net effect was a roll moment rather than a pitch-up.
+
+A play sweep isolated the cause. Adding actuation delay -- and nothing else -- reproduced
+the hardware failure, monotonically:
+
+| delay | max tilt | end sagittal | max lateral | FT `|dq|`max | `action_rate` | falls |
+|---|---|---|---|---|---|---|
+| 0 ms | 80.9 | 71.2 | 20.1 | 7.1 | 0.98 | 0/8 |
+| 20 ms | 81.1 | 67.7 | 33.1 | 19.9 | 4.20 | 1/8 |
+| 30 ms | 77.1 | 63.3 | 46.6 | 22.5 | 7.30 | 4/8 |
+| 40 ms | 81.1 | 61.0 | 48.1 | 23.8 | 9.63 | 8/8 |
+| hardware | 58.9 | 38.7 | 33.1 | 30.7 | 12.08 | n/a |
+
+Cross-correlating the published position command against the motor's torque response in
+the 1 kHz hardware trace puts the command-side latency alone at 8-10 ms; sensing lag and
+the 50 Hz zero-order hold are on top. The 40 ms run also reproduced the hardware's exact
+signature: the rise fails, but an attempt that *does* reach the pose then holds it with
+`|dq|` ~ 0 -- which is what "holds it when placed by hand" looks like.
+
+Two other candidates were tested in the same sweep and **ruled out** -- neither changed the
+outcome at all (all 8 envs still reached ~80 deg tilt with ~15 deg lateral):
+
+- raising the actuator envelope to what hardware actually delivers (Y1/Y2 = 30/37 N*m,
+  torque-speed derating removed). Hardware's stance shoulders do spend 40-45% of the time
+  outside the trained envelope, but that is a symptom of the oscillation, not its cause.
+- starting from a settled quadruped stand instead of the training reset's ~9 cm drop, i.e.
+  the FixStand pose the deploy FSM actually hands the policy.
+
+Also ruled out from the trace itself: control-loop timing (the 50 Hz policy step measured
+0.83 ms of its 20 ms budget, zero overruns), and -- from the operator's own earlier tests --
+total mass and peak torque (a Jump task matched hardware height to simulation) and ground
+friction (rubber floor).
+
+**Change: `min_delay`/`max_delay` = 0..6 physics steps (0-30 ms) on the Go2HV actuator,
+promoted into `../biped_env_cfg.py`** so every biped variant inherits it (Phase1, Phase2,
+Front, Single, Multimode). Scoped there rather than on the shared `UNITREE_GO2_CFG`, which
+every other Go2 task also uses.
+
+Result, resumed from the deployed Front checkpoint for 1500 iterations:
+
+- `tilt_reward` 0.7287 -> **0.7380** (better than the zero-delay original, while now
+  handling 0-30 ms of lag); `time_out` 0.994 -> 0.987, `base_contact` 0.006 -> 0.011.
+  `base_contact` was 0.201 at iteration 49 and fell to 0.011, so the policy adapted rather
+  than sitting in the old local optimum.
+- Delay-sweep acceptance test: **8/8 environments rise past 60 deg and settle at 69-79 deg
+  sagittal at every delay from 0 to 40 ms**, with 0/8 falls at 40 ms where the old
+  checkpoint fell 8/8. `action_rate` at 40 ms: 9.63 -> 4.17.
+- MuJoCo, through the full deploy stack: rises in 1.2 s and holds for 8.3 s (sagittal
+  69-74 deg, lateral 13-16 deg, base 23 cm up). The 4-6 Hz shoulder limit cycle is gone
+  (dominant command frequency 6.02 Hz -> 0.12 Hz), stance-shoulder `|dq|` max 13.3 rad/s
+  (inside the X1 = 13.5 derating knee), net power 3-5 W instead of 39-51 W, and 0.0% of
+  the time outside the trained envelope.
+
+Not yet re-validated on hardware. The like-for-like control that is still missing is the
+*old* checkpoint measured in MuJoCo with the same telemetry -- MuJoCo passed with the old
+checkpoint too, so a MuJoCo success alone does not prove the hardware fix.
+
+## Fourth round, continued: the single-leg stance's blocker is the reset, not the delay
+
+Applying the delay fix to `Go2-Biped-Single` (resumed from its deployed checkpoint for 1000
+iterations) produced training curves that looked fully converged -- `mean_episode_length`
+1000, `base_contact` 0.92 at iteration 50 falling to 0.0098, `tilt_reward` 0.7799, i.e.
+*better* than the zero-delay original's 0.7693 while now handling 0-30 ms of lag.
+
+It then failed in MuJoCo through the deploy stack: the base rose only 0.365 -> 0.451 m
+(the 2-leg front stance reaches 0.597 m in the same setup), never pitched nose-down at all
+(sagittal lean stayed between -21 and +8 deg where the 2-leg stance reaches +70), rolled
+out to 87 deg of lateral lean, and was lying on the ground 1.9 s after entry. The stance
+leg was not the problem -- FR's shoulder ran at |tau| p99 17.9 N*m with a 0.52 Hz command,
+nothing like the 4-6 Hz limit cycle seen on hardware. The three *free* legs were pinned at
+their ceilings instead (FL_calf 39.22 N*m at 30.8 rad/s, RL_thigh 23.40, FL_thigh 20.20),
+flailing as counterweights whose net effect was the roll that tipped it over.
+
+An Isaac Lab play ablation separated the two candidate causes -- and it is the reset, not
+the delay:
+
+| start condition | delay | max base_z | end sagittal | max lateral | falls (8 envs, 5 s) |
+|---|---|---|---|---|---|
+| drop reset (as trained) | 0 ms | 0.615 | 75.9 | 14.1 | 0 |
+| drop reset | 40 ms | 0.621 | 75.9 | 42.2 | 8 |
+| settled 4-foot stand | 0 ms | 0.441 | 15.6 | 68.2 | 37 |
+| settled 4-foot stand | 10 ms | 0.442 | 14.9 | 65.6 | 39 |
+| MuJoCo, deploy stack | ~8-10 ms | 0.451 | ~5 | 87 | fell |
+
+The settled-start rows reproduce the MuJoCo failure almost exactly, and delay barely moves
+them (0 ms vs 10 ms are within noise). The delay work did what it was for: from the trained
+start the policy still rises at 40 ms.
+
+The **old, pre-delay checkpoint fails from a settled start too** (max base_z 0.488, end
+sagittal 48.2, 16 falls), so this predates the delay work -- the delay retrain deepened it
+(48 -> 16 deg, 16 -> 37 falls) but did not create it. `biped_env_cfg_single.py`'s
+"MuJoCo-confirmed balancing on one leg" was therefore a play-mode observation from the drop
+reset; the deploy entry path had never actually been validated for this task.
+
+Root cause: the reset dropped the base 7.65 cm every episode (`init_state.pos` z = 0.400
+against a 0.3235 m foot-contact height at the default joint pose), so the stances learned a
+rise that depends on that fall -- the downward momentum and leg compression it buys.
+Deployment never provides it; the FSM hands over a robot standing still on four feet. The
+2-leg stances happen not to care (a settled start costs Front nothing: 79.7/70.9/26.5 vs
+80.9/71.2/20.1), but a point support has no margin for it.
+
+**Change: `reset_base` pose_range gains `"z": (-0.0765, 0.0)`, promoted into
+`../biped_env_cfg.py`** alongside the delay. The lower bound is exactly the contact height
+-- verified at runtime, the lowest foot sits 1.4 mm above the ground at the bottom of the
+range and never penetrates -- so a settled four-foot stand is now in distribution together
+with the old 7.65 cm drop. Not yet retrained.
+
+### Retraining both stances with the two fixes together
+
+`Go2-Biped-Single`, resumed 1500 iterations from its *pre-delay* checkpoint
+(`2026-08-07_18-55-14` -- the delay-only retrain had degraded the settled-start case, so it
+was not used as the base): `base_contact` 0.9146 at iteration 50 -> 0.0039, `tilt_reward`
+0.7799, `front_contact_force` -0.0492 (better than the delay-only -0.0669). The settled
+start is now indistinguishable from the drop:
+
+| start | delay | max base_z | end sagittal | max lateral | falls |
+|---|---|---|---|---|---|
+| settled | 0 ms | 0.616 | 77.1 | 14.3 | 0 |
+| settled | 10 ms | 0.618 | 76.2 | 14.6 | 0 |
+| settled | 40 ms | 0.623 | 77.0 | 85.7 | 8 |
+| drop | 0 ms | 0.616 | 76.9 | 14.2 | 0 |
+| drop | 40 ms | 0.623 | 75.9 | 59.5 | 8 |
+
+(compare: pre-delay checkpoint from a settled start reached 48.2 deg and fell 16 times;
+the delay-only one reached 15.6 deg and fell 37 times.) 40 ms is past the margin -- one fall
+per environment, then recovery -- but the deploy stack's measured lag is 8-10 ms, where it is
+clean. **MuJoCo through the deploy stack: confirmed.**
+
+`Go2-Biped-Front`, resumed 1500 iterations from the delay-only checkpoint (which was already
+validated, unlike the single-leg one): `tilt_reward` 0.7406, the best of the three
+generations (0.7287 zero-delay -> 0.7380 delay-only -> 0.7406). The reset change cost only a
+brief transient (`base_contact` 0.0295 at iteration 50, settling to 0.0131).
+
+| start | delay | max base_z | end sagittal | max lateral | FT \|dq\|max | falls |
+|---|---|---|---|---|---|---|
+| settled | 0 ms | 0.564 | 75.8 | 23.8 | 9.4 | 0 |
+| settled | 10 ms | 0.562 | 76.2 | 16.7 | 12.7 | 0 |
+| settled | 40 ms | 0.564 | 75.5 | 12.7 | 21.2 | 0 |
+| drop | 0 ms | 0.562 | 75.0 | 20.3 | 10.6 | 0 |
+| drop | 40 ms | 0.552 | 73.8 | 20.0 | 18.8 | 0 |
+
+Strictly better than the delay-only generation at 40 ms (max lateral 26.4 -> 20.0,
+`action_rate` 4.17 -> 3.15) with zero falls in all ten conditions, at the cost of a slightly
+less extended pose at 0 ms (0.576 -> 0.564 m, 77.9 -> 75.8 deg). **MuJoCo through the deploy
+stack: confirmed.** Hardware not yet retried.

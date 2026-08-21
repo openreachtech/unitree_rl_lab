@@ -162,6 +162,12 @@ FSM:
       front_biped: "j"
     tilt_limit: 1.0
     biped_tilt_limit: 2.6
+    # Same diagnostics as BipedFront (see there). The single-leg stance is the harder
+    # case: its support base is a point, so it has even less phase margin against the
+    # actuation lag that broke the 2-leg front stance on hardware.
+    telemetry: true
+    torque_log: true
+    torque_log_s: 8.0
     # No timestamp -- parser_policy_dir picks the latest run under here with an
     # `exported/` folder, i.e. whichever Try3 checkpoint (still training as of
     # this writing) was exported most recently.

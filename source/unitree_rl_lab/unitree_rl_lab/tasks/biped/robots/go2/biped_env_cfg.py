@@ -65,6 +65,30 @@ ALL_FOOT_NAMES = [".*_foot"]
 # Go2's).
 BASE_HEIGHT_TARGET = 0.55
 
+# Actuation delay, in physics steps (``sim.dt`` = 5 ms, so one policy step is 4 of these).
+# Drawn per environment on reset, so the population spans the whole range.
+#
+# Left at zero, the biped stances learn a rise that holds the stance shoulders at the
+# actuator's torque ceiling and lets the load set the speed -- in simulation those joints
+# sit pinned at exactly Y1 = 20.2 N*m while turning at only 3-7 rad/s. That has almost no
+# phase margin, and on hardware, where the command reaches the motor ~8-10 ms late
+# (measured: cross-correlating the published position command against the motor's torque
+# response in a 1 kHz deploy trace), it degenerates into a 4-6 Hz saturated limit cycle:
+# the shoulders swing +-1.4 rad with 0.9 rad of tracking error, spin at up to 30 rad/s,
+# burn ~39 W each against the ~8.5 W the lift actually needs, and -- oscillating
+# incoherently -- produce a roll moment instead of a pitch-up. `Go2-Biped-Front` reached
+# only 43 deg of sagittal lean on hardware, half its tilt being a lateral lean, while
+# rising to 72 deg in both simulators. A play sweep reproduced that failure in Isaac Lab
+# purely by adding delay (8/8 environments fell at 40 ms; 0/8 at 0 ms), and ruled out the
+# actuator envelope and the initial condition as causes.
+#
+# 0..6 (0-30 ms) covers the measured command latency plus the unmeasured sensing lag, with
+# margin into the band where a zero-delay policy visibly breaks. Keeping 0 in the range
+# lets part of the population keep training the nominal case, which is what gives a resume
+# from a zero-delay checkpoint somewhere to start.
+ACTUATOR_MIN_DELAY_STEPS = 0
+ACTUATOR_MAX_DELAY_STEPS = 6
+
 
 @configclass
 class RobotSceneCfg(InteractiveSceneCfg):
@@ -135,7 +159,23 @@ class EventCfg:
         func=mdp.reset_root_state_uniform,
         mode="reset",
         params={
-            "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
+            # z is an offset from init_state.pos (0.400 m), so this range is
+            # [0.3235, 0.400] m of base height. Its lower end is exactly where the feet
+            # touch: at the default joint pose (which is what reset_joints_by_scale
+            # reproduces, position_range = 1.0) the front feet' contact spheres sit
+            # 0.3235 m below the base origin and the rear ones 0.3139 m, so a base at
+            # 0.3235 m is settled on the ground and anything lower would penetrate it.
+            #
+            # Without this the reset always dropped the base 7.65 cm, and the biped
+            # stances learned a rise that *depends* on that fall -- the downward momentum
+            # and the leg compression it buys. Deployment never provides it: the FSM hands
+            # the policy a robot standing still on four feet (FixStand). The 2-leg stances
+            # happen not to care, but Go2-Biped-Single could only rise from the drop --
+            # from a settled stand it reached 16 deg of lean instead of 76 and fell 37
+            # times in 8 environments over 5 s, which is exactly what it does in MuJoCo
+            # through the deploy stack. Randomizing the drop height puts both the training
+            # condition and the deployment condition in distribution.
+            "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14), "z": (-0.0765, 0.0)},
             "velocity_range": {
                 "x": (0.0, 0.0),
                 "y": (0.0, 0.0),
@@ -475,6 +515,13 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
 
     def __post_init__(self):
         """Post initialization."""
+        # See ACTUATOR_MAX_DELAY_STEPS: modelling the deploy-time actuation lag is what
+        # makes these stances transfer. Applied here rather than on the shared
+        # UNITREE_GO2_CFG, which every other Go2 task also uses.
+        actuator = self.scene.robot.actuators["GO2HV"]
+        actuator.min_delay = ACTUATOR_MIN_DELAY_STEPS
+        actuator.max_delay = ACTUATOR_MAX_DELAY_STEPS
+
         self.decimation = 4
         self.episode_length_s = 20.0
         self.sim.dt = 0.005
