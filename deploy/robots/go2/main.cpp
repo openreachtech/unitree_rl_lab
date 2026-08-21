@@ -29,6 +29,8 @@ void init_fsm_state()
 
 int main(int argc, char** argv)
 {
+    rclcpp::init(argc, argv);
+
     // Load parameters
     auto vm = param::helper(argc, argv);
 
@@ -55,7 +57,7 @@ int main(int argc, char** argv)
     {
         sleep(1);
     }
-    
+
+    rclcpp::shutdown();
     return 0;
 }
-

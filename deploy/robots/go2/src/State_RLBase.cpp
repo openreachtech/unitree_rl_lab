@@ -129,7 +129,7 @@ REGISTER_OBSERVATION(height_scan)
         if (!logged)
         {
             spdlog::info(
-                "height_scan: flat_override ON (policy gets constant {:.4f}, DDS pipeline unchanged)",
+                "height_scan: flat_override ON (policy gets constant {:.4f}, ROS 2 pipeline unchanged)",
                 flat_value);
             logged = true;
         }

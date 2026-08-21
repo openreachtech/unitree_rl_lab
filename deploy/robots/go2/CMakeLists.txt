@@ -5,6 +5,9 @@ add_definitions(-D_GLIBCXX_USE_CXX11_ABI=1)
 
 find_package(Boost REQUIRED COMPONENTS program_options)
 find_package(yaml-cpp REQUIRED)
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(heightmap_generator REQUIRED)
 
 include_directories(
   /usr/include/eigen3
@@ -26,6 +29,8 @@ file(GLOB_RECURSE ADD_SRC_LIST
 )
 
 add_library(${PROJECT_NAME}_lib ${ADD_SRC_LIST})
+ament_target_dependencies(${PROJECT_NAME}_lib rclcpp heightmap_generator)
 link_libraries(${PROJECT_NAME}_lib)
 
 add_executable(go2_ctrl main.cpp)
+ament_target_dependencies(go2_ctrl rclcpp heightmap_generator)
