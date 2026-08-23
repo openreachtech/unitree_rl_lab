@@ -227,6 +227,20 @@ private:
     std::string impact_summary() const;
     float tilt_deg() const;
 
+    // --- fusion-vs-gyro attitude check ---------------------------------------
+    // tilt_deg() reads the IMU's fused orientation (gyro + accelerometer). This is a
+    // second, independent estimate built by integrating ONLY the gyro (root_ang_vel_b),
+    // seeded from the fused quaternion at the moment each capture starts, so any gap that
+    // opens up between the two after that is the fusion drifting/lagging relative to the
+    // gyro's own (bias-prone but not amplitude-limited) view of the rotation -- exactly the
+    // failure mode suspected from the sim2real torque comparison: a fused attitude that
+    // reports a calmer tilt than reality during the ~-19 rad/s sideflip spin, so the policy
+    // stops correcting too early. Both columns are written to the torque CSV so this can be
+    // checked directly against a real capture instead of only argued from indirect evidence
+    // (the policy's own torque output).
+    Eigen::Quaternionf gyro_dead_reckon_quat_ = Eigen::Quaternionf::Identity();
+    static float tilt_from_quat(const Eigen::Quaternionf & quat);
+
     long diag_trigger_step_ = -1;      // which motion the peaks below belong to
     bool diag_reported_ = false;
     float peak_accel_ = 0.0f;          // |IMU acceleration| over the motion, m/s^2
@@ -281,6 +295,10 @@ private:
         float roll_turns;
         float pitch_turns;
         float tilt_deg;
+        // Gyro-only dead-reckoned tilt (see gyro_dead_reckon_quat_): diverges from tilt_deg
+        // above exactly when the fused estimate is lagging or amplitude-limited relative to
+        // what the gyro alone says happened.
+        float tilt_deg_gyro;
         float q[12];
         float dq[12];
         float tau_cmd[12];

@@ -71,7 +71,7 @@ FSM:
     # send height/pitch targets it has never seen -- off-distribution, and not safe on
     # hardware. Point policy_dir back at go2_jump_60 (jump) or go2_jump_phase2 (all three)
     # before using them.
-    policy_dir: ../../../logs/rsl_rl/go2_sideflip_double
+    policy_dir: ../../../logs/rsl_rl/go2_sideflip_double_phase2
     # Must equal JumpCommandCfg.command_duration_s, which this task leaves at its 0.50
     # default: it is when `enabled` drops back to 0 and takes the three targets in the
     # observation down with it. 0.6 held the command 0.1s longer than the policy ever saw.
@@ -112,5 +112,5 @@ FSM:
         # `flip_target_height` puts 0.60 into target_height on every sideflip episode, so
         # that is what the policy has always seen alongside the roll target. Sending the
         # roll alone would leave observation[1] at 0.0, a combination it has never met.
-        target_height: 0.60
+        target_height: 0.50
         target_roll_turns: -2.0

@@ -406,3 +406,49 @@ resuming from the previous. A 0.05m step lands at reward 0.78, a 0.10m step at
 no harder than 0.30 was. `mdp.jump_height_ratchet` exists but is deliberately
 not wired into any task; automating the staircase reintroduces the scheduled
 target that failed in (1).
+
+## Go2-Sideflip-Double-FaceGuard, Go2-Sideflip-Double-AxisAlign — promoted
+
+`Go2-Sideflip-Double` completes both turns and lands upright 98.8% of the time in Isaac
+Lab, but sim2sim (MuJoCo) and Isaac Lab Play both showed two things that number never
+saw: every episode's first ground contact was `Head_upper`, not a foot (peak 6614 N,
+`base` reading exactly 0 N at the same instant), and the flip pitches nose-down mid-air
+(`grav_x`, the body's forward axis tilted from horizontal, peaks at 0.82 / ~55 deg around
+the first half-turn) rather than rolling about a level axis, swinging back near level
+only right at touchdown.
+
+**FaceGuard (head contact).** A hard `illegal_contact` termination on `Head_upper`,
+fine-tuned from an already-specialized checkpoint, collapsed exploration — the policy
+learned to resist its own launch assist rather than risk the states that tend to end in
+head contact. A graded reward instead (`mdp.contact_forces`, threshold 5 N): `weight
+-0.001` measured zero behavioral change over 450+ iterations (the term sat at whatever
+the untrained policy already produced); `-0.01` (10x) actually moved it, driving head
+contact force to ~0 over ~1500 iterations from `model_3298` while success held 92-98%.
+
+**AxisAlign (flip tilt).** First attempt penalized `command.accumulated_pitch`
+(pitch RATE integrated since trigger) — three rounds raising that weight
+(-0.01 → -0.1 → -1.0) each *looked* like progress (reward kept dropping, success held
+98-100%), but replaying the checkpoints and reading `grav_x` directly showed peak
+mid-flight tilt was unchanged the whole time (55 deg throughout). An integral of a
+"pitch out, swing back" excursion cancels the outbound half against the return half, so
+it was never measuring the thing being asked for — three rounds of tuning a number that
+was close to the wrong one. Switched to the SQUARED INSTANTANEOUS `grav_x`
+(`projected_gravity_b[:, 0]`, no time integration, charged every step during flight):
+-0.01 and -0.1 again measured no real change (confirmed by replay this time, not just
+the log), but -1.0 cut peak tilt 55 → 39 → 38 deg (two rounds, second mostly plateaued),
+and -10.0 cut it to 18 deg with success still 98-100% and no collapse at any weight
+tried — unlike `non_target_rotation`'s history on this same motion, because a
+there-and-back excursion penalized on where it actually is (rather than on its net
+displacement) gives the policy a slope to descend, not a wall it can only survive by
+not finishing the rotation.
+
+**Lesson carried forward:** a reward term's own logged value trending the "right" way
+across training is not evidence the underlying physical thing improved, if that value
+is an accumulated/integrated quantity that a there-and-back motion can cancel out.
+Verify with a replay reading the *instantaneous* ground-truth signal before spending
+another round of iterations tuning the weight.
+
+Both fine-tunes verified individually (in Isaac Lab replay, MuJoCo sim2sim, and Isaac
+Lab Play) and promoted together into `Go2-Sideflip-Double-Phase2`
+(`jump_env_cfg_jump.py`) — removed from this sandbox rather than kept duplicated; see
+that task's docstring for the full numbers.

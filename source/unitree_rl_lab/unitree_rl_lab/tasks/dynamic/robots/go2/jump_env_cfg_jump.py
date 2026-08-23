@@ -508,3 +508,99 @@ class RobotPlayEnvCfgSideflipDouble(RobotEnvCfgSideflipDouble):
         self.commands.jump.state_file = None
         self.commands.jump.initial_assist_scale = 0.0
 
+
+# --- sideflip, two rotations, phase 2: fine-tuned for landing quality --------------------
+# ``Go2-Sideflip-Double`` completes both turns and lands upright 98.8% of the time in Isaac
+# Lab, but sim2sim replay (MuJoCo) and Isaac Lab Play both showed two problems invisible to
+# that number: every episode's first ground contact was ``Head_upper``, not a foot (peak
+# 6614 N, `base` reading exactly 0 N at the same instant), and the flip itself pitches
+# nose-down mid-air (grav_x -- the body's forward axis tilted from horizontal -- peaks at
+# 0.82, ~55 deg, around the first half-turn) rather than rolling about a level axis, only
+# swinging back near level right at touchdown.
+#
+# Both were graduated here from sandbox experiments (``sandbox/sideflip_double_face_guard.py``,
+# ``sandbox/sideflip_double_axis_align.py``) after each was fine-tuned and verified in
+# isolation, one change at a time, from the checkpoint that already completes the motion
+# (never retrained from Phase 1 -- there is no reason to re-derive a working flip just to
+# add a landing-quality penalty to it):
+#
+#   head_contact_force   mdp.contact_forces on Head_upper, threshold 5 N. A hard
+#                         termination on this signal (tried first) collapsed exploration --
+#                         fine-tuned from an already-specialized checkpoint, the policy
+#                         learned to resist its own launch to avoid the risky states rather
+#                         than land softer. A graded, linear-past-threshold reward instead:
+#                         weight -0.001 measured zero behavioral change over 450+
+#                         iterations (the term just sat at whatever the untrained policy
+#                         already produced); -0.01 (10x) actually moved it, driving head
+#                         contact force to ~0 over ~1500 iterations while success held
+#                         92-98%.
+#
+#   flip_forward_tilt    mdp.flip_forward_axis_tilt_penalty: the SQUARED INSTANTANEOUS
+#                         value of projected_gravity_b[:, 0], charged every step during
+#                         flight. A first version penalized ``command.accumulated_pitch``
+#                         (integrated pitch RATE since trigger) instead -- three rounds of
+#                         raising that weight (-0.01 -> -0.1 -> -1.0) each looked like
+#                         progress in the reward log (success stayed 98-100%, the term's
+#                         value kept dropping), but replaying the checkpoints and reading
+#                         grav_x directly showed peak mid-flight tilt was UNCHANGED at
+#                         every step (55 deg throughout). The accumulated-angle integral
+#                         cancels a "pitch out, swing back" excursion against itself,
+#                         so it was never a faithful readout of the thing being asked
+#                         for. Switching to the instantaneous, per-step version fixed
+#                         that blind spot: -0.01 and -0.1 again measured no real change
+#                         (confirmed by replay, not just the log this time), but -1.0 cut
+#                         peak tilt 55 -> 39 -> 38 deg (two rounds, the second mostly
+#                         plateaued), and -10.0 cut it further to 18 deg with success
+#                         still 98-100% and no collapse at any weight tried -- the
+#                         opposite of ``non_target_rotation``'s history on the same
+#                         motion, because a "there and back" excursion, penalized on
+#                         where it actually is rather than on its net displacement, gives
+#                         the policy a slope to descend rather than a wall it can only
+#                         survive by not finishing the rotation.
+#
+# Continuing to fine-tune from the validated sandbox checkpoint
+# (``go2_sideflip_double_axisalign``, ``model_15189``) rather than restarting either
+# penalty's sweep from scratch -- this class is the same reward recipe that checkpoint
+# was already trained under, just given its own, non-sandbox name and lineage to
+# continue from.
+@configclass
+class SideflipDoublePhase2RewardsCfg(SideflipDoubleRewardsCfg):
+    head_contact_force = RewTerm(
+        func=mdp.contact_forces,
+        weight=-0.01,
+        params={
+            "threshold": 5.0,
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names="Head_upper"),
+        },
+    )
+    flip_forward_tilt = RewTerm(
+        func=mdp.flip_forward_axis_tilt_penalty,
+        weight=-10.0,
+        params={"command_name": "jump", "asset_cfg": SceneEntityCfg("robot")},
+    )
+
+
+@configclass
+class RobotEnvCfgSideflipDoublePhase2(RobotEnvCfgSideflipDouble):
+    rewards: SideflipDoublePhase2RewardsCfg = SideflipDoublePhase2RewardsCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        # Fine-tuning an already-converged checkpoint whose own assist_scale has long
+        # since decayed to 0 -- without this override this task would instead read
+        # whatever assist_scale ``jump_curriculum_state.json`` (shared, hardcoded, by
+        # path rather than by task id) happens to hold from some *other* run built on
+        # CommandsCfgSideflipDouble, stacking full launch assist onto a policy that
+        # already completes the motion unaided. See sandbox/sideflip_double_face_guard.py
+        # for the failure this reproduces when omitted.
+        self.commands.jump.state_file = None
+        self.commands.jump.initial_assist_scale = 0.0
+
+
+@configclass
+class RobotPlayEnvCfgSideflipDoublePhase2(RobotEnvCfgSideflipDoublePhase2):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 32
+        self.observations.policy.enable_corruption = False
+

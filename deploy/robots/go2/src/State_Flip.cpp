@@ -359,6 +359,12 @@ void State_Flip::log_telemetry_row()
     telemetry_step_ += 1;
 }
 
+float State_Flip::tilt_from_quat(const Eigen::Quaternionf & quat)
+{
+    const float grav_z = (quat.conjugate() * Eigen::Vector3f(0.0f, 0.0f, -1.0f)).z();
+    return std::acos(std::clamp(-grav_z, -1.0f, 1.0f)) * 180.0f / static_cast<float>(M_PI);
+}
+
 float State_Flip::tilt_deg() const
 {
     // The same quantity bad_orientation() thresholds -- the angle between the
@@ -367,8 +373,7 @@ float State_Flip::tilt_deg() const
     // than at the policy rate.
     const auto & quat = lowstate->msg_.imu_state().quaternion();
     const Eigen::Quaternionf root_quat(quat[0], quat[1], quat[2], quat[3]);
-    const float grav_z = (root_quat.conjugate() * Eigen::Vector3f(0.0f, 0.0f, -1.0f)).z();
-    return std::acos(std::clamp(-grav_z, -1.0f, 1.0f)) * 180.0f / static_cast<float>(M_PI);
+    return tilt_from_quat(root_quat);
 }
 
 std::string State_Flip::impact_summary() const
@@ -552,6 +557,13 @@ void State_Flip::capture_torque_sample()
 
         capture_roll_rad_ = 0.0f;
         capture_pitch_rad_ = 0.0f;
+        // Seed the gyro-only dead-reckoning from the fused estimate at the trigger, when the
+        // robot is standing still and the two agree -- so any gap that opens up afterwards is
+        // the fusion diverging from the gyro's own view of the rotation, not a seeding offset.
+        {
+            const auto & quat = lowstate->msg_.imu_state().quaternion();
+            gyro_dead_reckon_quat_ = Eigen::Quaternionf(quat[0], quat[1], quat[2], quat[3]);
+        }
         torque_capture_.clear();
         const size_t n = torque_pre_.size();
         for (size_t k = 0; k < n; ++k)
@@ -581,10 +593,25 @@ void State_Flip::capture_torque_sample()
     {
         capture_roll_rad_ += omega.x() * kFsmDt;
         capture_pitch_rad_ += omega.y() * kFsmDt;
+
+        // Body-frame angular velocity integrated as a small-rotation quaternion increment and
+        // right-multiplied on -- the standard update for a body-to-world attitude quaternion.
+        // Independent of capture_roll_rad_/capture_pitch_rad_ above: those sum a single axis
+        // and only equal "how tilted am I" if the rotation stays on that axis, whereas this
+        // integrates the full 3-axis gyro reading, so it stays a meaningful attitude estimate
+        // even through the yaw/pitch coupling a real sideflip picks up.
+        const Eigen::Vector3f omega_dt(omega.x() * kFsmDt, omega.y() * kFsmDt, omega.z() * kFsmDt);
+        const float angle = omega_dt.norm();
+        if (angle > 1e-8f)
+        {
+            const Eigen::Quaternionf dq(Eigen::AngleAxisf(angle, omega_dt / angle));
+            gyro_dead_reckon_quat_ = (gyro_dead_reckon_quat_ * dq).normalized();
+        }
     }
     s.roll_turns = capture_roll_rad_ / (2.0f * static_cast<float>(M_PI));
     s.pitch_turns = capture_pitch_rad_ / (2.0f * static_cast<float>(M_PI));
     s.tilt_deg = tilt_deg();
+    s.tilt_deg_gyro = tilt_from_quat(gyro_dead_reckon_quat_);
 
     for (int i = 0; i < 12; ++i)
     {
@@ -669,7 +696,7 @@ void State_Flip::write_torque_capture()
     }
 
     out << "t,cmd_elapsed,enabled,base_z,height_delta"
-           ",grav_x,grav_y,grav_z,wx,wy,wz,roll_turns,pitch_turns,tilt_deg";
+           ",grav_x,grav_y,grav_z,wx,wy,wz,roll_turns,pitch_turns,tilt_deg,tilt_deg_gyro";
     const char * fields[4] = {"q", "dq", "tau_cmd", "tau_app"};
     for (int f = 0; f < 4; ++f)
     {
@@ -687,7 +714,7 @@ void State_Flip::write_torque_capture()
             << "," << s.base_z << "," << (s.base_z - baseline_z);
         for (int i = 0; i < 3; ++i) out << "," << s.gravity_b[i];
         for (int i = 0; i < 3; ++i) out << "," << s.ang_vel_b[i];
-        out << "," << s.roll_turns << "," << s.pitch_turns << "," << s.tilt_deg;
+        out << "," << s.roll_turns << "," << s.pitch_turns << "," << s.tilt_deg << "," << s.tilt_deg_gyro;
         for (int i = 0; i < 12; ++i) out << "," << s.q[i];
         for (int i = 0; i < 12; ++i) out << "," << s.dq[i];
         for (int i = 0; i < 12; ++i) out << "," << s.tau_cmd[i];

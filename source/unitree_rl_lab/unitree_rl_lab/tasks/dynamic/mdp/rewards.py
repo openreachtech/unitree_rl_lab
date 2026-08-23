@@ -180,6 +180,31 @@ def landing_impact_penalty(
     return torch.square(impact / force_scale) * attempted.float()
 
 
+def flip_forward_axis_tilt_penalty(
+    env,
+    command_name: str = "jump",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize how far the body's forward axis is tilted from horizontal, right now.
+
+    ``projected_gravity_b[:, 0]`` is gravity's component along the body's own forward
+    (x) axis -- zero when that axis is level, regardless of roll phase. A sideflip that
+    completes its two turns by pitching nose-down mid-flight and swinging back level
+    only at the last moment (measured on ``Go2-Sideflip-Double``: grav_x peaks at 0.82,
+    ~55 deg, around the first half-turn, then returns near 0 right at touchdown) reads as
+    almost fine on a reward built from *accumulated* pitch rotation (``mdp/commands.py``:
+    integrating ``root_ang_vel_b[:, 1]`` over time), because the outbound and return
+    halves of that excursion largely cancel in the integral. Squaring the INSTANTANEOUS
+    value and charging it every step during flight does not have that blind spot: a
+    body away from level pays for every step it spends there, whether or not it later
+    swings back.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    command = env.command_manager.get_term(command_name)
+    attempted = command.trigger_step >= 0
+    return torch.square(asset.data.projected_gravity_b[:, 0]) * attempted.float()
+
+
 def non_target_angular_velocity_penalty(
     env,
     command_name: str | None = None,
