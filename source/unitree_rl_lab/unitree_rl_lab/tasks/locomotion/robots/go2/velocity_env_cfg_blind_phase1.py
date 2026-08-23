@@ -1,4 +1,5 @@
-import isaaclab.terrains as terrain_gen
+import isaaclab.sim as sim_utils
+from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 
 from unitree_rl_lab.tasks.locomotion import mdp
@@ -8,27 +9,19 @@ from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_blind import (
     RobotEnvCfgGo2,
 )
 
-PHASE1_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
-    size=(8.0, 8.0),
-    border_width=20.0,
-    num_cols=20,
-    num_rows=10,
-    horizontal_scale=0.1,
-    vertical_scale=0.005,
-    slope_threshold=0.75,
-    difficulty_range=(0.0, 1.0),
-    use_cache=False,
-    sub_terrains={
-        "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=1.0),
-    },
-)
-
 
 @configclass
 class RobotSceneCfgPhase1(RobotSceneCfg):
-    terrain = RobotSceneCfg().terrain.replace(
-        terrain_generator=PHASE1_TERRAIN_CFG,
-        max_init_terrain_level=0,
+    terrain = TerrainImporterCfg(
+        prim_path="/World/ground",
+        terrain_type="plane",
+        collision_group=-1,
+        physics_material=sim_utils.RigidBodyMaterialCfg(
+            friction_combine_mode="multiply",
+            restitution_combine_mode="multiply",
+            static_friction=1.0,
+            dynamic_friction=1.0,
+        ),
     )
 
 
@@ -57,6 +50,4 @@ class RobotPlayEnvCfgPhase1(RobotEnvCfgPhase1):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 32
-        self.scene.terrain.terrain_generator.num_rows = 3
-        self.scene.terrain.terrain_generator.num_cols = 5
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges

@@ -128,6 +128,52 @@ UNITREE_GO2_CFG = UnitreeArticulationCfg(
     # fmt: on
 )
 
+# Calf joints run through a higher reduction than hip/thigh; push/peak torques are scaled
+# from the GO-M8010-6 datasheet through the calf gearbox.
+CALF_PUSH_TORQUE = 39.22
+CALF_PEAK_TORQUE = 45.43
+
+GO2_CORRECTED_ACTUATOR_CFG = UNITREE_GO2_CFG.replace(
+    actuators={
+        "GO2HV": unitree_actuators.UnitreeActuatorCfg_Go2HV(
+            joint_names_expr=[".*"],
+            stiffness=25.0,
+            damping=0.5,
+            # Match MuJoCo go2.xml joint friction (frictionloss=0.2, damping=0.1).
+            # UnitreeActuator applies Fs*tanh(vel/Va) + Fd*vel; keep PhysX friction=0
+            # so dry friction is not double-counted.
+            friction=0.0,
+            Fs=0.2,
+            Fd=0.1,
+            Y1={
+                ".*_hip_joint": 20.2,
+                ".*_thigh_joint": 20.2,
+                ".*_calf_joint": CALF_PUSH_TORQUE,
+            },
+            Y2={
+                ".*_hip_joint": 23.4,
+                ".*_thigh_joint": 23.4,
+                ".*_calf_joint": CALF_PEAK_TORQUE,
+            },
+            X1={
+                ".*_hip_joint": 13.5,
+                ".*_thigh_joint": 13.5,
+                ".*_calf_joint": 13.5,
+            },
+            X2={
+                ".*_hip_joint": 30.0,
+                ".*_thigh_joint": 30.0,
+                ".*_calf_joint": 30.0,
+            },
+            armature={
+                ".*_hip_joint": 0.01,
+                ".*_thigh_joint": 0.01,
+                ".*_calf_joint": 0.01,
+            },
+        ),
+    },
+)
+
 UNITREE_GO2W_CFG = UnitreeArticulationCfg(
     # spawn=UnitreeUrdfFileCfg(
     #     asset_path=f"{UNITREE_ROS_DIR}/robots/go2w_description/urdf/go2w_description.urdf",
