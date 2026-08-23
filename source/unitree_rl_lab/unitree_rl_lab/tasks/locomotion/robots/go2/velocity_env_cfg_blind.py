@@ -29,9 +29,6 @@ from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import (
     RobotEnvCfg,
 )
 
-POLICY_HISTORY_LENGTH = 3
-CRITIC_HISTORY_LENGTH = 3
-
 CRITIC_HEIGHT_SCAN_CFG = ObsTerm(
     func=mdp.height_scan,
     params={"sensor_cfg": SceneEntityCfg("height_scanner")},
@@ -40,32 +37,16 @@ CRITIC_HEIGHT_SCAN_CFG = ObsTerm(
 
 
 @configclass
-class PolicyCfgGo2(ObservationsCfg.PolicyCfg):
-    """Go2 policy: per-term observation history for temporal context."""
-
-    joint_pos_rel = ObservationsCfg.PolicyCfg().joint_pos_rel.replace(history_length=POLICY_HISTORY_LENGTH)
-    joint_vel_rel = ObservationsCfg.PolicyCfg().joint_vel_rel.replace(history_length=POLICY_HISTORY_LENGTH)
-    last_action = ObservationsCfg.PolicyCfg().last_action.replace(history_length=POLICY_HISTORY_LENGTH)
-
-    def __post_init__(self):
-        super().__post_init__()
-
-
-@configclass
 class CriticCfgGo2(ObservationsCfg.CriticCfg):
-    """Go2 critic: privileged ``height_scan`` plus per-term observation history."""
+    """Go2 critic: privileged ``height_scan``. Temporal context is the GRU hidden state."""
 
     height_scan = CRITIC_HEIGHT_SCAN_CFG
-    joint_pos_rel = ObservationsCfg.CriticCfg().joint_pos_rel.replace(history_length=CRITIC_HISTORY_LENGTH)
-    joint_vel_rel = ObservationsCfg.CriticCfg().joint_vel_rel.replace(history_length=CRITIC_HISTORY_LENGTH)
-    last_action = ObservationsCfg.CriticCfg().last_action.replace(history_length=CRITIC_HISTORY_LENGTH)
 
 
 @configclass
 class ObservationsCfgGo2(ObservationsCfg):
-    """Go2 observations: policy history; extended critic for privileged training."""
+    """Go2 observations: proprioception-only policy; privileged critic with height scan."""
 
-    policy: PolicyCfgGo2 = PolicyCfgGo2()
     critic: CriticCfgGo2 = CriticCfgGo2()
 
 
