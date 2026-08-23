@@ -50,40 +50,46 @@ def _height_scan_indices(
     return keep_indices, excluded_indices
 
 
-def _visualize_excluded_height_scan_points(
+def _visualize_height_scan_points(
     sensor,
-    excluded_indices: torch.Tensor,
+    indices: torch.Tensor,
     env_index: int | None,
+    visualizer_attr: str,
+    prim_path: str,
+    color: tuple[float, float, float],
+    radius: float = 0.018,
 ) -> None:
-    """Overlay excluded ray-hit points with magenta spheres in Isaac Sim.
+    """Overlay a subset of the grid's ray-hit points with spheres in Isaac Sim.
 
     ``env_index=None`` draws every environment (only cheap enough for play-sized
     envs; training leaves this at a single index to avoid the marker overhead).
+    The visualizer is cached on the sensor under ``visualizer_attr`` so several
+    subsets (kept cells, excluded cells) can be drawn in different colors at once.
     """
     import isaaclab.sim as sim_utils
     from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 
-    if not hasattr(sensor, "_excluded_body_visualizer"):
+    if not hasattr(sensor, visualizer_attr):
         marker_cfg = VisualizationMarkersCfg(
-            prim_path="/Visuals/Go2HeightScan/ExcludedBody",
+            prim_path=prim_path,
             markers={
-                "excluded_body": sim_utils.SphereCfg(
-                    radius=0.018,
-                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 1.0)),
+                "points": sim_utils.SphereCfg(
+                    radius=radius,
+                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=color),
                 )
             },
         )
-        sensor._excluded_body_visualizer = VisualizationMarkers(marker_cfg)
+        setattr(sensor, visualizer_attr, VisualizationMarkers(marker_cfg))
 
     if env_index is None:
-        positions = sensor.data.ray_hits_w.index_select(1, excluded_indices).reshape(-1, 3)
+        positions = sensor.data.ray_hits_w.index_select(1, indices).reshape(-1, 3)
     else:
         env_index = min(max(env_index, 0), sensor.data.ray_hits_w.shape[0] - 1)
-        positions = sensor.data.ray_hits_w[env_index].index_select(0, excluded_indices)
+        positions = sensor.data.ray_hits_w[env_index].index_select(0, indices)
     positions = positions[torch.isfinite(positions).all(dim=-1)]
     if positions.shape[0] == 0:
         return
-    sensor._excluded_body_visualizer.visualize(translations=positions)
+    getattr(sensor, visualizer_attr).visualize(translations=positions)
 
 
 def height_scan_excluding_body(
@@ -96,6 +102,7 @@ def height_scan_excluding_body(
     exclude_half_extent_x: float = 0.25,
     exclude_half_extent_y: float = 0.15,
     debug_vis_excluded_body: bool = False,
+    debug_vis_scan: bool = False,
     debug_vis_env_index: int | None = 0,
 ) -> torch.Tensor:
     """Height scan with cells under the robot body removed from the observation.
@@ -119,8 +126,26 @@ def height_scan_excluding_body(
         heights.device,
     )
     # Not gated on sensor.cfg.debug_vis: that flag only controls the raw RayCaster's own
-    # marker drawing, which we may want off (see RobotPlayEnvCfgPhase1/2) so this exclusion
-    # overlay is visible on its own instead of buried among the full raw grid's markers.
+    # marker drawing, which we may want off (see RobotPlayEnvCfgPhase1/2) so these
+    # overlays are visible on their own instead of buried among the full raw grid's markers.
     if debug_vis_excluded_body:
-        _visualize_excluded_height_scan_points(sensor, excluded_indices, debug_vis_env_index)
+        _visualize_height_scan_points(
+            sensor,
+            excluded_indices,
+            debug_vis_env_index,
+            visualizer_attr="_excluded_body_visualizer",
+            prim_path="/Visuals/Go2HeightScan/ExcludedBody",
+            color=(1.0, 0.0, 1.0),  # magenta
+        )
+    # The cells the policy actually receives, at the terrain points they were read
+    # from -- red so they read against the magenta exclusion overlay.
+    if debug_vis_scan:
+        _visualize_height_scan_points(
+            sensor,
+            keep_indices,
+            debug_vis_env_index,
+            visualizer_attr="_scan_visualizer",
+            prim_path="/Visuals/Go2HeightScan/Scan",
+            color=(1.0, 0.0, 0.0),  # red
+        )
     return heights.index_select(1, keep_indices)
