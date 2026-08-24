@@ -347,3 +347,106 @@ own registered task `Go2W-v2-Teacher-Phase5-Try1`/`Go2W-v2-Student-Phase5-Try1` 
 become redundant with the default `Go2W-v2-Teacher-Phase5` once the fold made their env
 configs identical) was deleted in the same pass, along with its two now-pointless
 registrations.
+
+---
+
+## 2026-08-19..24: curriculum rework (Try20-22) and a goal-reward rework grounded in the
+## ANYmal Parkour paper (Try23-25) -- Try24 folded in, Try25 still under evaluation
+
+A close re-read of `doc/papers/ANYmal_Parkour_Learning_Agile_Navigation_for_Quadrupedal_
+Robots.md` (Hoeller/Rudin et al. 2023 -- the actual source of the `goal_*` reward
+functions, previously cited but the file itself was missing from this repo until added
+mid-investigation) found that this project's port only used half the paper's relevant
+tables. The paper is a two-level hierarchy: a 50 Hz Locomotion module tracks a *local*
+target (r*/psi*/t*) reissued every ~0.2 s by a 5 Hz Navigation module, trained with
+Table S2; the Navigation module itself is trained against the *global* target (r_G*/
+t_G*) with Table S3, whose "Position tracking" term only fires once, on the actual last
+step of the episode ("this sparse formulation allows the policy to explore the terrain
+to find safer paths and take its time where needed"). This codebase has no such
+hierarchy -- one flat policy, one `goal_pos_w` per episode -- and had ported only Table
+S2's `goal_position_tracking_reward`/`goal_heading_tracking_reward` (gated to a single
+7-8 s window via `arrival_deadline_s=8.0`/`activation_window=1.0`), applying them
+directly to the single global goal they were never designed for. Concretely: a wall
+crossing taking longer than 8 s got zero credit from either term for the rest of the
+episode, including while correctly holding position at the goal afterward, while
+`goal_dont_wait_penalty` actively penalised the climb's necessarily-slow motion along
+the way -- net effect, "climbed slowly but successfully" could score *worse* than
+"never tried."
+
+**Curriculum side (Try20-22, GRU line)**: replaced `custom_terrain_levels_climb` (a
+one-way ratchet that promotes on any single episode's success, essentially never
+demotes) with `mdp.traversability_terrain_levels_climb` (an EMA of per-env episode
+success, column-aware -- wall envs succeed on goal arrival, rough envs on the existing
+displacement threshold -- promoting/demoting only once the EMA crosses a threshold),
+and `lin_vel_cmd_levels` with `mdp.lin_vel_cmd_levels_column_aware` (excludes "wall"
+envs from the average used to decide whether to widen a velocity range they never
+actually draw from). Try20 (all three changes, including episode_length_s 20→10 s)
+saw terrain_levels crash from its random initial draw (~3.5) down toward ~1.2-1.5 and
+stay there; a further 5000-iteration continuation *regressed outright* (bad_orientation
+10%→54%, time_out 90%→44%). Try21 isolated out the episode-length change (reverted to
+20 s) and got a similarly-shaped but healthier result (terrain_levels ~1.4, bad_orientation
+2.4%, time_out 97.4%). Try22 isolated the EMA change alone (lin_vel_cmd_levels also
+reverted to the default) and reproduced the same decline-to-~1.0 pattern, confirming the
+EMA curriculum itself (not the other two changes) drives this: the *interpretation*
+settled on is that the old ratchet's numbers (e.g. Try18/19's ~3.2, this campaign's
+historical "0.40 m/0.44 m" milestones) were likely inflated by its "promote on any
+lucky success, rarely demote" design, and the EMA's lower, stabler numbers are a more
+honest read of sustained ability -- not confirmed by Play/MuJoCo, still an
+interpretation. None of Try20/21/22 folded into the default; the curriculum question is
+open, revisit this record before re-attempting.
+
+**Reward side (Try23-25, GRU line)**: Try23 both removed
+`goal_position_tracking`/`goal_heading_tracking` (Table S2, misapplied here) and added
+`goal_arrival_reward` (Table S3's terminal term, new function in mdp/rewards.py) in one
+Try -- terrain_levels fell even further (4.49→0.68 over 2300 iterations) than any
+curriculum-only variant, *using the default's own historically-lenient ratchet, not
+even Try20/21/22's EMA* -- confirming the regression came from removing the dense
+(if narrowly-windowed) Table S2 shaping, not from adding the sparse Table S3 term.
+Try24 isolated the addition alone (goal_position_tracking/goal_heading_tracking left
+untouched, goal_arrival added on top) -- terrain_levels behaved like the default (peak
+~5.3, base_contact ~74%, essentially the same profile as measuring the literal default
+Phase5 itself over the same budget: peak 4.56, base_contact 72.2%, confirmed by actually
+training the unmodified default for direct comparison), i.e. adding the term doesn't
+hurt and gives genuine credit for slow-but-successful crossings once they start
+happening. **Try24 folded into the default `RewardsCfgPhase5` 2026-08-24** (see that
+class's own docstring) and its sandbox file deleted. Try25 went further -- replacing
+`goal_position_tracking` itself with a new function, `mdp.goal_progress_reward`
+(potential-based: previous-step distance minus current distance, telescopes over an
+episode to net distance closed, immune to "leave and come back" double-dipping by
+construction, unlike a raw per-step distance value) -- and measured a large
+survivability shift (base_contact 74%→1.4%, time_out 26%→98.3%) at the cost of a lower
+terrain_levels (1.78 vs the default's likely-inflated ~4+), read as "less reckless, more
+honest" rather than "worse," consistent with the curriculum-side EMA finding above.
+`goal_progress`'s own weight (5.0) may be too low to provide strong shaping yet (its
+logged contribution stayed order 1e-3, far smaller than `goal_move_in_direction`'s
+~0.1-0.4). **2026-08-24: abandoned per direct instruction** -- `goal_progress_reward`
+deleted from mdp/rewards.py and Try25's sandbox file/registration removed, despite the
+measured survivability improvement above. Revisit from this record (the telescoping
+potential-based formulation, and the "weight was likely too low" open question) if a
+continuous distance-based shaping term is worth trying again.
+
+**2026-08-24: `lin_vel_cmd_levels_column_aware` folded directly into the default**
+`CurriculumCfgPhase5` (not via a sandbox try -- judged low-risk, since it only changes
+which envs count toward the "rough" velocity-range curriculum's own decision, unrelated
+to terrain_levels), then verified live with a 500-iteration continuation of the
+*actual* default `Go2W-v1-Phase5` task (now genuinely trained end-to-end on this
+codebase, checkpoint present on disk as of this entry) -- no regression observed
+(terrain_levels 5.26, base_contact 25.8%, time_out 69.8%, bad_orientation 4.3%, all
+healthy).
+
+**2026-08-24: `traversability_terrain_levels_climb` abandoned per direct instruction.**
+Deleted from mdp/curriculums.py along with all four tries that used it: Try20, Try21,
+Try22 (GRU line), and Go2W-v2-Teacher-Phase5-Try2 (privileged Teacher line, the
+10000-iteration run). Rationale: across all three GRU variants the EMA curriculum
+consistently produced *lower* terrain_levels (1.0-1.8) than the default's own ratchet
+(peak ~4.5-5.3), and while the working theory was that the default's higher numbers
+were "inflated" by its rarely-demoting design, that was never independently confirmed
+(no Play/MuJoCo check), and the EMA's own hyperparameters (`alpha=0.2`,
+`promote_threshold=0.7`, `demote_threshold=0.2`) were never tuned beyond their initial
+guess. The Teacher-line run (Try2, 10000 iterations) additionally found no sign of the
+privileged-information climbing advantage Lee et al. 2020's own ablation would predict
+-- terrain_levels stalled at ~1.45, similar to the much-cheaper GRU variants. The
+`custom_terrain_levels_climb` one-way ratchet (this campaign's long-standing default)
+remains the terrain_levels curriculum going forward. Revisit this record (particularly
+the EMA hyperparameters and the never-checked "inflated vs. honest" question) if
+terrain_levels curriculum design is worth returning to.

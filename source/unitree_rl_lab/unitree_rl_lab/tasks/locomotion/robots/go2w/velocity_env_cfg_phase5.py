@@ -238,15 +238,34 @@ class RewardsCfgPhase5(RewardsCfgPhase3):
     Table S2 goal-tracking terms, replacing this phase's earlier climb_progress/
     motion_without_cmd-style reward set entirely (Lesson 5 above) -- see each function's
     own docstring in mdp/rewards.py for the paper mapping and the departures from a
-    literal port. All four are gated off on "rough" columns (no goal exists there) and,
-    except goal_move_in_direction, off once arrived (so they don't fight "stop and
-    hold").
+    literal port. goal_move_in_direction/goal_position_tracking/goal_heading_tracking
+    are gated off on "rough" columns (no goal exists there); goal_position_tracking/
+    goal_heading_tracking are additionally off once arrived (so they don't fight "stop
+    and hold").
 
     undesired_contacts relaxed -1 -> -0.3 and flat_orientation_l2 softened -1.0 -> -0.5,
     both predating this redesign and kept unchanged: climbing something near standing
     height needs room to touch the obstacle on the way, and a tall wall requires the base
     to pitch, which flat_orientation_l2 otherwise penalises continuously even on a
     successful attempt.
+
+    goal_arrival added 2026-08-24 (folded from Go2W-v1-Phase5-Try24), on top of the four
+    terms above, none of which removed -- see mdp/rewards.py's own "Table S2 vs Table S3"
+    module docstring for the full reasoning. goal_position_tracking/goal_heading_tracking
+    only ever fire in a single 1 s window (arrival_deadline_s=8.0,
+    activation_window=1.0) applied to this task's single, episode-long global goal --
+    a mismatch with the paper's own intent for those terms (a *local* target reissued
+    every ~0.2 s by a separate navigation module), which meant a wall crossing taking
+    longer than 8 s got zero credit from either term for the rest of the episode,
+    including while correctly holding position at the goal afterward. goal_arrival is
+    the paper's own fix for exactly this (Table S3's "Position tracking (Navigation)"):
+    it only checks the actual episode-end outcome, once, so a slow-but-successful
+    crossing is no longer scored the same as never trying. A sibling sandbox Try
+    (Try25) additionally replaced goal_position_tracking itself with a continuous
+    potential-based term (a since-deleted ``goal_progress_reward`` -- abandoned per
+    direct instruction despite a measured survivability improvement, base_contact
+    termination 74% -> 1.4%; see sandbox/SUMMARY.md for the full record) -- not
+    folded in here.
     """
 
     undesired_contacts = RewardsCfgPhase3().undesired_contacts.replace(weight=-0.3)
@@ -271,6 +290,11 @@ class RewardsCfgPhase5(RewardsCfgPhase3):
         func=mdp.goal_dont_wait_penalty,
         weight=-1.0,
         params={"command_name": "base_velocity", "speed_threshold": 0.2},
+    )
+    goal_arrival = RewTerm(
+        func=mdp.goal_arrival_reward,
+        weight=0.15,
+        params={"command_name": "base_velocity"},
     )
 
 
@@ -336,9 +360,20 @@ class CurriculumCfgPhase5(CurriculumCfg):
     persistent non-zero termination rate is the normal steady state, not necessarily a bug.
     Also worth remembering (Lesson 6 above): terrain_levels measures Isaac Lab training
     progress only -- it is not a substitute for checking the policy in MuJoCo.
+
+    lin_vel_cmd_levels replaced 2026-08-24 with mdp.lin_vel_cmd_levels_column_aware
+    (folded directly in, not via a sandbox Try -- judged low-risk since it only touches
+    "rough"-column envs' own velocity-range curriculum). MixedGoalVelocityCommand's
+    "wall" envs never draw from the ``cfg.ranges`` object this term widens (their
+    command is synthesized from ``max_lin_vel``/``max_ang_vel`` instead), so folding a
+    wall env's track_lin_vel_xy reward into the average that decides whether to widen
+    ``cfg.ranges`` was pure noise on a decision that only actually concerns "rough"
+    envs -- see that function's own docstring in mdp/curriculums.py. Unrelated to
+    terrain_levels (a separate curriculum term entirely).
     """
 
     terrain_levels = CurrTerm(func=mdp.custom_terrain_levels_climb)
+    lin_vel_cmd_levels = CurrTerm(func=mdp.lin_vel_cmd_levels_column_aware)
 
 
 @configclass

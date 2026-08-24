@@ -64,6 +64,44 @@ def ang_vel_cmd_levels(
     return torch.tensor(ranges.ang_vel_z[1], device=env.device)
 
 
+def lin_vel_cmd_levels_column_aware(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    command_name: str = "base_velocity",
+    reward_term_name: str = "track_lin_vel_xy",
+) -> torch.Tensor:
+    """Same as :func:`lin_vel_cmd_levels`, but restricted to the command term's
+    "rough"-column envs when it has one (e.g. ``MixedGoalVelocityCommand``).
+
+    A column-splitting command like ``MixedGoalVelocityCommand`` only draws
+    lin_vel_x/lin_vel_y for its "rough" envs from ``cfg.ranges`` -- every other
+    ("wall") env's command is synthesized from ``max_lin_vel``/``max_ang_vel``
+    instead (see that class's ``_resample_command``/``_update_command``) and never
+    touches ``cfg.ranges`` at all. ``lin_vel_cmd_levels`` doesn't know this: it
+    averages ``track_lin_vel_xy`` over whatever ``env_ids`` it's given and widens
+    ``cfg.ranges`` for everyone if that average clears the threshold -- and since
+    every column here shares one episode length, a wall env resetting in the same
+    step as a rough env is the common case, not an edge case. A wall env's reward
+    has nothing to do with whether ``cfg.ranges`` (which it never reads) should
+    widen, so folding it into the average is pure noise on the decision that
+    actually matters (rough envs' own readiness). Filtering to ``rough_env_mask``
+    first removes that noise; command terms without the attribute fall back to
+    the stock, unfiltered behaviour.
+    """
+    command_term = env.command_manager.get_term(command_name)
+    rough_env_mask = getattr(command_term, "rough_env_mask", None)
+    if rough_env_mask is not None:
+        env_ids_t = torch.as_tensor(env_ids, device=env.device, dtype=torch.long)
+        env_ids = env_ids_t[rough_env_mask[env_ids_t]]
+        if len(env_ids) == 0:
+            # Nothing to learn from this batch (all resetting envs are "wall" this
+            # step) -- return the current ceiling unchanged rather than average an
+            # empty tensor (silently NaN in torch, not an exception, but worth
+            # avoiding rather than relying on the caller never noticing).
+            return torch.tensor(command_term.cfg.ranges.lin_vel_x[1], device=env.device)
+    return lin_vel_cmd_levels(env, env_ids, reward_term_name)
+
+
 def custom_terrain_levels_climb(
     env: ManagerBasedRLEnv,
     env_ids: Sequence[int] | slice,

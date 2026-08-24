@@ -700,19 +700,36 @@ def joint_mirror(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, mirror_joint
 """
 Goal-directed rewards (mdp.commands.MixedGoalVelocityCommand).
 
-Direct ports of ANYmal Parkour's Table S2 terms (Hoeller/Rudin et al. 2023,
+Direct ports of ANYmal Parkour's Table S2/S3 terms (Hoeller/Rudin et al. 2023,
 doc/papers/ANYmal_Parkour_Learning_Agile_Navigation_for_Quadrupedal_Robots.md), promoted
 here from the Go2W-v2-Teacher-Phase5-Try1 sandbox module once Go2W-v1-Phase5-Try15 (the
 same design, ported to the v1/GRU line) was folded into this project's permanent
 Go2W-v1-Phase5 -- see velocity_env_cfg_phase5.py's module docstring for that fold's
-reasoning and MuJoCo validation. All four read the goal straight off the command term's
+reasoning and MuJoCo validation. All read the goal straight off the command term's
 ``goal_pos_w`` (a MixedGoalVelocityCommand attribute) rather than treating
 ``command_manager.get_command(...)`` (the synthesized steering velocity) as the target,
-since the paper's r*/psi* are positions/headings, not velocities. All four are explicitly
+since the paper's r*/psi*/r_G* are positions/headings, not velocities. All are explicitly
 zeroed on "rough" (``command_term.rough_env_mask``) envs when that attribute is present
 (MixedGoalVelocityCommand splits by column; ``goal_pos_w`` is only ever written for
 wall-column envs, staying at its zero-initialised value -- the world origin, not a real
 target -- for "rough" envs otherwise).
+
+Table S2 vs Table S3 (2026-08-24 finding, sandbox discussion): the paper's system is a
+two-level hierarchy -- a 50 Hz Locomotion module tracks a *local* target (r*/psi*/t*)
+that a separate 5 Hz Navigation module reissues every ~0.2 s, and a *different* reward
+table (Table S3) is used to train the Navigation module against the actual *global*
+target r_G*/t_G* ("This sparse formulation allows the policy to explore the terrain to
+find safer paths and take its time where needed" -- ANYmal Parkour section on the
+Navigation module). This codebase has no such hierarchy -- one flat policy, one
+``goal_pos_w`` per episode -- and originally ported only Table S2's local-target
+terms (``goal_position_tracking_reward``/``goal_heading_tracking_reward``, both firing
+in a single 1 s window at a fixed ``arrival_deadline_s``) applied directly to that
+single global goal. That mismatch meant an episode that legitimately took longer than
+the deadline to physically cross a wall got zero credit from either term for the rest
+of the episode, including while correctly holding position at the goal afterward --
+Table S3's own "Position tracking (Navigation)" term (``goal_arrival_reward`` below) is
+the piece that was missing, and fills exactly that gap by only ever checking the
+*actual* episode-end outcome, not an early snapshot.
 """
 
 
@@ -842,3 +859,50 @@ def goal_dont_wait_penalty(
     speed = torch.norm(asset.data.root_lin_vel_b[:, :2], dim=-1)
     too_slow = (speed < speed_threshold).float()
     return torch.where(arrived, torch.zeros_like(too_slow), too_slow)
+
+
+def goal_arrival_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str = "base_velocity",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    bonus: float = 40.0,
+) -> torch.Tensor:
+    """Table S3 "Position tracking" (Navigation): 1[t_G*=0] * (40*S_N - ||r - r_G*||),
+    weight 0.15. See this module's own docstring for the Table S2 vs Table S3
+    distinction this term exists to fill.
+
+    Fires exactly once per episode -- on the last step, not the fixed early
+    ``arrival_deadline_s`` window ``goal_position_tracking_reward``/
+    ``goal_heading_tracking_reward`` use -- so a slow-but-successful crossing scores
+    identically to a fast one: only whether ``goal_pos_w`` was actually reached by
+    episode end matters, matching the paper's own stated rationale for this term
+    ("allows the policy to explore the terrain to find safer paths and take its time
+    where needed").
+
+    ``t_G*=0`` (the paper's global-target deadline) has no direct analog in this
+    codebase's flat (non-hierarchical) setup -- the natural equivalent is simply the
+    env's own episode running out, so this checks ``episode_length_buf`` against
+    ``max_episode_length`` directly. That check is naturally 0 for envs that terminate
+    early via a *failure* (bad_orientation, base_contact, ...) rather than reaching the
+    end of the episode -- those are already penalised by their own termination and this
+    term isn't meant to double up on that; it only ever fires for the "ran the full
+    episode" case, exactly mirroring ``t_G*=0`` meaning the deadline (not a fall)
+    ended the episode.
+
+    ``S_N`` (paper: ``||r - r_G*|| < 0.4``) reuses ``arrival_radius`` (0.5 in this
+    project's configs) instead of hardcoding the paper's 0.4, for consistency with
+    ``goal_dont_wait_penalty``'s/the command term's own "arrived" definition rather than
+    introducing a second, slightly different threshold.
+    """
+    command_term = env.command_manager.get_term(command_name)
+    asset = env.scene[asset_cfg.name]
+    distance = torch.norm(command_term.goal_pos_w - asset.data.root_pos_w[:, :2], dim=-1)
+    arrived = distance < command_term.cfg.arrival_radius
+    is_last_step = env.episode_length_buf >= (env.max_episode_length - 1)
+    rough_env_mask = _rough_env_mask(command_term)
+    if rough_env_mask is not None:
+        is_last_step = is_last_step & ~rough_env_mask
+    reward = bonus * arrived.float() - distance
+    return torch.where(is_last_step, reward, torch.zeros_like(reward))
+
+
