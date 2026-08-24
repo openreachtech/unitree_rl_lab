@@ -49,6 +49,13 @@ def parse_args() -> argparse.Namespace:
         help="Iteration interval for aggregate_tensorboard_logs.py (default: 100).",
     )
     parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from the latest checkpoint in this task's own log root. --previous-task implies "
+        "this; pass it on its own to continue a run whose starting checkpoint is already filed under "
+        "--task, as widen_checkpoint.py leaves it.",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=None,
@@ -98,6 +105,8 @@ def main() -> None:
     ]
     if args.previous_task:
         train_cmd.extend(["--resume", "--previous-task", args.previous_task])
+    elif args.resume:
+        train_cmd.append("--resume")
     if args.load_run:
         train_cmd.extend(["--load_run", args.load_run])
     if args.checkpoint:
