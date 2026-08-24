@@ -4,8 +4,8 @@ Script to print all the available environments in Isaac Lab.
 The script iterates over all registered environments and stores the details in a table.
 It prints the name of the environment, the entry point and the config file.
 
-All the environments are registered in the `unitree_rl_lab` extension. They start
-with `Unitree` in their name.
+All the environments are registered in the `unitree_rl_lab` extension, which is
+detected from their agent config entry point.
 """
 
 """Launch Isaac Sim Simulator first."""
@@ -58,7 +58,7 @@ def _walk_packages(
 
 def import_packages():
     sys.path.insert(0, f"{pathlib.Path(__file__).parent.parent}/source/unitree_rl_lab/unitree_rl_lab/tasks/")
-    for package in ["locomotion.robots", "mimic.robots"]:
+    for package in ["locomotion.robots", "mimic.robots", "dynamic.robots"]:
         package = importlib.import_module(package)
         for _ in _walk_packages(package.__path__, package.__name__ + "."):
             pass
@@ -87,7 +87,8 @@ def main():
     index = 0
     # acquire all Isaac environments names
     for task_spec in gym.registry.values():
-        if "Unitree" in task_spec.id and "Isaac" not in task_spec.id:
+        agent_cfg_entry_point = (task_spec.kwargs or {}).get("rsl_rl_cfg_entry_point")
+        if isinstance(agent_cfg_entry_point, str) and agent_cfg_entry_point.startswith("unitree_rl_lab."):
             # add details to table
             table.add_row([index + 1, task_spec.id, task_spec.entry_point, task_spec.kwargs["env_cfg_entry_point"]])
             # increment count

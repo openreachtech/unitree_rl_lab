@@ -1,0 +1,208 @@
+from __future__ import annotations
+
+import math
+
+import torch
+from isaaclab.assets import Articulation
+from isaaclab.managers import SceneEntityCfg
+from isaaclab.sensors import ContactSensor
+
+
+def upright_reward(
+    env,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    std: float = 0.25,
+) -> torch.Tensor:
+    asset: Articulation = env.scene[asset_cfg.name]
+    tilt = torch.sum(torch.square(asset.data.projected_gravity_b[:, :2]), dim=1)
+    return torch.exp(-tilt / std**2)
+
+
+def standing_pose_reward(
+    env,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    std: float = 0.5,
+) -> torch.Tensor:
+    asset: Articulation = env.scene[asset_cfg.name]
+    error = torch.sum(torch.square(asset.data.joint_pos - asset.data.default_joint_pos), dim=1)
+    return torch.exp(-error / std**2)
+
+
+def stillness_reward(
+    env,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    linear_std: float = 0.25,
+    angular_std: float = 0.5,
+) -> torch.Tensor:
+    asset: Articulation = env.scene[asset_cfg.name]
+    linear_error = torch.sum(torch.square(asset.data.root_lin_vel_b), dim=1)
+    angular_error = torch.sum(torch.square(asset.data.root_ang_vel_b), dim=1)
+    return torch.exp(-linear_error / linear_std**2 - angular_error / angular_std**2)
+
+
+def pre_jump_standing_reward(
+    env,
+    command_name: str = "jump",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    command = env.command_manager.get_term(command_name)
+    return upright_reward(env, asset_cfg) * stillness_reward(env, asset_cfg) * (~command.enabled).float()
+
+
+def pre_jump_standing_reward_windup(
+    env,
+    command_name: str = "jump",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Like ``pre_jump_standing_reward``, but also active during the windup delay
+    (after trigger, before ``assist_delay_s`` elapses and assist force lands).
+
+    ``pre_jump_standing_reward``'s gate (``~enabled``) turns off the instant the
+    command fires -- with ``assist_delay_s > 0`` that leaves a gap where the
+    robot gets zero standing-quality reward and zero motion-progress reward
+    (nothing has started rotating yet), with no signal telling it to simply
+    hold still until the assist force lands. Falls back to identical behavior
+    when ``assist_delay_s == 0`` (the default), since the extra window is then
+    zero-width.
+    """
+    command = env.command_manager.get_term(command_name)
+    still_waiting_for_assist = command.elapsed_since_trigger < command.cfg.assist_delay_s
+    gate = (~command.enabled) | still_waiting_for_assist
+    return upright_reward(env, asset_cfg) * stillness_reward(env, asset_cfg) * gate.float()
+
+
+def pre_jump_pose_reward(
+    env,
+    command_name: str = "jump",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    std: float = 0.5,
+) -> torch.Tensor:
+    """Cost for holding a non-default joint pose whenever the jump command is idle.
+
+    Without this, an anticipatory crouch is free to hold indefinitely before the
+    command fires (and after landing), since ``pre_jump_standing_reward`` only checks
+    upright/stillness, not joint angles. Gated the same way so it only applies while
+    the command is not enabled.
+    """
+    command = env.command_manager.get_term(command_name)
+    return standing_pose_reward(env, asset_cfg, std) * (~command.enabled).float()
+
+
+def jump_progress_reward(
+    env,
+    command_name: str = "jump",
+    scale: float = 0.01,
+) -> torch.Tensor:
+    """EFGCL task progress based on maximum height reached."""
+    command = env.command_manager.get_term(command_name)
+    error = command.max_height - command.target_height
+    attempted = command.trigger_step >= 0
+    return torch.exp(-torch.square(error) / scale) * attempted.float()
+
+
+def motion_progress_reward(
+    env,
+    command_name: str = "jump",
+    height_scale: float = 0.01,
+    rotation_scale: float = math.pi**2,
+) -> torch.Tensor:
+    """Shared EFGCL progress reward for jump, backflip, and sideflip."""
+    command = env.command_manager.get_term(command_name)
+    jump_error = command.max_height - command.target_height
+    pitch_error = command.accumulated_pitch - command.target_pitch_turns * (2.0 * math.pi)
+    roll_error = command.accumulated_roll - command.target_roll_turns * (2.0 * math.pi)
+
+    progress = torch.zeros(env.num_envs, device=env.device)
+    progress = torch.where(
+        command.motion_code == command.MOTION_JUMP,
+        torch.exp(-torch.square(jump_error) / height_scale),
+        progress,
+    )
+    progress = torch.where(
+        command.motion_code == command.MOTION_BACKFLIP,
+        torch.exp(-torch.square(pitch_error) / rotation_scale),
+        progress,
+    )
+    progress = torch.where(
+        command.motion_code == command.MOTION_SIDEFLIP,
+        torch.exp(-torch.square(roll_error) / rotation_scale),
+        progress,
+    )
+    return progress * (command.trigger_step >= 0).float()
+
+
+def motion_progress_standing_reward(
+    env,
+    command_name: str = "jump",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    height_scale: float = 0.01,
+    joint_scale: float = 0.25,
+) -> torch.Tensor:
+    """Motion progress multiplied by stable standing after landing."""
+    command = env.command_manager.get_term(command_name)
+    asset: Articulation = env.scene[asset_cfg.name]
+    task_progress = motion_progress_reward(env, command_name)
+    height_term = torch.exp(-torch.square(command.height_delta) / height_scale)
+    joint_error = torch.sum(torch.square(asset.data.joint_pos - asset.data.default_joint_pos), dim=1)
+    pose_term = torch.exp(-joint_error / joint_scale)
+    return task_progress * (height_term + pose_term)
+
+
+def landing_impact_penalty(
+    env,
+    command_name: str = "jump",
+    sensor_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=".*_foot"),
+    landing_window: float = 0.05,
+    force_scale: float = 100.0,
+) -> torch.Tensor:
+    """Penalize hard-touchdown foot contact forces right after a commanded jump/flip.
+
+    ``motion_progress_standing_reward`` only rewards the pose/height *after* landing,
+    with nothing discouraging a landing that gets there via a hard slam -- a policy
+    that looks fine in rigid-body sim can still produce a real-world touchdown force
+    well past what the robot's onboard safety cutoff tolerates. Gated to freshly
+    touched-down feet (``current_contact_time`` within ``landing_window`` of zero) so
+    it doesn't penalize normal standing/idle contact or the push-off itself, which is
+    one continuous contact from before ``trigger_step`` and never resets to zero.
+    """
+    command = env.command_manager.get_term(command_name)
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+
+    current_contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
+    just_landed = (current_contact_time > 0.0) & (current_contact_time <= landing_window)
+
+    forces = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :]
+    peak_force = torch.norm(forces, dim=-1).amax(dim=1)  # (N, num_feet) peak over the force history
+
+    impact = torch.where(just_landed, peak_force, torch.zeros_like(peak_force)).amax(dim=1)
+
+    attempted = command.trigger_step >= 0
+    return torch.square(impact / force_scale) * attempted.float()
+
+
+def non_target_angular_velocity_penalty(
+    env,
+    command_name: str | None = None,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Suppress rotation outside the axis targeted by the commanded motion."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    angular_velocity = asset.data.root_ang_vel_b
+    all_axes = torch.sum(torch.square(angular_velocity), dim=1)
+    if command_name is None:
+        return all_axes
+
+    command = env.command_manager.get_term(command_name)
+    attempted = command.trigger_step >= 0
+    backflip_penalty = torch.square(angular_velocity[:, 0]) + torch.square(angular_velocity[:, 2])
+    sideflip_penalty = torch.square(angular_velocity[:, 1]) + torch.square(angular_velocity[:, 2])
+    penalty = torch.where(
+        attempted & (command.motion_code == command.MOTION_BACKFLIP),
+        backflip_penalty,
+        all_axes,
+    )
+    return torch.where(
+        attempted & (command.motion_code == command.MOTION_SIDEFLIP),
+        sideflip_penalty,
+        penalty,
+    )

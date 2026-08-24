@@ -9,12 +9,14 @@ from isaaclab.utils.string import resolve_matching_names
 
 
 def _rename_observation_preserve_order(observations: dict, old_name: str, new_name: str) -> None:
-    """Rename an observation key without moving it to the end of the dict (pop+assign would)."""
+    """Rename an observation key without moving it to the end of the dict (pop+assign would).
+
+    A no-op if ``old_name`` is absent: renames like ``velocity_commands`` are
+    velocity-task-specific and legitimately don't apply to other task families
+    (e.g. jump/backflip use ``jump_command`` instead).
+    """
     if old_name not in observations:
-        raise KeyError(
-            f"Cannot rename observation '{old_name}' -> '{new_name}': "
-            f"'{old_name}' not in exported observations {list(observations.keys())}"
-        )
+        return
     items = list(observations.items())
     observations.clear()
     observations.update({(new_name if key == old_name else key): value for key, value in items})
@@ -64,10 +66,16 @@ def export_deploy_cfg(
         cfg["commands"]["base_velocity"]["ranges"] = ranges
 
     # --- actions ---
-    action_names = env.action_manager.active_terms
-    action_terms = zip(action_names, env.action_manager._terms.values())
+    # Keyed by the action term's actual class name (e.g. "JointPositionAction"), not its
+    # ActionsCfg attribute name -- the deploy-side C++ registry (REGISTER_ACTION) looks
+    # actions up by class name, so an attribute named e.g. "joint_position" (as in the
+    # jump/dynamic tasks) would export an unrecognized key and crash go2_ctrl at startup.
+    # This previously only worked for tasks (like velocity) whose ActionsCfg attribute
+    # happened to be named identically to the class itself.
+    action_terms = env.action_manager._terms.values()
     cfg["actions"] = {}
-    for action_name, action_term in action_terms:
+    for action_term in action_terms:
+        action_name = type(action_term).__name__
         term_cfg = action_term.cfg.copy()
         if isinstance(term_cfg.scale, float):
             term_cfg.scale = [term_cfg.scale for _ in range(action_term.action_dim)]

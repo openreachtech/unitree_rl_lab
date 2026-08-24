@@ -40,6 +40,23 @@ parser.add_argument(
         "task's whole limit range, so watching a fast policy means waiting for a fast draw."
     ),
 )
+parser.add_argument(
+    "--telemetry-csv",
+    type=str,
+    default=None,
+    help=(
+        "If set, log per-step telemetry (jump command state, joint velocity/torque) for env 0 to this "
+        "CSV path -- same columns as the deploy-side State_Flip telemetry, for direct sim2sim comparison. "
+        "Only meaningful for jump/dynamic tasks with a 'jump' command term."
+    ),
+)
+parser.add_argument(
+    "--telemetry-steps",
+    type=int,
+    default=250,
+    help="Number of steps to capture before exiting automatically when --telemetry-csv is set.",
+)
+
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -171,11 +188,28 @@ def main():
 
     dt = env.unwrapped.step_dt
 
+    # --- optional diagnostic telemetry (sim2sim gap investigation) ---
+    # Mirrors the deploy-side State_Flip telemetry columns (see State_Flip.cpp) for env 0,
+    # so a MuJoCo run can be directly compared against an Isaac Sim play-mode trace.
+    telemetry_file = None
+    telemetry_joint_names = [
+        "FL_hip", "FR_hip", "RL_hip", "RR_hip",
+        "FL_thigh", "FR_thigh", "RL_thigh", "RR_thigh",
+        "FL_calf", "FR_calf", "RL_calf", "RR_calf",
+    ]
+    if args_cli.telemetry_csv:
+        telemetry_file = open(args_cli.telemetry_csv, "w")
+        header = ["t", "enabled", "elapsed_since_trigger", "accumulated_pitch_deg", "grav_x", "grav_y", "grav_z"]
+        header += [f"{n}_vel" for n in telemetry_joint_names]
+        header += [f"{n}_tau" for n in telemetry_joint_names]
+        telemetry_file.write(",".join(header) + "\n")
+
     # reset environment
     obs = env.get_observations()
     if version("rsl-rl-lib").startswith("2.3."):
         obs, _ = env.get_observations()
     timestep = 0
+    telemetry_step = 0
     # simulate environment
     while simulation_app.is_running():
         start_time = time.time()
@@ -191,10 +225,34 @@ def main():
             if timestep == args_cli.video_length:
                 break
 
+        if telemetry_file is not None:
+            base_env = env.unwrapped
+            asset = base_env.scene["robot"]
+            command = base_env.command_manager.get_term("jump")
+            row = [
+                telemetry_step * dt,
+                float(command.enabled[0]),
+                float(command.elapsed_since_trigger[0]),
+                float(command.accumulated_pitch[0]) * 180.0 / 3.141592653589793,
+                float(asset.data.projected_gravity_b[0, 0]),
+                float(asset.data.projected_gravity_b[0, 1]),
+                float(asset.data.projected_gravity_b[0, 2]),
+            ]
+            row += [float(v) for v in asset.data.joint_vel[0].tolist()]
+            row += [float(v) for v in asset.data.applied_torque[0].tolist()]
+            telemetry_file.write(",".join(str(x) for x in row) + "\n")
+            telemetry_file.flush()
+            telemetry_step += 1
+            if telemetry_step >= args_cli.telemetry_steps:
+                break
+
         # time delay for real-time evaluation
         sleep_time = dt - (time.time() - start_time)
         if args_cli.real_time and sleep_time > 0:
             time.sleep(sleep_time)
+
+    if telemetry_file is not None:
+        telemetry_file.close()
 
     # close the simulator
     env.close()

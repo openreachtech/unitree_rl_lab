@@ -7,6 +7,10 @@ FSM:
     Velocity:
       id: 3
       type: RLBase
+      optional: true
+    Dynamic:
+      id: 4
+      type: Flip
   Passive:
     transitions:
       FixStand: LT + A.on_pressed
@@ -18,9 +22,11 @@ FSM:
     transitions:
       Passive: LT + B.on_pressed
       Velocity: start.on_pressed
+      Dynamic: LT + up.on_pressed
     keyboard_transitions:
       Passive: "0"
       Velocity: enter
+      Dynamic: "2"
     kp: [60, 80, 80, 60, 80, 80, 60, 80, 80, 60, 80, 80]
     kd: [5, 4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4]
     ts: [0, 1, 2]
@@ -54,3 +60,76 @@ FSM:
     # speed_log_stop_speed: 0.2   # m/s under which the robot counts as stopped
     # speed_log_stop_hold_s: 0.3  # how long that has to hold before the capture closes
     # speed_log_max_s: 30.0       # hard cap, for a capture that never sees a stop
+
+  # --- Dynamic motions (State_Flip, manual multi-motion mode) ------------
+  # A single re-armable state: enter it from FixStand, then press a motion key
+  # to fire jump / backflip / sideflip *on demand and repeatedly* without
+  # leaving the state. After each motion the command drops to zero (policy
+  # holds a stand) and re-arms after `rearm_delay_s`, so you can chain e.g.
+  # jump -> backflip -> sideflip by pressing 3, 4, 5 in turn.
+  #
+  #   [3] jump   [4] backflip   [5] sideflip      [0]/LT+B Passive   [1]/LT+A FixStand
+  #
+  # CURRENT STATUS: `Go2-Jump-Phase2` is now trained with all three
+  # motions enabled (enable_jump=True, enable_backflip=True, enable_sideflip=True)
+  # -- jump, backflip, and sideflip all confirmed working, sim2sim-validated in
+  # MuJoCo.
+  Dynamic:
+    transitions:
+      Passive: LT + B.on_pressed
+      FixStand: LT + A.on_pressed
+    keyboard_transitions:
+      Passive: "0"
+      FixStand: "1"
+    # SIDEFLIP-ONLY policy (Go2-Sideflip-Double): two rotations, unassisted, landing
+    # upright on 64/64 randomised robots with assist_scale decayed to 0.000. It jumps
+    # ~0.42m, which is a means to the rotation rather than the goal.
+    # parser_policy_dir picks the newest run under this root that has an `exported` folder.
+    #
+    # WARNING: trained with enable_jump / enable_backflip = False. Keys [3] and [4] below
+    # send height/pitch targets it has never seen -- off-distribution, and not safe on
+    # hardware. Point policy_dir back at go2_jump_60 (jump) or go2_jump_phase2 (all three)
+    # before using them.
+    policy_dir: ../../../logs/rsl_rl/go2_sideflip_double
+    # Must equal JumpCommandCfg.command_duration_s, which this task leaves at its 0.50
+    # default: it is when `enabled` drops back to 0 and takes the three targets in the
+    # observation down with it. 0.6 held the command 0.1s longer than the policy ever saw.
+    command_duration_s: 0.5
+    time_scale: 1.0
+    rearm_delay_s: 0.3
+    # 1 kHz per-joint torque capture, one torque_<motion>_<n>.csv per motion in the
+    # process CWD. The window must outlast the landing: a 0.44m jump touches down around
+    # 0.85s after the trigger and settles by ~1.2s, so 1.0s would cut off the impact.
+    torque_log: true
+    torque_log_pre_s: 0.3
+    torque_log_post_s: 1.5
+    # Fall -> Passive guard. The delay is measured from the trigger and must cover the
+    # landing and the settle that follows it, not just command_duration_s: a backflip's
+    # front feet touch down around 0.8s in, and the guard must not un-gate while the
+    # robot is still absorbing that impact. The hold time then requires a sustained
+    # tilt, so an IMU transient from the touchdown shock alone cannot trip it.
+    # Raised from 1.2 for the two-turn sideflip, which is a longer motion than anything
+    # deployed so far. Measured from the trigger in Isaac Lab over 32 randomised robots:
+    # take-off 0.36s, touchdown 0.94s, upright and settled 1.19s (worst 1.30s). At 1.2 the
+    # guard armed in the middle of that settle -- the same mistake that forced the real
+    # backflip out of policy when it armed exactly at minimum_landing_time_s.
+    fall_check_delay_s: 1.5
+    fall_check_hold_s: 0.1
+    motions:
+      - key: "3"
+        motion: jump
+        # Must match the height the policy was TRAINED at, not the height it achieves.
+        # target_height is a policy observation; 0.50 is the only value this policy has
+        # ever seen. Sending 0.45 (the achieved ~0.44) would be off-distribution.
+        target_height: 0.60
+      - key: "4"
+        motion: backflip
+        target_pitch_turns: -1.0
+      - key: "5"
+        motion: sideflip
+        # BOTH targets are required. A sideflip in training does not carry a zero height:
+        # `flip_target_height` puts 0.60 into target_height on every sideflip episode, so
+        # that is what the policy has always seen alongside the roll target. Sending the
+        # roll alone would leave observation[1] at 0.0, a combination it has never met.
+        target_height: 0.60
+        target_roll_turns: -2.0
