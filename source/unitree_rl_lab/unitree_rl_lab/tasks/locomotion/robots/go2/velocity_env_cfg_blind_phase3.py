@@ -1,10 +1,18 @@
+import copy
+
 import isaaclab.terrains as terrain_gen
+from isaaclab.sensors import RayCasterCfg
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 
 from unitree_rl_lab.tasks.locomotion import mdp, terrains
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import TerminationsCfg
+from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_blind import (
+    GO2_LIDAR_SCANNER_CFG,
+    ObservationsCfgGo2LidarView,
+    apply_lidar_view,
+)
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_blind import RewardsCfgGo2
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_blind_phase2 import (
     CommandsCfgPhase2,
@@ -15,7 +23,10 @@ from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_blind_phase2 im
 PHASE3_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
     size=(8.0, 8.0),
     border_width=20.0,
-    num_cols=20,
+    # 6 columns so the 1:2:3 proportions below land one sub-terrain per column exactly:
+    # flat gets column 0, pyramid 1-2, inverted pyramid 3-5. Rows stay at 10 for the 10
+    # terrain levels the curriculum ratchets through.
+    num_cols=6,
     num_rows=10,
     horizontal_scale=0.1,
     vertical_scale=0.005,
@@ -23,9 +34,9 @@ PHASE3_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
     difficulty_range=(0.0, 1.0),
     use_cache=False,
     sub_terrains={
-        "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=0.10),
+        "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=1.0),
         "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
-            proportion=0.30,
+            proportion=2.0,
             step_height_range=(0.05, 0.25),
             step_width=0.23,
             platform_width=2.0,
@@ -33,7 +44,7 @@ PHASE3_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
             holes=False,
         ),
         "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
-            proportion=0.60,
+            proportion=3.0,
             step_height_range=(0.05, 0.25),
             step_width=0.23,
             platform_width=2.0,
@@ -106,7 +117,11 @@ PHASE3_TERRAIN_CFG_VARIABLE_WIDTH = terrain_gen.TerrainGeneratorCfg(
 
 @configclass
 class RobotSceneCfgPhase3(RobotSceneCfgPhase2):
+    # terrain_type back to "generator": Phase 1 switched the shared importer to a bare
+    # "plane", and a generator attached to a plane-type importer is ignored outright --
+    # the patches are never built and terrain_levels never appears.
     terrain = RobotSceneCfgPhase2().terrain.replace(
+        terrain_type="generator",
         terrain_generator=PHASE3_TERRAIN_CFG,
         max_init_terrain_level=5,
     )
@@ -153,14 +168,41 @@ class RobotEnvCfgPhase3(RobotEnvCfgPhase2):
     rewards: RewardsCfgPhase3 = RewardsCfgPhase3()
 
 
+# Play terrain: stairs only. .replace() builds a new TerrainGeneratorCfg rather than
+# mutating PHASE3_TERRAIN_CFG's sub_terrains dict, which is a module-level object shared
+# with the training config. Dropping "flat" leaves pyramid and inverted pyramid at 2:3,
+# which over 2 columns is one column each.
+PLAY_TERRAIN_CFG_PHASE3 = PHASE3_TERRAIN_CFG.replace(
+    num_rows=5,
+    num_cols=2,
+    sub_terrains={
+        name: cfg for name, cfg in PHASE3_TERRAIN_CFG.sub_terrains.items() if name != "flat"
+    },
+)
+
+
+@configclass
+class RobotSceneCfgPlayPhase3(RobotSceneCfgPhase3):
+    """Phase 3's scene plus the LiDAR fan, play only."""
+
+    lidar_scanner: RayCasterCfg = GO2_LIDAR_SCANNER_CFG
+
+
 @configclass
 class RobotPlayEnvCfgPhase3(RobotEnvCfgPhase3):
+    scene: RobotSceneCfgPlayPhase3 = RobotSceneCfgPlayPhase3(num_envs=32, env_spacing=2.5)
+    observations: ObservationsCfgGo2LidarView = ObservationsCfgGo2LidarView()
+
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 32
-        self.scene.terrain.terrain_generator.num_rows = 3
-        self.scene.terrain.terrain_generator.num_cols = 3
+        # 2 columns (pyramid | inverted pyramid) x 5 rows of ascending difficulty.
+        self.scene.terrain.terrain_generator = copy.deepcopy(PLAY_TERRAIN_CFG_PHASE3)
+        # Spread the spawn over every row; the training value of 5 exceeds num_rows-1 here.
+        self.scene.terrain.max_init_terrain_level = 4
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
+        self.scene.lidar_scanner.update_period = self.decimation * self.sim.dt
+        apply_lidar_view(self)
 
 
 

@@ -1,3 +1,5 @@
+import copy
+
 import isaaclab.terrains as terrain_gen
 from isaaclab.utils import configclass
 
@@ -73,3 +75,11 @@ class RobotPlayEnvCfgPhase1(RobotEnvCfgPhase1):
         # Raw grid markers duplicate the magenta excluded-cell overlay and hide its shape.
         # Off here so only the exclusion coverage is visible; flip back on to see the full grid.
         self.scene.height_scanner.debug_vis = False
+        # Draw the 492 cells the policy is actually fed as red spheres, at the terrain
+        # points they were sampled from, next to the magenta body-footprint exclusion.
+        # deepcopy: POLICY_HEIGHT_SCAN_CFG is a module-level object shared with the
+        # training cfg, so its params dict must not be mutated in place.
+        self.observations.policy.height_scan = copy.deepcopy(self.observations.policy.height_scan)
+        self.observations.policy.height_scan.params["debug_vis_scan"] = True
+        # None -> every play env, not just env 0 (cheap at 32 envs).
+        self.observations.policy.height_scan.params["debug_vis_env_index"] = None

@@ -141,3 +141,66 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{__name__}.velocity_env_cfg_go2:StudentDistillationRunnerCfg",
     },
 )
+
+# ---------------------------------------------------------------------------
+# Blind Go2 with a recurrent policy -- the traversal half of the two-stage plan for
+# the LiDAR height map. The end goal is an encoder/decoder that recovers true terrain
+# from a noisy fan-built map, trained behind a *frozen* controller; a blind policy is
+# the right one to freeze, since it cannot lean on the exteroceptive input the encoder
+# is still learning to produce, so the two stages stay separable.
+#
+# Two ingredients, both taken from existing work rather than invented here:
+#   * the Unitree-Go2-Velocity-v1 configs from feat/go2-curriculum, whose actor is
+#     proprioception-only and whose critic keeps the privileged height scan -- ported
+#     into velocity_env_cfg_blind*.py in this package;
+#   * GruPPORunnerCfg, the GRU actor-critic used by Go2W-v1-Phase* on feat/go2w.
+#
+# The curriculum is v1's, unchanged: flat, then rough ground and boxes, then stairs.
+#   --task Go2-Blind-GRU-Phase1
+#   --task Go2-Blind-GRU-Phase2 --resume --previous-task Go2-Blind-GRU-Phase1
+#   --task Go2-Blind-GRU-Phase3 --resume --previous-task Go2-Blind-GRU-Phase2
+# ---------------------------------------------------------------------------
+
+_RUNNER = "unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:GruPPORunnerCfg"
+# Relative to this package. The launcher filters tasks on env_cfg_entry_point
+# starting with "locomotion.", and the walk that discovers these packages makes
+# __name__ resolve to exactly that prefix; a hardcoded absolute path is silently
+# skipped instead.
+_CFG = __name__
+
+# Phase 1: flat ground. Establishes a gait before any terrain is introduced.
+gym.register(
+    id="Go2-Blind-GRU-Phase1",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_blind_phase1:RobotEnvCfgPhase1",
+        "play_env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_blind_phase1:RobotPlayEnvCfgPhase1",
+        "rsl_rl_cfg_entry_point": _RUNNER,
+    },
+)
+
+# Phase 2: flat 10% / random rough 40% / boxes 50%.
+gym.register(
+    id="Go2-Blind-GRU-Phase2",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_blind_phase2:RobotEnvCfgPhase2",
+        "play_env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_blind_phase2:RobotPlayEnvCfgPhase2",
+        "rsl_rl_cfg_entry_point": _RUNNER,
+    },
+)
+
+# Phase 3: stairs. The hardest thing a blind policy is asked to cross here, and the
+# one that most needs the GRU -- a step edge is only observable through contact.
+gym.register(
+    id="Go2-Blind-GRU-Phase3",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_blind_phase3:RobotEnvCfgPhase3",
+        "play_env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_blind_phase3:RobotPlayEnvCfgPhase3",
+        "rsl_rl_cfg_entry_point": _RUNNER,
+    },
+)

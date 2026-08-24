@@ -21,10 +21,13 @@ cell count follows whatever exclusion rectangle the caller passes, and the LiDAR
 widen theirs, so the two are not interchangeable at a fixed width; see
 ``velocity_env_cfg_lidar.py``.
 
-Deliberately *not* included here: measurement noise (range noise, dropouts,
-outliers, extrinsic calibration error). Those go on top once the geometry is
-confirmed -- see ``scripts/tools/check_lidar_map_coverage.py`` for the analytic
-coverage prediction this implementation is checked against.
+Measurement noise is applied per ray, before the returns are binned -- see
+``LidarNoiseCfg``. That placement is what makes it faithful: perturbing distance along
+the ray produces the lateral error a real sensor makes at shallow incidence, which
+cannot be expressed by adding noise to a finished height grid.
+
+``scripts/tools/check_lidar_map_coverage.py`` predicts the noise-free coverage
+analytically; this implementation is checked against it.
 """
 
 from __future__ import annotations
@@ -34,6 +37,8 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from isaaclab.managers import ManagerTermBase, ObservationTermCfg, SceneEntityCfg
+from isaaclab.utils import configclass
+from isaaclab.utils.math import matrix_from_quat, quat_apply, quat_from_angle_axis
 
 from .observations import _height_scan_indices
 
@@ -43,6 +48,93 @@ if TYPE_CHECKING:
 
 _UNOBSERVED = 1.0e4
 """Sentinel for a cell no beam reached. Large, so it loses every ``amin``."""
+
+
+@configclass
+class LidarNoiseConditionCfg:
+    """One noise condition: how badly the sensor behaves for this episode.
+
+    Standard deviations, in metres and degrees. Everything scales with
+    ``LidarNoiseCfg.scale``, so tuning overall severity does not mean editing these.
+    """
+
+    probability: float = 0.0
+    """Relative chance of an episode drawing this condition. Normalised across conditions."""
+    range_std: float = 0.0
+    """Per-ray distance error (m), resampled every step. The paper's *Position*, applied
+    along the ray so the lateral component follows from the incidence angle."""
+    tilt_step_std: float = 0.0
+    """Per-step tilt of the returns about the sensor origin (deg). The paper's *Tilt*.
+    Physically the IMU's gravity-direction error, which is what fixes "up" for the height
+    values -- so it fluctuates with the estimate rather than being fixed per run."""
+    tilt_episode_std: float = 0.0
+    """Per-episode tilt held for the run (deg): the sensor bolted on slightly off axis.
+    Not from the paper -- there is no mounting error in a simulated point cloud -- but it
+    is the other half of a real tilt and costs nothing on top of the per-step term."""
+    outlier_prob: float = 0.0
+    """Per-ray, per-step chance of a grossly wrong distance. The paper's *Outliers*."""
+    outlier_range: float = 0.0
+    """Magnitude of an outlier's distance error (m), uniform in +-this."""
+
+
+@configclass
+class LidarNoiseCfg:
+    """Per-episode noise conditions, plus one knob to scale all of them.
+
+    The paper varies noise strength to control how hard the reconstruction task is; the
+    same effect here comes from ``scale`` (dial everything at once) and the condition
+    mix (how often an episode is easy or hard). Defaults are 60% weak / 30% nominal /
+    10% strong.
+
+    Two of the paper's augmentations are absent on purpose, because the fan already
+    produces them from geometry rather than from a noise model:
+
+    *Pruning*  -- occlusion behind obstacles, the field of view, and the fan's angular
+                  sparsity already leave 35.8% of cells with no return on flat ground.
+                  Adding stochastic dropout on top would only decorrelate the gaps from
+                  the terrain, and would further bury the shadow it is meant to sit
+                  alongside.
+    *Height* / *Robot Pose* -- unobserved cells hold their previous value with no motion
+                  compensation, so stale readings drift out of register as the robot
+                  advances. That is the same class of error, arising from the temporal
+                  fill rather than being injected.
+    """
+
+    weak: LidarNoiseConditionCfg = LidarNoiseConditionCfg(
+        probability=0.60, range_std=0.01, tilt_step_std=0.5, tilt_episode_std=0.25,
+        outlier_prob=0.005, outlier_range=0.15,
+    )
+    nominal: LidarNoiseConditionCfg = LidarNoiseConditionCfg(
+        probability=0.30, range_std=0.02, tilt_step_std=1.0, tilt_episode_std=0.5,
+        outlier_prob=0.01, outlier_range=0.30,
+    )
+    strong: LidarNoiseConditionCfg = LidarNoiseConditionCfg(
+        probability=0.10, range_std=0.04, tilt_step_std=2.0, tilt_episode_std=1.0,
+        outlier_prob=0.03, outlier_range=0.60,
+    )
+
+    scale: float = 1.0
+    """Multiplies every magnitude above. 0.0 disables noise entirely without touching
+    the conditions, which is how to get a clean reference run."""
+
+    num_steps_per_env: int = 24
+    """Rollout length of one iteration, to turn env steps into iterations for the ramp."""
+    start_iteration: int = 0
+    """Iterations of noise-free returns before the ramp begins."""
+    full_iteration: int = 0
+    """Iteration at which ``scale`` is reached. Equal to ``start_iteration`` means no ramp."""
+
+
+def _curriculum_level(common_step_counter: int, cfg: LidarNoiseCfg) -> float:
+    """Fraction of the configured magnitude to apply at the current iteration."""
+    if cfg.full_iteration <= cfg.start_iteration:
+        return 1.0
+    iteration = common_step_counter // max(cfg.num_steps_per_env, 1)
+    if iteration >= cfg.full_iteration:
+        return 1.0
+    if iteration <= cfg.start_iteration:
+        return 0.0
+    return (iteration - cfg.start_iteration) / (cfg.full_iteration - cfg.start_iteration)
 
 
 def _yaw_from_quat(quat: torch.Tensor) -> torch.Tensor:
@@ -110,12 +202,83 @@ class LidarElevationMap(ManagerTermBase):
 
         self._hold = torch.full((self.num_envs, self._num_cells), self._flat_fill, device=self.device)
 
+        # Noise conditions, drawn per episode. Absent config means a noise-free sensor.
+        self._noise: LidarNoiseCfg | None = p.get("noise")
+        if self._noise is not None:
+            conds = [self._noise.weak, self._noise.nominal, self._noise.strong]
+
+            def _column(attr: str) -> torch.Tensor:
+                return torch.tensor([getattr(c, attr) for c in conds], device=self.device)
+
+            weights = _column("probability")
+            if torch.any(weights < 0.0) or weights.sum() <= 0.0:
+                raise ValueError("LiDAR noise condition probabilities must be >= 0 and sum to > 0.")
+            self._cond_weights = weights / weights.sum()
+            self._range_std = _column("range_std")
+            self._tilt_step_std = torch.deg2rad(_column("tilt_step_std"))
+            self._tilt_episode_std = torch.deg2rad(_column("tilt_episode_std"))
+            self._outlier_prob = _column("outlier_prob")
+            self._outlier_range = _column("outlier_range")
+            self._condition = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+            self._episode_tilt = torch.zeros(self.num_envs, 2, device=self.device)
+            self._draw_conditions(torch.arange(self.num_envs, device=self.device))
+
     def reset(self, env_ids: Sequence[int] | slice | None = None) -> None:
         if env_ids is None or isinstance(env_ids, slice):
-            self._hold[:] = self._flat_fill
+            ids = torch.arange(self.num_envs, device=self.device)
         else:
             ids = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
-            self._hold[ids] = self._flat_fill
+        self._hold[ids] = self._flat_fill
+        if self._noise is not None:
+            self._draw_conditions(ids)
+
+    def _draw_conditions(self, env_ids: torch.Tensor) -> None:
+        """Pick a noise condition per episode, and the tilt this run is stuck with."""
+        if env_ids.numel() == 0:
+            return
+        drawn = torch.multinomial(self._cond_weights, env_ids.numel(), replacement=True)
+        self._condition[env_ids] = drawn
+        # Drawn at full magnitude; the ramp scales it when the returns are perturbed.
+        self._episode_tilt[env_ids] = (
+            torch.randn(env_ids.numel(), 2, device=self.device) * self._tilt_episode_std[drawn].unsqueeze(-1)
+        )
+
+    def _perturb(self, rel: torch.Tensor, finite: torch.Tensor, level: float) -> torch.Tensor:
+        """Apply the paper's Position, Outliers and Tilt to the returns, per ray.
+
+        ``rel`` is each hit relative to the sensor origin, so distance and direction are
+        separable here -- which is the whole point of doing this before binning. Noise on
+        the distance moves the point along its own ray, so a shallow beam's 2 cm error
+        lands 6 cm away across the ground, exactly as the sensor would. Adding the same
+        error to a finished height grid could only ever move it vertically.
+        """
+        cond = self._condition
+        distance = rel.norm(dim=-1, keepdim=True)
+        # Misses come back as inf; park them at the origin so nothing propagates NaN, and
+        # rely on ``finite`` to drop them afterwards.
+        distance = torch.where(finite.unsqueeze(-1), distance, torch.zeros_like(distance))
+        direction = rel / distance.clamp(min=1.0e-6)
+
+        # Position: Gaussian along the ray.
+        error = torch.randn_like(distance) * (level * self._range_std[cond]).view(-1, 1, 1)
+        # Outliers: a few rays return a grossly wrong distance instead.
+        outlier_mag = (level * self._outlier_range[cond]).view(-1, 1, 1)
+        is_outlier = torch.rand_like(distance) < self._outlier_prob[cond].view(-1, 1, 1)
+        outlier = (torch.rand_like(distance) * 2.0 - 1.0) * outlier_mag
+        error = torch.where(is_outlier, outlier, error)
+        rel = direction * (distance + error).clamp(min=0.0)
+
+        # Tilt: rotate the returns about the sensor origin. Per-step stands in for the
+        # IMU's gravity-direction error, which is what fixes "up" for the height values;
+        # the per-episode part is the mount being slightly off axis.
+        step_tilt = torch.randn(self.num_envs, 2, device=self.device) * self._tilt_step_std[cond].unsqueeze(-1)
+        tilt = level * (step_tilt + self._episode_tilt)
+        angle = torch.linalg.vector_norm(tilt, dim=-1)
+        axis = torch.nn.functional.normalize(
+            torch.stack([tilt[:, 0], tilt[:, 1], torch.zeros_like(angle)], dim=-1), dim=-1, eps=1.0e-9
+        )
+        rot = matrix_from_quat(quat_from_angle_axis(angle, axis))
+        return torch.einsum("nij,nrj->nri", rot, rel)
 
     def __call__(
         self,
@@ -131,6 +294,7 @@ class LidarElevationMap(ManagerTermBase):
         lidar_offset: tuple[float, float, float] = (0.19, 0.0, 0.10),
         horizontal_fov: tuple[float, float] = (-180.0, 180.0),
         flat_fill: float = 0.0,
+        noise: LidarNoiseCfg | None = None,
         debug_vis: bool = False,
         debug_vis_env_index: int | None = 0,
     ) -> torch.Tensor:
@@ -138,6 +302,17 @@ class LidarElevationMap(ManagerTermBase):
         asset = env.scene[asset_cfg.name]
         hits_w = sensor.data.ray_hits_w  # (N, num_rays, 3)
         root_pos = asset.data.root_pos_w  # (N, 3)
+        finite = torch.isfinite(hits_w).all(dim=-1)
+
+        if self._noise is not None:
+            level = self._noise.scale * _curriculum_level(env.common_step_counter, self._noise)
+            env.lidar_noise_level = level
+            if level > 0.0:
+                # Every ray leaves one point in the fan, so perturb them relative to that
+                # origin. ray_starts carries the mount offset in the sensor frame.
+                origin = sensor.data.pos_w + quat_apply(sensor.data.quat_w, sensor.ray_starts[:, 0])
+                perturbed = self._perturb(hits_w - origin.unsqueeze(1), finite, level)
+                hits_w = origin.unsqueeze(1) + perturbed
 
         # Hits into the yaw-aligned base frame. Only the xy rotation is needed to pick
         # the cell, and a 2D rotation avoids expanding the quaternion to every ray.
@@ -154,7 +329,7 @@ class LidarElevationMap(ManagerTermBase):
             & (ix < self._num_x)
             & (iy >= 0)
             & (iy < self._num_y)
-            & torch.isfinite(hits_w).all(dim=-1)
+            & finite  # from the raw returns: noise must not resurrect a miss
         )
 
         # Same feature as height_scan_excluding_body: sensor height - terrain - offset.
@@ -285,3 +460,8 @@ def lidar_map_unobserved_mid(env: ManagerBasedRLEnv, env_ids: Sequence[int]) -> 
 def lidar_map_unobserved_far(env: ManagerBasedRLEnv, env_ids: Sequence[int]) -> torch.Tensor:
     """Unobserved rate for in-FOV cells beyond 0.50 m -- where shadows land."""
     return torch.tensor(getattr(env, "lidar_map_unobserved_far", 0.0), device=env.device)
+
+
+def lidar_noise_level(env: ManagerBasedRLEnv, env_ids: Sequence[int]) -> torch.Tensor:
+    """Effective noise magnitude in force this step (``scale`` times the ramp)."""
+    return torch.tensor(getattr(env, "lidar_noise_level", 0.0), device=env.device)
