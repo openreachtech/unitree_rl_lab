@@ -102,25 +102,39 @@ def lin_vel_cmd_levels_column_aware(
     return lin_vel_cmd_levels(env, env_ids, reward_term_name)
 
 
-def custom_terrain_levels_climb(
+def terrain_levels_climb_demote_on_fail(
     env: ManagerBasedRLEnv,
     env_ids: Sequence[int] | slice,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    fail_termination_names: tuple[str, ...] = ("base_contact", "bad_orientation"),
 ) -> torch.Tensor:
-    """Terrain-difficulty ratchet tuned for slow, hard terrain (stairs).
-    Replacement for ``mdp.terrain_levels_vel``. The stock function:
-      * move_up  when distance-from-spawn > terrain_size/2  (= 4.0 m)
-      * move_down when distance < commanded_speed * episode_time * 0.5
-    On stairs at a throttled command speed, a 4.0 m net displacement inside one
-    episode is essentially unreachable, while the velocity-scaled move_down floor
-    fires almost every reset -> levels collapse to 0 (observed: 0.057).
-    This version:
-      * move_up  at a reachable fraction of the tile (35 % = ~2.8 m), so a robot
-        that genuinely climbs a few steps forward is promoted.
-      * move_down only when the robot barely moved (< 0.5 m), i.e. it actually
-        failed. A robot making partial progress stays on its level and keeps
-        practising instead of being demoted. This turns the curriculum into a
-        one-way ratchet that tracks real skill instead of net wandering.
+    """Terrain-difficulty ratchet: promotes at a reachable fraction of the tile
+    (35 %), demotes either on very low net displacement (< 0.5 m -- didn't even try)
+    or on a genuine failure termination named in ``fail_termination_names``
+    (``base_contact``/``bad_orientation`` by default), regardless of distance
+    travelled.
+
+    The distance-only version this replaced (folded in 2026-08-25, formerly
+    ``custom_terrain_levels_climb``) left a dead zone between the 0.5 m demotion
+    floor and the 35 % promotion threshold: a robot making real partial progress
+    stays on its level rather than being punished for it, by design -- but an env
+    that gets promoted past its actual ability can crash into the wall
+    (base_contact) or tip over (bad_orientation) after already covering, say, 0.8 m,
+    never clearing 0.5 m and never reaching the promotion threshold either --
+    stuck at a level it is genuinely failing at, for the rest of training, with
+    nothing pulling it back down (suspected as why terrain_levels peaked then
+    declined without recovering -- envs piling up in exactly this dead zone).
+    Demoting on these specific termination causes regardless of distance closes
+    that gap without touching the existing distance-based rule for genuine "just
+    didn't move enough" failures (e.g. time_out at low progress). Measured
+    (Go2W-v1-Phase5): higher terrain_levels *and* a lower base_contact rate than
+    the distance-only version over a comparable training budget -- see
+    sandbox/SUMMARY.md.
+
+    Reads the current step's termination outcome via
+    ``env.termination_manager.get_term(name)`` -- valid here because curriculum
+    ``compute()`` runs from ``_reset_idx``, immediately after termination
+    ``compute()`` populates it for the same step, before anything resets it.
     """
     terrain: TerrainImporter = env.scene.terrain
     if terrain.terrain_origins is None or terrain.cfg.terrain_generator is None:
@@ -132,6 +146,11 @@ def custom_terrain_levels_climb(
     )
     tile_size = terrain.cfg.terrain_generator.size[0]
     move_up = distance > tile_size * 0.35
-    move_down = (distance < 0.5) & (~move_up)
+
+    failed = torch.zeros_like(move_up)
+    for name in fail_termination_names:
+        failed = failed | env.termination_manager.get_term(name)[env_ids]
+
+    move_down = ((distance < 0.5) | failed) & ~move_up
     terrain.update_env_origins(env_ids, move_up, move_down)
     return torch.mean(terrain.terrain_levels.float())

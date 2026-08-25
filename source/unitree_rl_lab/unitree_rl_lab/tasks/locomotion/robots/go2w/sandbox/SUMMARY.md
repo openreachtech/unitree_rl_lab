@@ -446,7 +446,54 @@ were "inflated" by its rarely-demoting design, that was never independently conf
 guess. The Teacher-line run (Try2, 10000 iterations) additionally found no sign of the
 privileged-information climbing advantage Lee et al. 2020's own ablation would predict
 -- terrain_levels stalled at ~1.45, similar to the much-cheaper GRU variants. The
-`custom_terrain_levels_climb` one-way ratchet (this campaign's long-standing default)
-remains the terrain_levels curriculum going forward. Revisit this record (particularly
-the EMA hyperparameters and the never-checked "inflated vs. honest" question) if
-terrain_levels curriculum design is worth returning to.
+`custom_terrain_levels_climb` one-way ratchet (this campaign's long-standing default at
+the time) remained the terrain_levels curriculum immediately after this -- since
+superseded by Try26 below (2026-08-25), not by a return to the EMA. Revisit this record
+(particularly the EMA hyperparameters and the never-checked "inflated vs. honest"
+question) if terrain_levels curriculum design is worth returning to.
+
+---
+
+## 2026-08-25: `terrain_levels_climb_demote_on_fail` (Try26) folded in -- first confirmed
+## 0.50 m wall crossing in MuJoCo
+
+Diagnosis: the default's terrain_levels trajectory (whether continuing from an existing
+checkpoint or restarting fresh) tended to rise to a peak and then either plateau or
+decline, without a clean, reliable recovery. `custom_terrain_levels_climb`'s move_down
+only fires below 0.5 m of net displacement; between that floor and the promotion
+threshold (35 % of the tile), it neither promotes nor demotes, by design (partial
+progress isn't punished). But this creates a dead zone once an env has been promoted
+past its actual ability: it can crash into the wall (`base_contact`) or tip over
+(`bad_orientation`) after already covering, say, 0.8 m, never clearing 0.5 m and never
+reaching the promotion threshold either -- stuck at a level it is genuinely failing at,
+for the rest of training, with nothing pulling it back down. Envs piling up in exactly
+this dead zone was the suspected cause.
+
+**Try26** (`mdp.terrain_levels_climb_demote_on_fail`, mdp/curriculums.py): identical to
+`custom_terrain_levels_climb` except it additionally demotes on `base_contact`/
+`bad_orientation` termination regardless of distance travelled. Tested two ways:
+
+| | continuing from the default's own checkpoint (+1500 iter) | fresh from Go2W-v1-Phase2 (2500 iter) |
+| --- | --- | --- |
+| terrain_levels (start → end) | 4.49 → 6.05 (peak 6.16) | 4.49 → 6.16 (peak 6.25) |
+| `base_contact` | 42.3 % (vs. the default's own ~74 %) | 43.1 % |
+| `time_out` | 55.3 % | 53.1 % |
+
+Both runs reproduced the same result: meaningfully higher terrain_levels *and* a much
+lower `base_contact` rate than the default's own comparable continuation (~74 %) --
+demoting on genuine failure, not just low displacement, both climbs higher and fails
+less recklessly getting there.
+
+**Checked in MuJoCo (the fresh-from-Phase2 checkpoint): this project's first confirmed
+0.50 m wall crossing.** Command-following was reported as sluggish/hard to control at
+that checkpoint -- not yet resolved, an open item for whoever picks this back up
+(possibly related to this being a relatively short, fresh-from-Phase2 run rather than a
+long, thoroughly-converged one; not yet isolated).
+
+**Folded into the default `CurriculumCfgPhase5` 2026-08-25** (see that class's own
+docstring) and Try26's sandbox file/registration deleted. `Try27` (goal_arrival scaled
+by terrain_levels difficulty, tested alongside Try26 from the same starting point) was
+*not* folded -- it showed only a marginal terrain_levels improvement (5.36 → 5.54) with
+no improvement to `base_contact` (stayed ~74-75 %), unlike Try26's clear effect on both
+axes. Still registered as a sandbox try as of this entry; revisit or delete depending on
+whether it's still worth pursuing.

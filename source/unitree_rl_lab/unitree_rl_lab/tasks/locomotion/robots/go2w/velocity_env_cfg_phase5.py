@@ -370,9 +370,23 @@ class CurriculumCfgPhase5(CurriculumCfg):
     ``cfg.ranges`` was pure noise on a decision that only actually concerns "rough"
     envs -- see that function's own docstring in mdp/curriculums.py. Unrelated to
     terrain_levels (a separate curriculum term entirely).
+
+    terrain_levels replaced 2026-08-25 with mdp.terrain_levels_climb_demote_on_fail
+    (folded from Go2W-v1-Phase5-Try26). custom_terrain_levels_climb's move_down only
+    fires below 0.5 m of net displacement, so an env promoted past its real ability
+    could crash (base_contact/bad_orientation) after already covering more than that,
+    neither promoted nor demoted -- stuck at a level it was genuinely failing, with
+    nothing pulling it back down. The replacement additionally demotes on those two
+    termination causes regardless of distance; see its own docstring in
+    mdp/curriculums.py for the full reasoning. Measured (Go2W-v1-Phase2 ->
+    2500 iterations): terrain_levels reached 6.16 (vs. the old function's own ~5.4-5.5
+    over a comparable budget) with a lower base_contact rate (43% vs. ~74-75%) --
+    and, checked in MuJoCo, this is this project's **first confirmed 0.50 m wall
+    crossing**, though command-following was reported as sluggish/hard to control at
+    that checkpoint -- not yet resolved, worth investigating further.
     """
 
-    terrain_levels = CurrTerm(func=mdp.custom_terrain_levels_climb)
+    terrain_levels = CurrTerm(func=mdp.terrain_levels_climb_demote_on_fail)
     lin_vel_cmd_levels = CurrTerm(func=mdp.lin_vel_cmd_levels_column_aware)
 
 
