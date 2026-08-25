@@ -204,3 +204,48 @@ gym.register(
         "rsl_rl_cfg_entry_point": "unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
     },
 )
+
+# =============================================================================================
+# Go2-Multitask-Gallop-Phase1 / Phase2 -- the same two-stage gallop curriculum as
+# Go2-Gallop-Phase1 / Phase2, re-expressed on the unified 122/330-column observation shared with
+# the acrobatics side (unitree_rl_lab.tasks.multitask.obs_spec). Task definition is otherwise
+# identical: same commands, rewards, terminations, events, terrain and both curricula. The jump
+# command is present but never triggered, which is what fills the five columns the locomotion
+# observation lacked; see velocity_env_cfg_multitask.py for why that cannot disturb the physics.
+#
+# Together with Go2-Multitask-Jump-Phase1 / Phase2 these produce two experts on one observation
+# layout, so the multi-task mixture-of-experts policy can load both with a plain load_state_dict.
+#
+#   python scripts/rsl_rl/train_and_aggregate.py --task Go2-Multitask-Gallop-Phase1 \
+#       --max_iterations 1300
+#   python scripts/rsl_rl/train_and_aggregate.py --task Go2-Multitask-Gallop-Phase2 \
+#       --previous-task Go2-Multitask-Gallop-Phase1
+#
+# Trained from scratch rather than widened from Go2-Gallop-Phase2: no checkpoint for that task
+# exists in this working tree (logs/ is untracked). If one turns up elsewhere, prefer
+#   python scripts/rsl_rl/widen_checkpoint.py --previous-task Go2-Gallop-Phase2 \
+#       --task Go2-Multitask-Gallop-Phase2
+# which carries the trained policy over exactly instead of paying for it again.
+# =============================================================================================
+
+gym.register(
+    id="Go2-Multitask-Gallop-Phase1",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_multitask:RobotEnvCfgMultitaskGallopPhase1",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_multitask:RobotPlayEnvCfgMultitaskGallopPhase1",
+        "rsl_rl_cfg_entry_point": "unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Go2-Multitask-Gallop-Phase2",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_multitask:RobotEnvCfgMultitaskGallopPhase2",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_multitask:RobotPlayEnvCfgMultitaskGallopPhase2",
+        "rsl_rl_cfg_entry_point": "unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
+    },
+)
