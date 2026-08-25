@@ -50,4 +50,4 @@ FSM:
         std: 0.071
         bias_std: 0.05
         seed: 0
-    policy_dir: ../../../logs/rsl_rl/go2_v3_phase2
+    policy_dir: ../../../logs/rsl_rl/go2_blind_gru_phase2

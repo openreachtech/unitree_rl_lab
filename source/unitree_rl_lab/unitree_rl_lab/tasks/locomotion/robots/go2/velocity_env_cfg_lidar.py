@@ -227,6 +227,28 @@ def _lidar_height_scan(
     )
 
 
+def lidar_noise_only(condition: str, base: LidarNoiseCfg = GO2_LIDAR_NOISE_CFG) -> LidarNoiseCfg:
+    """Force every episode onto one noise condition, for looking at it in isolation.
+
+    The normal mix draws weak/nominal/strong per episode at 60/30/10, so watching any one
+    of them means waiting for it to come up and then knowing which you got. This pins the
+    draw instead: the named condition keeps its magnitudes and takes all the probability,
+    the other two go to zero.
+    """
+    names = ("weak", "nominal", "strong")
+    if condition not in names:
+        raise ValueError(f"condition must be one of {names}, got {condition!r}")
+    cfg = copy.deepcopy(base)
+    for name in names:
+        getattr(cfg, name).probability = 1.0 if name == condition else 0.0
+    return cfg
+
+
+def play_lidar_height_scan(noise: LidarNoiseCfg | None = GO2_LIDAR_NOISE_CFG) -> ObsTerm:
+    """The visualising height-grid term, with the noise model of the caller's choosing."""
+    return _lidar_height_scan(debug_vis=True, debug_vis_env_index=None, noise=noise)
+
+
 LIDAR_HEIGHT_SCAN_CFG = _lidar_height_scan()
 PLAY_LIDAR_HEIGHT_SCAN_CFG = _lidar_height_scan(debug_vis=True, debug_vis_env_index=None)
 

@@ -10,6 +10,10 @@ from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_blind import (
     apply_lidar_view,
 )
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import CurriculumCfg
+from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_lidar import (
+    lidar_noise_only,
+    play_lidar_height_scan,
+)
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_blind import RewardsCfgGo2
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_blind_phase1 import (
     CommandsCfgPhase1,
@@ -142,3 +146,42 @@ class RobotPlayEnvCfgPhase2(RobotEnvCfgPhase2):
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
         self.scene.lidar_scanner.update_period = self.decimation * self.sim.dt
         apply_lidar_view(self)
+
+
+# ===========================================================================
+# Play-only variants that pin the LiDAR noise to one condition, so each can be watched on
+# its own rather than waiting for the 60/30/10 draw to serve it up unannounced.
+#
+# Only the fan-built map changes. The terrain, the policy and its 45-dim proprioceptive
+# input are identical across all three -- the map is drawn, never fed to the policy -- so
+# the robot behaves the same in each and the only difference on screen is how badly the
+# green markers scatter.
+#
+# What to look for, from the magnitudes in LidarNoiseCfg:
+#   weak     1 cm range, 0.5 deg tilt   -- barely distinguishable from clean
+#   nominal  2 cm range, 1.0 deg tilt   -- the sensor's own spec
+#   strong   4 cm range, 2.0 deg tilt   -- a degraded run
+# Tilt pivots at the sensor, so it leaves the near cells alone and grows with distance:
+# 1 deg is 1.2 cm at the forward edge and 1.8 cm at the rear corner. Range noise is flat
+# across the grid. Red cells should not change between the three -- they are geometry,
+# not noise.
+# ===========================================================================
+@configclass
+class RobotPlayEnvCfgPhase2NoiseWeak(RobotPlayEnvCfgPhase2):
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.lidar_map.height_scan = play_lidar_height_scan(lidar_noise_only("weak"))
+
+
+@configclass
+class RobotPlayEnvCfgPhase2NoiseNominal(RobotPlayEnvCfgPhase2):
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.lidar_map.height_scan = play_lidar_height_scan(lidar_noise_only("nominal"))
+
+
+@configclass
+class RobotPlayEnvCfgPhase2NoiseStrong(RobotPlayEnvCfgPhase2):
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.lidar_map.height_scan = play_lidar_height_scan(lidar_noise_only("strong"))

@@ -204,3 +204,19 @@ gym.register(
         "rsl_rl_cfg_entry_point": _RUNNER,
     },
 )
+
+# Play-only: Phase 2 with the LiDAR noise pinned to one condition instead of drawn
+# 60/30/10, so each can be inspected on its own. The policy is unchanged and never sees
+# the map; only the drawn grid differs. See velocity_env_cfg_blind_phase2.py.
+#   --task Go2-Blind-GRU-Phase2-Noise-Weak --checkpoint <phase2 checkpoint>
+for _level in ("Weak", "Nominal", "Strong"):
+    gym.register(
+        id=f"Go2-Blind-GRU-Phase2-Noise-{_level}",
+        entry_point="isaaclab.envs:ManagerBasedRLEnv",
+        disable_env_checker=True,
+        kwargs={
+            "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_blind_phase2:RobotPlayEnvCfgPhase2Noise{_level}",
+            "play_env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_blind_phase2:RobotPlayEnvCfgPhase2Noise{_level}",
+            "rsl_rl_cfg_entry_point": _RUNNER,
+        },
+    )
