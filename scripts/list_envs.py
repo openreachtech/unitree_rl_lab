@@ -76,7 +76,7 @@ from prettytable import PrettyTable
 # ones (several of which contain "Unitree" in their name), and our task IDs share
 # no single common prefix, so the accepted prefixes are enumerated here. train.py
 # imports get_task_ids() so that renaming a task only needs a change in one place.
-TASK_ID_PREFIXES = ("Unitree-", "Go2W-")
+TASK_ID_PREFIXES = ("Unitree-", "Go2w-")
 
 
 def get_task_ids() -> list[str]:

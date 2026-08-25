@@ -702,9 +702,9 @@ Goal-directed rewards (mdp.commands.MixedGoalVelocityCommand).
 
 Direct ports of ANYmal Parkour's Table S2/S3 terms (Hoeller/Rudin et al. 2023,
 doc/papers/ANYmal_Parkour_Learning_Agile_Navigation_for_Quadrupedal_Robots.md), promoted
-here from the Go2W-v2-Teacher-Phase5-Try1 sandbox module once Go2W-v1-Phase5-Try15 (the
+here from the Go2w-v2-Teacher-Phase5-Try1 sandbox module once Go2w-v1-Phase5-Try15 (the
 same design, ported to the v1/GRU line) was folded into this project's permanent
-Go2W-v1-Phase5 -- see velocity_env_cfg_phase5.py's module docstring for that fold's
+Go2w-v1-Phase5 -- see velocity_env_cfg_phase5.py's module docstring for that fold's
 reasoning and MuJoCo validation. All read the goal straight off the command term's
 ``goal_pos_w`` (a MixedGoalVelocityCommand attribute) rather than treating
 ``command_manager.get_command(...)`` (the synthesized steering velocity) as the target,
@@ -904,5 +904,7 @@ def goal_arrival_reward(
         is_last_step = is_last_step & ~rough_env_mask
     reward = bonus * arrived.float() - distance
     return torch.where(is_last_step, reward, torch.zeros_like(reward))
+
+
 
 

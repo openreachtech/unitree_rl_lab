@@ -127,7 +127,7 @@ def terrain_levels_climb_demote_on_fail(
     Demoting on these specific termination causes regardless of distance closes
     that gap without touching the existing distance-based rule for genuine "just
     didn't move enough" failures (e.g. time_out at low progress). Measured
-    (Go2W-v1-Phase5): higher terrain_levels *and* a lower base_contact rate than
+    (Go2w-v1-Phase5): higher terrain_levels *and* a lower base_contact rate than
     the distance-only version over a comparable training budget -- see
     sandbox/SUMMARY.md.
 

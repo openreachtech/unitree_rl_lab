@@ -6,7 +6,7 @@
 """TCN student distillation configs (behavior cloning + latent matching).
 
 Lee et al. 2020, Eq. 1 / Table S8. Policy is the TCN-100 student plus a frozen
-``PrivilegedMlp`` teacher loaded from a ``Go2W-v2-Teacher-*`` PPO checkpoint.
+``PrivilegedMlp`` teacher loaded from a ``Go2w-v2-Teacher-*`` PPO checkpoint.
 """
 
 from isaaclab.utils import configclass

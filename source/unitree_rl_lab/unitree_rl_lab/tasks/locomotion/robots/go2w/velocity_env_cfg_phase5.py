@@ -23,8 +23,8 @@ from unitree_rl_lab.tasks.locomotion.robots.go2w.velocity_env_cfg_phase4 import 
 #
 # --- Terrain/command/reward redesign (2026-08-18) --------------------------------------
 #
-# Folded in from the Go2W-v1-Phase5-Try15 sandbox experiment (2026-08-17/18), itself a
-# port of Go2W-v2-Teacher-Phase5-Try1 (deleted 2026-08-19 after folding; see sandbox/
+# Folded in from the Go2w-v1-Phase5-Try15 sandbox experiment (2026-08-17/18), itself a
+# port of Go2w-v2-Teacher-Phase5-Try1 (deleted 2026-08-19 after folding; see sandbox/
 # SUMMARY.md for the original reasoning) to this v1/GRU line. Confirmed in MuJoCo:
 # controls correctly, no runaway under a zero command, crosses 0.40 m. This replaces the
 # pyramid_stairs terrain, UniformTerrainGatedVelocityCommand, and climb_progress/
@@ -141,7 +141,7 @@ from unitree_rl_lab.tasks.locomotion.robots.go2w.velocity_env_cfg_phase4 import 
 # promotes past size * 0.35 = 1.925 m from spawn).
 #
 # Grid shrunk 20x20 -> 4x10 (2026-08-18, memory) with rough/thin_wall reproportioned
-# 30/70 -> 25/75 -- ported from the Go2W-v1-Phase5-Try16 sandbox experiment (terrain only;
+# 30/70 -> 25/75 -- ported from the Go2w-v1-Phase5-Try16 sandbox experiment (terrain only;
 # Try16's own front_leg_push_reward/base_contact changes were not folded in). Halving
 # num_rows halves the wall-height curriculum's resolution (per-row step ~0.028 -> ~0.056
 # m) and, since max_init_terrain_level below is an absolute row index unaffected by this
@@ -249,7 +249,7 @@ class RewardsCfgPhase5(RewardsCfgPhase3):
     to pitch, which flat_orientation_l2 otherwise penalises continuously even on a
     successful attempt.
 
-    goal_arrival added 2026-08-24 (folded from Go2W-v1-Phase5-Try24), on top of the four
+    goal_arrival added 2026-08-24 (folded from Go2w-v1-Phase5-Try24), on top of the four
     terms above, none of which removed -- see mdp/rewards.py's own "Table S2 vs Table S3"
     module docstring for the full reasoning. goal_position_tracking/goal_heading_tracking
     only ever fire in a single 1 s window (arrival_deadline_s=8.0,
@@ -372,13 +372,13 @@ class CurriculumCfgPhase5(CurriculumCfg):
     terrain_levels (a separate curriculum term entirely).
 
     terrain_levels replaced 2026-08-25 with mdp.terrain_levels_climb_demote_on_fail
-    (folded from Go2W-v1-Phase5-Try26). custom_terrain_levels_climb's move_down only
+    (folded from Go2w-v1-Phase5-Try26). custom_terrain_levels_climb's move_down only
     fires below 0.5 m of net displacement, so an env promoted past its real ability
     could crash (base_contact/bad_orientation) after already covering more than that,
     neither promoted nor demoted -- stuck at a level it was genuinely failing, with
     nothing pulling it back down. The replacement additionally demotes on those two
     termination causes regardless of distance; see its own docstring in
-    mdp/curriculums.py for the full reasoning. Measured (Go2W-v1-Phase2 ->
+    mdp/curriculums.py for the full reasoning. Measured (Go2w-v1-Phase2 ->
     2500 iterations): terrain_levels reached 6.16 (vs. the old function's own ~5.4-5.5
     over a comparable budget) with a lower base_contact rate (43% vs. ~74-75%) --
     and, checked in MuJoCo, this is this project's **first confirmed 0.50 m wall

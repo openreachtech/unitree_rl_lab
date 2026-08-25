@@ -1,6 +1,6 @@
 """Go2W v2: v1 phase curricula with a teacher-style privileged critic.
 
-Same terrain, rewards, commands, and TCN actor as ``Go2W-v1-Phase*``. The critic
+Same terrain, rewards, commands, and TCN actor as ``Go2w-v1-Phase*``. The critic
 observation is privileged ``xt`` only (foot-local height scans and contacts), and
 ``TcnTeacherPPORunnerCfg`` encodes ``xt`` then concatenates proprioception ``ot``.
 """

@@ -10,7 +10,7 @@ The second campaign's headline result reaches beyond just this phase: **switchin
 policy network from an MLP to a GRU (`GruPPORunnerCfg`) fixed a MuJoCo command-following
 problem that reward-shaping alone (Try 11/12) had only partially fixed**, on identical
 environment config, and did so more convincingly than any environment/reward change tried
-here — see Lesson 7. Consequently `Go2W-v1-Phase1` through `Go2W-v1-Phase5` (not just this
+here — see Lesson 7. Consequently `Go2w-v1-Phase1` through `Go2w-v1-Phase5` (not just this
 phase) now all register with `GruPPORunnerCfg` (`go2w/__init__.py`), and the calf/wheel
 actuator correction from Try 13 (see the Try-by-try table) went into the *shared*
 `UNITREE_GO2W_CFG` (`assets/robots/unitree.py`), not a Phase5-only override.
@@ -186,7 +186,7 @@ in this file by that metric alone. Check MuJoCo before trusting a training-metri
      as flat a plateau as Try 13's when its 2500-iteration budget ran out. Worth more
      iterations before concluding 0.40 m is where it settles.
 * **Should GRU become the default architecture for Phase5 (and earlier phases)? Decided
-  2026-08-13: yes.** `Go2W-v1-Phase1` through `Go2W-v1-Phase5` all register with
+  2026-08-13: yes.** `Go2w-v1-Phase1` through `Go2w-v1-Phase5` all register with
   `GruPPORunnerCfg` now, not just Phase5 — given Lesson 7, an MLP appears structurally the
   wrong tool for this task's "stop when told to" requirement, not just under-trained on
   it, and there is no reason to expect that to be Phase5-specific. Not yet re-validated by
@@ -253,16 +253,16 @@ command in MuJoCo, prompting a full redesign rather than another round of reward
   `motion_without_cmd`/`wheel_motion_without_cmd` all removed, replaced with direct ports
   of ANYmal Parkour's (Hoeller/Rudin et al. 2023) Table S2 goal-tracking terms.
 
-Developed as `Go2W-v2-Teacher-Phase5-Try1` (V2/Teacher line) then
-`Go2W-v1-Phase5-Try15` (this v1/GRU line, sandbox/velocity_env_cfg_phase5_try15.py).
+Developed as `Go2w-v2-Teacher-Phase5-Try1` (V2/Teacher line) then
+`Go2w-v1-Phase5-Try15` (this v1/GRU line, sandbox/velocity_env_cfg_phase5_try15.py).
 Try15 confirmed in MuJoCo: controls correctly, no runaway under a zero command, crosses
 0.40 m (stalls at 0.50 m -- the front legs get up onto the wall, but the robot can't
 drive the rear end up and over; still unsolved as of this entry, see
 Try16/Try17). Folded into the permanent `velocity_env_cfg_phase5.py` on 2026-08-18 --
 see that file's own module docstring for which Lessons above are now obsolete (1, 2 --
 terrain-shape-specific to the pyramid) versus still load-bearing (3, 6 -- re-confirmed
-independently against the new terrain too). `Go2W-v2-Phase5`/`Go2W-v2-Teacher-Phase5`/
-`Go2W-v2-Student-Phase5` inherit this fold as well (deliberate, not an oversight -- their
+independently against the new terrain too). `Go2w-v2-Phase5`/`Go2w-v2-Teacher-Phase5`/
+`Go2w-v2-Student-Phase5` inherit this fold as well (deliberate, not an oversight -- their
 old pipeline had the same unsolved problem).
 
 Try15's own file was *not* deleted after folding, unlike every prior fold recorded above
@@ -294,7 +294,7 @@ Terrain grid shrunk 20x20 → 4x10 and rough/thin_wall reproportioned 30/70 → 
 memory — this part *was* kept, folded into the default `velocity_env_cfg_phase5.py` on
 2026-08-18/19 independently of the reward work.
 
-**Try17** (restarted fresh from `Go2W-v1-Phase2`, not continuing Try16's checkpoint):
+**Try17** (restarted fresh from `Go2w-v1-Phase2`, not continuing Try16's checkpoint):
 MuJoCo showed the Try15→Try16 checkpoint chain had picked up a real regression (more
 prone to tipping/inverting, harder to control), so this Try branched from the last known-
 good common ancestor instead of stacking further. Redesigned `front_leg_push_reward` as
@@ -316,7 +316,7 @@ confirm whether it fires at all before judging it.
 **Try18** (wall thickness pinned to a constant 1 cm, "steel plate", vs. the default's
 fixed 40 cm) and **Try19** (thickness graded 10 cm → 1 cm by the same per-row difficulty
 that already drives `wall_height_range` -- `thin_wall_terrain`'s `_lerp` already
-supported this, just never used) both trained 3300 iterations from `Go2W-v1-Phase2`,
+supported this, just never used) both trained 3300 iterations from `Go2w-v1-Phase2`,
 everything else identical to the post-shrink default (4x10 grid, rough 25 % / thin_wall
 75 %). Results came back essentially identical to each other and both concerning:
 
@@ -343,8 +343,8 @@ thin-wall deploy target is still a priority.
 
 `velocity_env_cfg_v2_teacher_phase5_try1.py` (the V2/Teacher-line original of Try15,
 whose `goal_*` reward functions were long since promoted to `mdp/rewards.py` and whose
-own registered task `Go2W-v2-Teacher-Phase5-Try1`/`Go2W-v2-Student-Phase5-Try1` had
-become redundant with the default `Go2W-v2-Teacher-Phase5` once the fold made their env
+own registered task `Go2w-v2-Teacher-Phase5-Try1`/`Go2w-v2-Student-Phase5-Try1` had
+become redundant with the default `Go2w-v2-Teacher-Phase5` once the fold made their env
 configs identical) was deleted in the same pass, along with its two now-pointless
 registrations.
 
@@ -429,14 +429,14 @@ continuous distance-based shaping term is worth trying again.
 `CurriculumCfgPhase5` (not via a sandbox try -- judged low-risk, since it only changes
 which envs count toward the "rough" velocity-range curriculum's own decision, unrelated
 to terrain_levels), then verified live with a 500-iteration continuation of the
-*actual* default `Go2W-v1-Phase5` task (now genuinely trained end-to-end on this
+*actual* default `Go2w-v1-Phase5` task (now genuinely trained end-to-end on this
 codebase, checkpoint present on disk as of this entry) -- no regression observed
 (terrain_levels 5.26, base_contact 25.8%, time_out 69.8%, bad_orientation 4.3%, all
 healthy).
 
 **2026-08-24: `traversability_terrain_levels_climb` abandoned per direct instruction.**
 Deleted from mdp/curriculums.py along with all four tries that used it: Try20, Try21,
-Try22 (GRU line), and Go2W-v2-Teacher-Phase5-Try2 (privileged Teacher line, the
+Try22 (GRU line), and Go2w-v2-Teacher-Phase5-Try2 (privileged Teacher line, the
 10000-iteration run). Rationale: across all three GRU variants the EMA curriculum
 consistently produced *lower* terrain_levels (1.0-1.8) than the default's own ratchet
 (peak ~4.5-5.3), and while the working theory was that the default's higher numbers
@@ -473,7 +473,7 @@ this dead zone was the suspected cause.
 `custom_terrain_levels_climb` except it additionally demotes on `base_contact`/
 `bad_orientation` termination regardless of distance travelled. Tested two ways:
 
-| | continuing from the default's own checkpoint (+1500 iter) | fresh from Go2W-v1-Phase2 (2500 iter) |
+| | continuing from the default's own checkpoint (+1500 iter) | fresh from Go2w-v1-Phase2 (2500 iter) |
 | --- | --- | --- |
 | terrain_levels (start → end) | 4.49 → 6.05 (peak 6.16) | 4.49 → 6.16 (peak 6.25) |
 | `base_contact` | 42.3 % (vs. the default's own ~74 %) | 43.1 % |
@@ -493,7 +493,30 @@ long, thoroughly-converged one; not yet isolated).
 **Folded into the default `CurriculumCfgPhase5` 2026-08-25** (see that class's own
 docstring) and Try26's sandbox file/registration deleted. `Try27` (goal_arrival scaled
 by terrain_levels difficulty, tested alongside Try26 from the same starting point) was
-*not* folded -- it showed only a marginal terrain_levels improvement (5.36 → 5.54) with
-no improvement to `base_contact` (stayed ~74-75 %), unlike Try26's clear effect on both
-axes. Still registered as a sandbox try as of this entry; revisit or delete depending on
-whether it's still worth pursuing.
+*not* folded initially -- it showed only a marginal terrain_levels improvement
+(5.36 → 5.54) with no improvement to `base_contact` (stayed ~74-75 %), unlike Try26's
+clear effect on both axes.
+
+**Try27 re-run 2026-08-25, fresh from Go2w-v1-Phase2 (1500 iterations), now
+automatically inheriting Try26's demote-on-fail fix** (it never overrode
+`curriculum`, so it picked up the new default's `CurriculumCfgPhase5` for free).
+Isaac Lab metrics looked dramatically better than Try26 alone -- `base_contact` 0.96 %,
+`time_out` 96.0 %, terrain_levels 5.37 (peak 5.90) -- but **a Play check found this was
+misleading**: the trained policy had learned to sway left-right in place near the wall
+rather than ever attempt to climb it. The "healthy" termination stats reflected "never
+engaging the obstacle at all" (so nothing crashes into anything), not genuine
+wall-crossing competence -- the difficulty-scaled arrival bonus, stacked with
+`goal_dont_wait_penalty`'s "don't be too slow" pressure, apparently made "wobble just
+fast enough to dodge the don't-wait penalty, near a goal you never actually reach"
+a viable low-risk strategy once the arrival bonus's own upside (paid only via a genuine
+arrival) wasn't reliably attainable. A clear instance of Lesson 6/7 (Isaac-Lab-only
+metrics, including termination-rate ones, are not sufficient evidence a change
+helped -- check MuJoCo/Play before trusting them).
+
+**2026-08-25: abandoned per direct instruction** -- `mdp.goal_arrival_reward_
+difficulty_scaled` deleted from mdp/rewards.py and Try27's sandbox file/registration
+removed. If a difficulty-scaled success bonus is worth retrying, this record's own
+failure mode (reward-hacked non-engagement) is the first thing to guard against --
+e.g. by verifying in Play *before* declaring victory on termination-rate metrics alone,
+and/or reconsidering whether `goal_dont_wait_penalty` and a success-only bonus can be
+made to interact safely together.

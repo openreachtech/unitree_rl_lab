@@ -22,7 +22,7 @@ class UniformTerrainGatedVelocityCommand(UniformVelocityCommand):
     0), and whose lin_vel_x is clamped to >= ``cfg.restricted_lin_vel_x_min`` (forward-only,
     no reverse) on every column *outside* that set.
 
-    Folded into Go2W-v1-Phase5 from the sandbox (Try10 introduced the lin_vel_y gate; Try13
+    Folded into Go2w-v1-Phase5 from the sandbox (Try10 introduced the lin_vel_y gate; Try13
     added the lin_vel_x floor) -- see sandbox/SUMMARY.md's Try-by-try table and Lesson 7 for
     why: Phase5's terrain mix is mostly stairs, where lateral motion and reverse have no
     task value and pinning them to a single global range either wastes training capacity
