@@ -199,7 +199,7 @@ gym.register(
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_blind_phase3:RobotEnvCfgPhase3",
+        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_blind_phase3:RobotEnvCfgPhase3BalanceMatched",
         "play_env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_blind_phase3:RobotPlayEnvCfgPhase3",
         "rsl_rl_cfg_entry_point": _RUNNER,
     },
@@ -220,3 +220,70 @@ for _level in ("Weak", "Nominal", "Strong"):
             "rsl_rl_cfg_entry_point": _RUNNER,
         },
     )
+
+# Play-only: the Phase 3 default on a 2 x 3 stepped terrain (pyramid | inverted pyramid,
+# rows centred on 5 / 10 / 15 cm), with the LiDAR noise pinned to one condition instead of
+# drawn 60/30/10. The policy is unchanged and never sees the map; only the drawn grid
+# differs. See velocity_env_cfg_blind_phase3.py.
+#   --task Go2-Blind-GRU-Phase3-Noise-Weak --checkpoint <phase3 checkpoint>
+for _level in ("Weak", "Nominal", "Strong"):
+    gym.register(
+        id=f"Go2-Blind-GRU-Phase3-Noise-{_level}",
+        entry_point="isaaclab.envs:ManagerBasedRLEnv",
+        disable_env_checker=True,
+        kwargs={
+            "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_blind_phase3:RobotPlayEnvCfgPhase3Noise{_level}",
+            "play_env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_blind_phase3:RobotPlayEnvCfgPhase3Noise{_level}",
+            "rsl_rl_cfg_entry_point": _RUNNER,
+        },
+    )
+
+# Phase 4: stepping over short free-standing walls, after Go2-v3-Phase4. Continual
+# learning on top of Phase 3 -- stairs are a surface to climb, these are isolated walls
+# to clear, invisible to a blind policy until a foot hits them. See
+# velocity_env_cfg_blind_phase4.py.
+#   --task Go2-Blind-GRU-Phase4 --resume --previous-task Go2-Blind-GRU-Phase3
+gym.register(
+    id="Go2-Blind-GRU-Phase4",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_blind_phase4:RobotEnvCfgPhase4",
+        "play_env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_blind_phase4:RobotPlayEnvCfgPhase4",
+        "rsl_rl_cfg_entry_point": _RUNNER,
+    },
+)
+
+# The same three pinned-noise play variants Phase 2 and 3 have.
+for _level in ("Weak", "Nominal", "Strong"):
+    gym.register(
+        id=f"Go2-Blind-GRU-Phase4-Noise-{_level}",
+        entry_point="isaaclab.envs:ManagerBasedRLEnv",
+        disable_env_checker=True,
+        kwargs={
+            "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_blind_phase4:RobotPlayEnvCfgPhase4Noise{_level}",
+            "play_env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_blind_phase4:RobotPlayEnvCfgPhase4Noise{_level}",
+            "rsl_rl_cfg_entry_point": _RUNNER,
+        },
+    )
+
+# The same Phase 4 environment, registered a second time so a run that skips the stair
+# phase gets its own log directory (experiment_name follows the task id). Nothing about
+# the env differs -- only which checkpoint the run resumes from:
+#   Go2-Blind-GRU-Phase4          <- Phase 3 (flat -> rough/boxes -> stairs -> walls)
+#   Go2-Blind-GRU-Phase4-NoStairs <- Phase 2 (flat -> rough/boxes -> walls)
+# The question is whether the stair phase helps wall crossing or costs it; earlier work
+# on this lineage saw stair training erode the wall-crossing ability it was meant to
+# build on. Note the two are not matched on total experience -- the stairs path arrives
+# with roughly 3500 more iterations behind it -- so read the gap with that in mind.
+#   --task Go2-Blind-GRU-Phase4-NoStairs --resume --load_run <phase2 run> --checkpoint ...
+gym.register(
+    id="Go2-Blind-GRU-Phase4-NoStairs",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_blind_phase4:RobotEnvCfgPhase4",
+        "play_env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_blind_phase4:RobotPlayEnvCfgPhase4",
+        "rsl_rl_cfg_entry_point": _RUNNER,
+    },
+)
