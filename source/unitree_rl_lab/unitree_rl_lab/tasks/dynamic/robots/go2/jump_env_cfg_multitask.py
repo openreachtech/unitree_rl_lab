@@ -30,16 +30,12 @@ from __future__ import annotations
 
 from isaaclab.utils import configclass
 
-from unitree_rl_lab.tasks.dynamic.robots.go2.jump_env_cfg import CommandsCfg, EventCfg, RobotEnvCfg
-from unitree_rl_lab.tasks.dynamic.robots.go2.jump_env_cfg_phase2 import (
-    CommandsCfgPhase2,
-    EventCfgPhase2,
-    RobotEnvCfgPhase2,
-)
+from unitree_rl_lab.tasks.dynamic.robots.go2.jump_env_cfg import CommandsCfg, RobotEnvCfg
+from unitree_rl_lab.tasks.dynamic.robots.go2.jump_env_cfg_phase2 import CommandsCfgPhase2, RobotEnvCfgPhase2
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_phase1 import CommandsCfgPhase1
 from unitree_rl_lab.tasks.multitask import mdp
 from unitree_rl_lab.tasks.multitask.robots.go2.multitask_env_cfg import (
-    LayoutCheckEventCfg,
+    MultitaskEventCfg,
     MultitaskSceneCfg,
     UnifiedObservationsCfg,
     apply_multitask_post_init,
@@ -72,16 +68,11 @@ class MultitaskCommandsCfgPhase1(CommandsCfg):
 
 
 @configclass
-class MultitaskEventCfgPhase1(EventCfg, LayoutCheckEventCfg):
-    """Phase 1's events plus the observation-layout assertion."""
-
-
-@configclass
 class RobotEnvCfgMultitaskPhase1(RobotEnvCfg):
     scene: MultitaskSceneCfg = MultitaskSceneCfg(num_envs=4096, env_spacing=2.5)
     observations: UnifiedObservationsCfg = UnifiedObservationsCfg()
     commands: MultitaskCommandsCfgPhase1 = MultitaskCommandsCfgPhase1()
-    events: MultitaskEventCfgPhase1 = MultitaskEventCfgPhase1()
+    events: MultitaskEventCfg = MultitaskEventCfg()
 
     def __post_init__(self):
         super().__post_init__()
@@ -116,16 +107,11 @@ class MultitaskCommandsCfgPhase2(CommandsCfgPhase2):
 
 
 @configclass
-class MultitaskEventCfgPhase2(EventCfgPhase2, LayoutCheckEventCfg):
-    """Phase 2's events (including the friction randomisation) plus the layout assertion."""
-
-
-@configclass
 class RobotEnvCfgMultitaskPhase2(RobotEnvCfgPhase2):
     scene: MultitaskSceneCfg = MultitaskSceneCfg(num_envs=4096, env_spacing=2.5)
     observations: UnifiedObservationsCfg = UnifiedObservationsCfg()
     commands: MultitaskCommandsCfgPhase2 = MultitaskCommandsCfgPhase2()
-    events: MultitaskEventCfgPhase2 = MultitaskEventCfgPhase2()
+    events: MultitaskEventCfg = MultitaskEventCfg()
 
     def __post_init__(self):
         super().__post_init__()

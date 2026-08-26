@@ -21,7 +21,6 @@ from __future__ import annotations
 from isaaclab.utils import configclass
 
 from unitree_rl_lab.tasks.dynamic.robots.go2.jump_env_cfg import CommandsCfg as JumpCommandsCfg
-from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import EventCfg
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_run import (
     CommandsCfgGo2GallopPhase1,
     CommandsCfgGo2GallopPhase2,
@@ -29,7 +28,7 @@ from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_run import (
     RobotEnvCfgGo2GallopPhase2,
 )
 from unitree_rl_lab.tasks.multitask.robots.go2.multitask_env_cfg import (
-    LayoutCheckEventCfg,
+    MultitaskEventCfg,
     MultitaskSceneCfg,
     UnifiedObservationsCfg,
     apply_multitask_post_init,
@@ -62,16 +61,11 @@ class MultitaskCommandsCfgGallopPhase1(CommandsCfgGo2GallopPhase1):
 
 
 @configclass
-class MultitaskEventCfgGallop(EventCfg, LayoutCheckEventCfg):
-    """The locomotion events plus the observation-layout assertion."""
-
-
-@configclass
 class RobotEnvCfgMultitaskGallopPhase1(RobotEnvCfgGo2GallopPhase1):
     scene: MultitaskSceneCfg = MultitaskSceneCfg(num_envs=4096, env_spacing=2.5)
     observations: UnifiedObservationsCfg = UnifiedObservationsCfg()
     commands: MultitaskCommandsCfgGallopPhase1 = MultitaskCommandsCfgGallopPhase1()
-    events: MultitaskEventCfgGallop = MultitaskEventCfgGallop()
+    events: MultitaskEventCfg = MultitaskEventCfg()
 
     def __post_init__(self):
         super().__post_init__()
@@ -110,7 +104,7 @@ class RobotEnvCfgMultitaskGallopPhase2(RobotEnvCfgGo2GallopPhase2):
     scene: MultitaskSceneCfg = MultitaskSceneCfg(num_envs=4096, env_spacing=2.5)
     observations: UnifiedObservationsCfg = UnifiedObservationsCfg()
     commands: MultitaskCommandsCfgGallopPhase2 = MultitaskCommandsCfgGallopPhase2()
-    events: MultitaskEventCfgGallop = MultitaskEventCfgGallop()
+    events: MultitaskEventCfg = MultitaskEventCfg()
 
     def __post_init__(self):
         super().__post_init__()

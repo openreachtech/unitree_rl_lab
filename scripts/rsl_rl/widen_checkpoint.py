@@ -52,7 +52,7 @@ def _load_module(name: str, relative_path: str):
 
 
 obs_spec = _load_module("_multitask_obs_spec", "multitask/obs_spec.py")
-surgery = _load_module("_multitask_weight_surgery", "multitask/modules/weight_surgery.py")
+surgery = _load_module("_multitask_weight_surgery", "../assets/models/modules/weight_surgery.py")
 
 
 def _resolve_mapping(source_dim: int, prefix: str):
