@@ -11,6 +11,10 @@ FSM:
     Dynamic:
       id: 4
       type: Flip
+    Multitask:
+      id: 5
+      type: Multitask
+      optional: true
   Passive:
     transitions:
       FixStand: LT + A.on_pressed
@@ -23,10 +27,12 @@ FSM:
       Passive: LT + B.on_pressed
       Velocity: start.on_pressed
       Dynamic: LT + up.on_pressed
+      Multitask: LT + right.on_pressed
     keyboard_transitions:
       Passive: "0"
       Velocity: enter
       Dynamic: "2"
+      Multitask: "6"
     kp: [60, 80, 80, 60, 80, 80, 60, 80, 80, 60, 80, 80]
     kd: [5, 4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4]
     ts: [0, 1, 2]
@@ -133,3 +139,78 @@ FSM:
         # roll alone would leave observation[1] at 0.0, a combination it has never met.
         target_height: 0.60
         target_roll_turns: -2.0
+
+  # --- Multitask (State_Multitask): one policy for driving AND acrobatics -------
+  # The merged mixture-of-experts policy. Unlike Velocity (drive only) and Dynamic
+  # (acrobatics from a standstill), this state feeds the network both task selectors
+  # at once, so a flip can be fired *while the robot is running*.
+  #
+  #   [F/B/L/R/Y/U] drive        [3] jump   [4] backflip   [5] sideflip
+  #   [1]/LT+A FixStand          [0]/LT+B Passive
+  #
+  # Enter from FixStand. Motions re-arm after rearm_delay_s, so they can be chained,
+  # and the drive command stays live throughout -- releasing it is not required before
+  # firing a move.
+  Multitask:
+    transitions:
+      Passive: LT + B.on_pressed
+      FixStand: LT + A.on_pressed
+    keyboard_transitions:
+      Passive: "0"
+      FixStand: "1"
+    # policy_dir and command_duration_s MUST be changed together -- they are one setting
+    # split across two lines, and a mismatch fails silently rather than loudly:
+    #
+    #   go2_multitask                   -> command_duration_s: 1.5   (current)
+    #   go2_multitask_phase1            -> command_duration_s: 0.5   (pre-promotion runs)
+    #   go2_multitask_try_long_command  -> command_duration_s: 1.5   (the promoted run's logs)
+    #
+    # command_duration_s is not a deploy-side timeout. It sets how long the `enabled` flag
+    # stays high in the observation, and this policy's gate keys its expert-routing prior
+    # off that flag. Run the long-command policy with 0.5 and the prior lapses a third of
+    # the way through every flip, handing the robot to the locomotion expert while it is
+    # upside down -- measured at 59% of the action, and worth 0.55 flip success against
+    # 0.79. The robot will still move, so nothing announces the error.
+    policy_dir: ../../../logs/rsl_rl/go2_multitask
+    command_duration_s: 1.5
+    time_scale: 1.0
+    rearm_delay_s: 0.3
+
+    # Keyboard driving. The exported lin_vel_x range is [-1.0, 3.5], so scale 1.0 makes F
+    # ask for 3.5 m/s from a standstill -- the top of the training range, which this policy
+    # tracks at ~1.0 in the merged task. Commanding what it cannot hold just leaves it
+    # marking time. Velocity uses 1.0 deliberately because that state exists to measure a
+    # top speed; this one is for driving, so ask for something followable and raise it once
+    # the robot is moving.
+    keyboard_vel_scale: 0.35
+    # keyboard_alpha: 0.15      # low-pass on the command; higher = quicker to build up
+
+    # Targets are given explicitly rather than by name. The `motion:` shorthand fills in
+    # defaults shared with the Dynamic state, and its sideflip default is +1.0 turn --
+    # correct for Go2-Sideflip-Double, but this policy trained on
+    # target_roll_turns_range=(-1.0, -1.0) and a +1.0 command asks it to roll the way it
+    # never learned. Backflip and jump happen to match the shared defaults; sideflip does
+    # not, which is exactly the motion that failed in MuJoCo.
+    motions:
+      - key: "3"
+        motion: jump
+        target_height: 0.20
+      - key: "4"
+        motion: backflip
+        target_pitch_turns: -1.0
+      - key: "5"
+        motion: sideflip
+        target_roll_turns: -1.0
+
+    # Fall -> Passive guard. Values carried over from Dynamic, where they were tuned on
+    # hardware: at 0.3 s the guard armed while the front feet were still slamming down and
+    # dropped good backflips to Passive, and a single IMU sample is not enough because the
+    # fused orientation swings for a few milliseconds under landing shock.
+    #
+    # One difference from Dynamic: there, the guard is only meaningful after a motion. Here
+    # the robot is usually running, so the guard is live by default and suppressed only for
+    # command_duration_s + fall_check_delay_s after a trigger -- the same shape as the
+    # training environment, which gates bad_orientation off inside the acrobatics window.
+    fall_check_delay_s: 1.2
+    fall_check_hold_s: 0.1
+    bad_orientation_limit: 1.2

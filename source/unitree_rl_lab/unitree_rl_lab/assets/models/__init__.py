@@ -11,7 +11,6 @@ from .modules.weight_surgery import expand_state_dict, scatter_observation  # no
 from .moe_actor import (  # noqa: F401
     EXPERT_ACROBATICS,
     EXPERT_LOCOMOTION,
-    EXPERT_TRANSITION,
     NUM_EXPERTS,
     Gating,
     MixtureOfExperts,

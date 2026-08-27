@@ -101,7 +101,19 @@ class MultitaskCommandsCfgPhase2(CommandsCfgPhase2):
     base_velocity = _ZERO_VELOCITY_COMMAND
 
     jump = CommandsCfgPhase2().jump.replace(
-        # Own curriculum state: assist decay must not be shared with the 47-column Phase 2 run.
+        # Held for the whole motion rather than its first third. The 0.5 s default drops the
+        # command -- and with it the `enabled` flag the merged policy's gate reads -- a third of
+        # the way through a ~1.2 s flip. Measured consequence in the merged task: 59% of the
+        # action came from the locomotion expert while the robot was inverted, flip success
+        # capped at 0.55, and the take-off speed curriculum stalled at 0.8 m/s. At 1.5 s the same
+        # numbers are 0.7% locomotion, 0.79 success, and the curriculum reaches its 3.5 m/s
+        # ceiling. Promoted from the Try-Long-Command sandbox.
+        #
+        # This value must equal the merged environment's ACRO_WINDOW_S and the deploy state's
+        # command_duration_s: the expert, the reward window and the routing prior all key off the
+        # same flag, and a disagreement is silent -- the robot still moves.
+        command_duration_s=1.5,
+        # Own curriculum state: assist decay must not be shared with the 0.5 s lineage.
         state_file="logs/rsl_rl/go2_multitask_jump_phase2/jump_curriculum_state.json",
     )
 

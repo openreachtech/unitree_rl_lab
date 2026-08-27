@@ -168,12 +168,6 @@ def block_offsets(layout: tuple[Block, ...]) -> dict[str, int]:
 POLICY_DIM = layout_dim(POLICY_UNIFIED)  # 122
 CRITIC_DIM = layout_dim(CRITIC_UNIFIED)  # 330
 
-JUMP_ENABLED_INDEX = block_offsets(POLICY_UNIFIED)["jump_command"]
-"""Column of ``jump_command[0]`` -- the 0/1 "a motion is currently commanded" flag.
-
-Used by the gating network's command prior (see ``modules.moe.Gating``) to route to the acrobatics
-expert while a motion is active. It reads the *unified policy* vector, so it is only valid there.
-"""
 
 
 def source_to_unified_map(

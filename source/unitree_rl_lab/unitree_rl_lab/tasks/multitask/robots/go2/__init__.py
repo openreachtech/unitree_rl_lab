@@ -3,7 +3,7 @@
 import gymnasium as gym
 
 # =================================================================================================
-# Go2-Multitask-Phase1 -- the merged environment.
+# Go2-Multitask -- the merged environment.
 #
 # Locomotion and acrobatics in one 20 s episode: full-range velocity commands (up to 3.5 m/s), with
 # a jump/backflip/sideflip interrupting them three to four times per episode. The policy is a
@@ -20,12 +20,12 @@ import gymnasium as gym
 #   python scripts/rsl_rl/build_moe_checkpoint.py \
 #       --locomotion-task Go2-Multitask-Gallop-Phase2 \
 #       --acrobatics-task Go2-Multitask-Jump-Phase2 \
-#       --task Go2-Multitask-Phase1
-#   python scripts/rsl_rl/train_and_aggregate.py --task Go2-Multitask-Phase1 --resume
+#       --task Go2-Multitask
+#   python scripts/rsl_rl/train_and_aggregate.py --task Go2-Multitask --resume
 # =================================================================================================
 
 gym.register(
-    id="Go2-Multitask-Phase1",
+    id="Go2-Multitask",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={

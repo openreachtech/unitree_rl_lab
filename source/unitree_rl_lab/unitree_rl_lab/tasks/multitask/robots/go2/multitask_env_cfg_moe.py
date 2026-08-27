@@ -56,11 +56,13 @@ from unitree_rl_lab.tasks.multitask.robots.go2.multitask_env_cfg import (
 )
 
 ACRO_WINDOW_S = 1.5
-"""Length of the acrobatics window, measured from the trigger.
+"""How long a commanded move counts as in progress.
 
-Not ``command_duration_s`` (0.5 s): ``minimum_landing_time_s`` is 0.8 s, so at 0.5 s the robot is
-still in the air. This covers flight, landing and recovery. Kept in one place because the rewards,
-the terminations and the command's re-arm all have to agree on it.
+Covers flight, landing and recovery: ``minimum_landing_time_s`` alone is 0.8 s, so anything shorter
+ends the window with the robot still in the air. Four things read this -- the acrobatics reward
+window, the terminations, the command's re-arm interval, and (through ``command_duration_s``) the
+gate's expert-routing prior. They have to agree, and when they did not, the gap between a 0.5 s
+command and a 1.5 s window was worth 0.55 flip success against 0.79.
 """
 
 ACROBATIC_COMPLETION_WEIGHT = 10.0
@@ -105,6 +107,11 @@ def _multi_trigger_jump_cfg():
     cfg.initial_assist_scale = 0.0
     cfg.state_file = None
     cfg.rearm_after_s = ACRO_WINDOW_S
+    # One span, one number: the command that drives the gate's routing prior now lasts exactly as
+    # long as the acrobatics reward window and the re-arm interval. They disagreed before -- 0.5 s
+    # against 1.5 s -- and the gap is where the policy handed an inverted robot back to the
+    # locomotion expert. See ACRO_WINDOW_S.
+    cfg.command_duration_s = ACRO_WINDOW_S
     # Tighter than the acrobatics task's schedule: with a 1.5 s window this gives a 3.0-4.5 s cycle,
     # so an eligible environment attempts ~5 moves per 20 s episode instead of ~3.5. Only ~13% of
     # environments are eligible at a 0.3 m/s take-off limit (the 10% commanded to stand, plus those
@@ -349,7 +356,7 @@ class MoeCurriculumCfg:
         params={
             "command_name": "jump",
             "maximum_speed": MAX_COMMANDED_SPEED,
-            "state_file": "logs/rsl_rl/go2_multitask_phase1/takeoff_speed_state.json",
+            "state_file": "logs/rsl_rl/go2_multitask/takeoff_speed_state.json",
         },
     )
 

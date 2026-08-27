@@ -22,8 +22,8 @@ a plain ``--resume``::
     python scripts/rsl_rl/build_moe_checkpoint.py \\
         --locomotion-task Go2-Multitask-Gallop-Phase2 \\
         --acrobatics-task Go2-Multitask-Jump-Phase2 \\
-        --task Go2-Multitask-Phase1
-    python scripts/rsl_rl/train_and_aggregate.py --task Go2-Multitask-Phase1 --resume
+        --task Go2-Multitask
+    python scripts/rsl_rl/train_and_aggregate.py --task Go2-Multitask --resume
 
 Runs on any interpreter with PyTorch and rsl_rl; it does not import ``unitree_rl_lab.tasks``, which
 would drag in Isaac Sim.
