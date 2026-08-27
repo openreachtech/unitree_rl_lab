@@ -520,3 +520,73 @@ failure mode (reward-hacked non-engagement) is the first thing to guard against 
 e.g. by verifying in Play *before* declaring victory on termination-rate metrics alone,
 and/or reconsidering whether `goal_dont_wait_penalty` and a success-only bonus can be
 made to interact safely together.
+
+### 2026-08-26/27: Try29 (difficulty-scaled progress reward) and Try30 (leg-wall
+contact exemption) -- one folded, one still undetermined
+
+Two new tries, each isolating one candidate fix motivated by the accumulated lessons
+above, trained sequentially from `Go2w-v1-Phase2` (2000 iterations each):
+
+**Try29** -- revived `goal_progress_reward` (the potential-based term abandoned after
+Try25) as a new class-based `mdp.goal_progress_reward`, this time scaling the
+*progress* itself by terrain difficulty (`(prev_distance - distance) * (1 + max_scale
+* difficulty)`) rather than scaling `goal_arrival_reward`'s success bonus the way
+Try27 did. The design reasoning: a progress reward pays ~0 for standing still or
+swaying in place (distance doesn't change), so the specific "wobble near the goal,
+never engage it" exploit that sank Try27 shouldn't be available here, regardless of
+the difficulty scale.
+
+Result: terrain_levels 4.78, but `base_contact` 0.58% / `time_out` 94.8% -- a
+termination distribution that superficially resembles Try27's reward-hack pattern.
+The `goal_progress` episode-reward log itself stayed near zero throughout training
+(±0.0001-0.0002), i.e. net closed distance averaged across the population was close
+to nil. This does not confirm the reward-hack theory doesn't apply here (the
+telescoping-to-zero argument only rules out one specific exploit mechanism, not every
+possible one), nor does it confirm genuine climbing success.
+
+**2026-08-27: abandoned per direct instruction, without a Play/MuJoCo check** --
+the difficulty-scaled `mdp.goal_progress_reward` class deleted from mdp/rewards.py
+and Try29's sandbox file/registration removed. Unlike Try27 (whose deletion followed
+a confirmed reward-hack finding), Try29's outcome was never actually determined --
+its metrics only *resembled* Try27's pattern, on a mechanism (`goal_progress_reward`)
+whose own design should rule out that specific exploit. Treat this as an open
+question, not a confirmed negative result, if a difficulty-scaled progress reward is
+revisited later.
+
+**Try30** -- split the default `undesired_contacts` term (Head/hip/thigh/calf,
+weight -0.3, threshold 1 N, uniform across every column) into two: Head/hip stays
+penalised everywhere unchanged, thigh/calf contact is exempted specifically on "wall"
+columns via new `mdp.undesired_contacts_column_aware`. Motivated by the theory that
+penalising the exact load-bearing leg-wall contact a climb requires (even at only
+-0.3 weight/1 N threshold, continuously for every step of contact) gives an
+independent, structural incentive to avoid the wall, on top of whatever an
+arrival-side reward is doing.
+
+Result: terrain_levels 6.53 (this project's highest yet), with a *healthy* termination
+distribution -- `base_contact` 37.8%, `time_out` 57.5% (genuinely mixed outcomes, not
+concentrated near either extreme the way Try27's or Try29's numbers are). Checked in
+MuJoCo: reaches a front-leg foothold at 0.60 m -- the highest confirmed climb attempt
+to date. Still trembles and creeps forward while meant to be holding position at the
+goal -- the same not-yet-resolved issue first flagged on Try26's checkpoint; this fold
+doesn't address it, remains open (see below).
+
+**2026-08-27: Try30 folded into the default `RewardsCfgPhase5`** (see that class's
+own docstring for the exact split) and Try30's sandbox file/registration deleted.
+
+### Open item, still unresolved as of 2026-08-27: stop-time trembling / creep
+
+Every checkpoint validated in MuJoCo since Try26 (Try26 itself, and now Try30) shares
+one un-investigated issue: once holding position at (or near) the goal, the robot
+trembles and drifts/creeps forward rather than staying still, despite the command
+dropping to zero on arrival and `goal_dont_wait_penalty` gating off once arrived.
+Candidate hypotheses, none yet tested:
+  * the GRU's recurrent hidden state may carry momentum/context from the climbing
+    motion for a few steps past arrival, before settling;
+  * arrival is a rare outcome (most episodes end via `time_out` or a failure
+    termination before ever reaching it), so the policy may simply have little
+    training experience of the "just arrived, now hold" sub-task specifically;
+  * possible boundary-condition jitter right at the `goal_dont_wait_penalty`
+    speed-threshold transition, though this is a guess, not yet checked against the
+    actual gating logic in a running policy.
+Not yet isolated to a specific cause; the next sandbox try in this line should target
+this directly, one hypothesis at a time.

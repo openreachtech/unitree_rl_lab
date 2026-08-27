@@ -266,9 +266,39 @@ class RewardsCfgPhase5(RewardsCfgPhase3):
     direct instruction despite a measured survivability improvement, base_contact
     termination 74% -> 1.4%; see sandbox/SUMMARY.md for the full record) -- not
     folded in here.
+
+    undesired_contacts split 2026-08-26 (folded from Go2w-v1-Phase5-Try30) into two
+    terms: Head/hip contact stays penalised on every column at the same -0.3 weight as
+    before (unchanged consequence -- a robot has no legitimate reason to hit a wall
+    with its head or hips even while climbing), while thigh/calf contact
+    (``undesired_contacts_legs``, ``mdp.undesired_contacts_column_aware``) is now
+    exempted specifically on "wall" columns, at 1 N threshold, thigh/calf were
+    penalised for the exact load-bearing contact climbing a wall near standing height
+    requires -- pushing against and resting on it on the way up -- which plausibly
+    incentivised avoiding the wall altogether. Measured (Go2w-v1-Phase2 ->
+    2000 iterations): terrain_levels reached 6.53 (this project's highest yet) with a
+    healthy, non-degenerate termination distribution (base_contact 37.8%, time_out
+    57.5% -- genuinely mixed outcomes, not the near-zero-base_contact/near-all-time_out
+    pattern that turned out to mean "avoiding the wall entirely" in Try27's case).
+    Checked in MuJoCo: reaches a front-leg foothold at 0.60 m, the highest climb
+    attempt confirmed so far -- but still shares the same not-yet-resolved "trembles
+    and creeps forward while meant to be holding position" issue first flagged on
+    Try26's checkpoint (see the terrain_levels docstring below); this fold doesn't
+    touch that, still open.
     """
 
-    undesired_contacts = RewardsCfgPhase3().undesired_contacts.replace(weight=-0.3)
+    undesired_contacts = RewardsCfgPhase3().undesired_contacts.replace(
+        weight=-0.3, params={"threshold": 1, "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["Head_.*", ".*_hip"])}
+    )
+    undesired_contacts_legs = RewTerm(
+        func=mdp.undesired_contacts_column_aware,
+        weight=-0.3,
+        params={
+            "threshold": 1,
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[".*_thigh", ".*_calf"]),
+            "command_name": "base_velocity",
+        },
+    )
     flat_orientation_l2 = RewardsCfgPhase3().flat_orientation_l2.replace(weight=-0.5)
 
     goal_move_in_direction = RewTerm(
