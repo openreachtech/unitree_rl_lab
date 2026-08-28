@@ -1,0 +1,47 @@
+joint_ids_map: [3, 0, 9, 6, 4, 1, 10, 7, 5, 2, 11, 8]
+step_dt: 0.02
+stiffness: [25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0, 25.0]
+damping: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+default_joint_pos: [0.11, -0.107, 0.101, -0.0996, 0.805, 0.802, 1.01, 1.01, -1.49,
+  -1.5, -1.5, -1.5]
+commands: {}
+actions:
+  JointPositionAction:
+    clip: null
+    joint_names: [.*]
+    scale: [0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25]
+    offset: [0.11, -0.107, 0.101, -0.0996, 0.805, 0.802, 1.01, 1.01, -1.49, -1.5,
+      -1.5, -1.5]
+    joint_ids: null
+observations:
+  motion_command:
+    params: {command_name: motion}
+    clip: null
+    scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+      1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    history_length: 1
+  motion_anchor_ori_b:
+    params: {command_name: motion}
+    clip: null
+    scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    history_length: 1
+  base_ang_vel:
+    params: {}
+    clip: null
+    scale: [1.0, 1.0, 1.0]
+    history_length: 1
+  joint_pos_rel:
+    params: {}
+    clip: null
+    scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    history_length: 1
+  joint_vel_rel:
+    params: {}
+    clip: null
+    scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    history_length: 1
+  last_action:
+    params: {}
+    clip: null
+    scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    history_length: 1

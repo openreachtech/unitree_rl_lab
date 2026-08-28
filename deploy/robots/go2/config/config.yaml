@@ -7,15 +7,20 @@ FSM:
     Velocity:
       id: 3
       type: RLBase
+
+    Mimic_Shake_Hand:
+      id: 101
+      type: Mimic
   Passive:
     transitions: 
       FixStand: LT + A.on_pressed
     mode: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
     kd: [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]
   FixStand:
-    transitions: 
+    transitions:
       Passive: LT + B.on_pressed
       Velocity: start.on_pressed
+      Mimic_Shake_Hand: RB + X.on_pressed
     kp: [60, 80, 80, 60, 80, 80, 60, 80, 80, 60, 80, 80]
     kd: [5, 4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4]
     ts: [0, 1, 2]
@@ -25,7 +30,17 @@ FSM:
       [0., 0.8, -1.5, 0., 0.8, -1.5, 0., 0.8, -1.5, 0., 0.8, -1.5],
     ]
   Velocity:
-    transitions: 
+    transitions:
       Passive: LT + B.on_pressed
+      Mimic_Shake_Hand: RB + X.on_pressed
     policy_dir: ../../../logs/rsl_rl/unitree_go2_velocity
-    
+
+  Mimic_Shake_Hand:
+    transitions:
+      Passive: LT + B.on_pressed
+      FixStand: RB + X.on_pressed
+    fps: 50
+    motion_file: config/policy/mimic/shake_hand/params/shake_hand.csv
+    policy_dir: config/policy/mimic/shake_hand/
+    time_start: 0.0
+    time_end: 6.0
