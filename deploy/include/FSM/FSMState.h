@@ -44,6 +44,31 @@ public:
             }
         }
 
+        auto keyboard_transitions = param::config["FSM"][state_string]["keyboard_transitions"];
+        if (keyboard_transitions && FSMState::keyboard)
+        {
+            auto kb_transition_map = keyboard_transitions.as<std::map<std::string, std::string>>();
+            for (auto it = kb_transition_map.begin(); it != kb_transition_map.end(); ++it)
+            {
+                std::string target_fsm = it->first;
+                if (!FSMStringMap.right.count(target_fsm))
+                {
+                    spdlog::warn("FSM State_'{}' not found in FSMStringMap!", target_fsm);
+                    continue;
+                }
+
+                int fsm_id = FSMStringMap.right.at(target_fsm);
+                const std::string &key_spec = it->second;
+                registered_checks.emplace_back(
+                    std::make_pair(make_keyboard_transition_check(key_spec), fsm_id));
+                spdlog::info(
+                    "FSM: State_{} keyboard transition -> {} (key='{}')",
+                    state_string,
+                    target_fsm,
+                    key_spec);
+            }
+        }
+
         // register for all states
         registered_checks.emplace_back(
             std::make_pair(
@@ -67,4 +92,19 @@ public:
     static std::unique_ptr<LowCmd_t> lowcmd;
     static std::shared_ptr<LowState_t> lowstate;
     static std::shared_ptr<Keyboard> keyboard;
+
+private:
+    // YAML key name -> terminal key; fires once on key press (like joystick .on_pressed).
+    static std::function<bool()> make_keyboard_transition_check(std::string spec);
 };
+
+inline std::function<bool()> FSMState::make_keyboard_transition_check(std::string spec)
+{
+    if (spec == "enter")
+    {
+        spec = "\n";
+    }
+    return [key = std::move(spec)]() -> bool {
+        return keyboard && keyboard->key() == key && keyboard->on_pressed;
+    };
+}
