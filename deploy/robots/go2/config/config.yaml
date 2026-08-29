@@ -62,7 +62,7 @@ FSM:
     keyboard_transitions:
       Passive: "0"
       FixStand: "1"
-    policy_dir: ../../../logs/rsl_rl/go2_jump_phase2
+    policy_dir: ../../../logs/rsl_rl/unitree_go2_jump_phase3
     command_duration_s: 0.5
     time_scale: 1.0
     rearm_delay_s: 0.3
