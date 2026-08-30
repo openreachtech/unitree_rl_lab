@@ -573,20 +573,119 @@ doesn't address it, remains open (see below).
 **2026-08-27: Try30 folded into the default `RewardsCfgPhase5`** (see that class's
 own docstring for the exact split) and Try30's sandbox file/registration deleted.
 
-### Open item, still unresolved as of 2026-08-27: stop-time trembling / creep
+### Resolved 2026-08-28: stop-time trembling / creep -- Try31 (wheel_vel_without_cmd_penalty)
 
-Every checkpoint validated in MuJoCo since Try26 (Try26 itself, and now Try30) shares
-one un-investigated issue: once holding position at (or near) the goal, the robot
-trembles and drifts/creeps forward rather than staying still, despite the command
-dropping to zero on arrival and `goal_dont_wait_penalty` gating off once arrived.
-Candidate hypotheses, none yet tested:
-  * the GRU's recurrent hidden state may carry momentum/context from the climbing
-    motion for a few steps past arrival, before settling;
-  * arrival is a rare outcome (most episodes end via `time_out` or a failure
-    termination before ever reaching it), so the policy may simply have little
-    training experience of the "just arrived, now hold" sub-task specifically;
-  * possible boundary-condition jitter right at the `goal_dont_wait_penalty`
-    speed-threshold transition, though this is a guess, not yet checked against the
-    actual gating logic in a running policy.
-Not yet isolated to a specific cause; the next sandbox try in this line should target
-this directly, one hypothesis at a time.
+Every checkpoint validated in MuJoCo since Try26 (Try26 itself, and Try30) shared one
+issue: once holding position at (or near) the goal -- and, confirmed via direct
+question, also on plain flat-ground zero-command standing, not just post-climb
+arrival -- the robot trembles and drifts/creeps forward rather than staying still.
+Go2W drives with wheels, and nothing in the reward set specifically penalised wheel
+*velocity* under a zero command: `joint_position_penalty`'s stand-still branch only
+watches leg joint *position* (wheels are excluded, being continuous
+velocity-controlled joints), and `track_lin_vel_xy_exp`'s tolerance (std
+`sqrt(0.25)`) is loose enough that a small residual wheel-driven creep still scores
+fairly well.
+
+**Try31** added `mdp.wheel_vel_without_cmd_penalty` (new function: penalizes squared
+wheel joint velocity, summed over 4 wheels, whenever the commanded velocity is
+exactly zero). Bootstrapped from Try30's own checkpoint via a manual symlink into its
+own log root, since `--previous-task` requires the referenced task ID to still be
+*registered* in gym (an `argparse` `choices` restriction, not just the string-based
+log-directory resolution below it) -- Try30's registration had already been removed
+once folded.
+
+**First attempt, weight -0.01, collapsed** within ~20 iterations of resuming:
+terrain_levels 6.53 -> ~1.5, `bad_orientation` ~0% -> 77-85%, neither recovering over
+the remaining ~1300 iterations. Discarded (checkpoint directory deleted). Root cause:
+the raw (unweighted) signal has no upper bound -- squared wheel velocity summed over
+4 wheels spikes arbitrarily high if a wheel is still spinning fast at the exact
+instant a command drops to zero, a frequent, recurring transition (every
+standing-env draw, every wall arrival) -- so even a small weight multiplied into an
+occasional, destructively large single-step reward exactly at those transitions.
+
+**Retried at weight -0.001 (10x smaller)**: stable throughout -- terrain_levels
+recovered to 4.3-4.7 within the first ~100 iterations and reached 5.97 by the end
+(1500 iterations total), `bad_orientation` stayed low (3.7% at the final iteration),
+`base_contact` 45.2%, `time_out` 51.1% -- a healthy, mixed-outcome distribution, no
+sign of the earlier collapse or of a Try27/29-style "avoid everything" pattern.
+Checked in MuJoCo: **confirmed a significant improvement** to the trembling/creeping
+behaviour.
+
+**2026-08-28: Try31 folded into the default `RewardsCfgPhase5`** (weight -0.001; see
+that class's own docstring) and Try31's sandbox file/registration deleted.
+
+### 2026-08-28/29: the fold above regressed under long, from-scratch training --
+### ablation (Try32/33/34), and the resolution (a separate `-Adjust` task)
+
+A fresh, continuous 3000-iteration run of the newly-folded default (Try26 + Try30 +
+Try31 all present, from `Go2w-v1-Phase2`) told a different story than any of the
+three individual folds: terrain_levels rose to a peak of ~5.0 around iteration 3628,
+then declined steadily for the remaining ~2370 iterations to 2.8 by the end, while
+`bad_orientation` climbed from ~1-2% to 20.6% over that same stretch. `base_contact`
+stayed low throughout (never above ~5%) -- a slow, sustained degradation, not the
+sudden collapse Try31's first (weight -0.01) attempt showed. `Mean action noise std`
+also grew across the run (0.79 -> 1.47), unusual for PPO (normally shrinks as a
+policy converges), suggestive of an unstable/never-fully-converging policy rather
+than simple bad luck on one run.
+
+This was surprising because each of Try26/Try30/Try31 individually had only ever
+been validated as a *short* refinement (1500-2500 iterations) on top of an
+*already-converged* checkpoint -- none had been tested together, from scratch, for
+this long. Separately, re-reading the *old* default's own archived tensorboard logs
+(pre-Try26/30/31, `logs/rsl_rl/_archive/go2w_v1_phase5_pre_try31fold_2026-08-28/`)
+for the same iteration range showed terrain_levels climbing to ~5.3-5.4 and
+*staying* there (no decline) -- but only by way of `base_contact` climbing to and
+staying at ~74%, i.e. that apparently-stable number reflected a policy constantly
+crashing into the wall, not one that had stopped needing to (retroactively
+confirming a suspicion held since Try26's own record above).
+
+**Ablation, ~2000 iterations each from `Go2w-v1-Phase2`:**
+
+| Try | Change vs Try32 | terrain_levels (final) | base_contact | bad_orientation | Decline? |
+|---|---|---|---|---|---|
+| Try32 | none (old-default reproduction, baseline) | 5.01 | 74.3% | 0.7% | n/a |
+| Try33 | + Try26 (curriculum demote-on-fail) | 6.10 | 40.7% | 3.9% | No -- monotonic rise throughout |
+| Try34 | + Try30 (undesired_contacts split) | 6.53 | 37.8% | 4.7% | No -- monotonic rise throughout |
+
+Try32's own numbers (base_contact 74.3%, terrain_levels 5.01) closely reproduce the
+old default's archived record, confirming the baseline reproduction was faithful.
+Neither Try33 nor Try34 showed any sign of decline even checked at the iteration
+equivalent to the full fold's peak (iter 3628) -- both were still climbing strongly
+at that point (Try34: ~6.3 and still rising, versus the full fold which was *already*
+turning over at essentially the same point in training). Conclusion: Try26 and Try30
+are both unambiguously beneficial, individually and combined, with no long-run
+downside found; the decline is specific to `wheel_vel_without_cmd_penalty`, combined
+with continuous long-duration training from scratch (as opposed to a short polish on
+an already-strong checkpoint, which is exactly how Try31 itself was originally
+validated).
+
+**Resolution (2026-08-29):**
+  * `wheel_vel_without_cmd` removed from the permanent `RewardsCfgPhase5` --
+    the default's reward set is now exactly Try26 + Try30 (i.e. equivalent to
+    Try34), with `wheel_vel_without_cmd_penalty` withheld.
+  * A new, permanent (non-sandbox) task, **`Go2w-v1-Phase5-Adjust`**
+    (`velocity_env_cfg_phase5_adjust.py`, registered in `go2w/__init__.py`, not
+    this sandbox), adds `wheel_vel_without_cmd_penalty` (weight -0.001) on top of
+    the default and is meant to be run for ~1000 iterations against
+    `Go2w-v1-Phase5`'s own latest checkpoint whenever the trembling/creeping issue
+    needs addressing -- a deliberate, standing "polish pass" step, not a curriculum
+    phase and not resumed-from by anything else.
+  * Try34's own checkpoint (2000 iterations from Phase2, terrain_levels 6.53,
+    MuJoCo-confirmed 0.50 m climbing) was promoted to be `Go2w-v1-Phase5`'s own
+    checkpoint (the failed 3000-iteration from-scratch run was archived instead,
+    at `logs/rsl_rl/_archive/`).
+  * Try32/33/34 sandbox files and registrations deleted -- their conclusions are
+    fully captured above and in `RewardsCfgPhase5`'s own docstring.
+
+**2026-08-30: `Go2w-v1-Phase5-Adjust` checked in MuJoCo (1000 iterations against the
+promoted default checkpoint above)**: climbs 0.50 m reliably, matching Try30/Try34's
+own validated level -- the polish pass did not cost any climbing ability. 0.60 m is
+still difficult (consistent with the default's own record -- a front-leg foothold at
+0.60 m was the best result seen so far, never a full crossing). The trembling/creeping
+issue is **improved but not fully resolved**: still creeps forward slightly while
+meant to be holding position, just less than before. `wheel_vel_without_cmd_penalty`
+at -0.001 is a genuine partial fix, not a complete one -- worth revisiting if further
+stillness is wanted (e.g. a slightly larger weight now that it's known not to
+destabilise training at -0.001, or addressing whichever of the earlier hypotheses --
+GRU hidden-state momentum, sparse "just arrived" training experience -- turns out to
+still apply).

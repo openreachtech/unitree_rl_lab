@@ -51,4 +51,4 @@ FSM:
       Passive: LT + B.on_pressed
     keyboard_transitions:
       Passive: "0"
-    policy_dir: ../../../logs/rsl_rl/go2w_v2_phase5
+    policy_dir: ../../../logs/rsl_rl/go2w_v1_phase5_adjust

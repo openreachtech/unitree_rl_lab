@@ -70,6 +70,27 @@ gym.register(
     },
 )
 
+# 2026-08-29: a standing "polish" task, not a curriculum phase -- adds
+# mdp.wheel_vel_without_cmd_penalty (weight -0.001) on top of the default Phase5
+# reward set to fix trembling/creeping under a zero command, deliberately kept out of
+# RewardsCfgPhase5 itself after a 3000-iteration from-scratch run showed it causes a
+# slow terrain_levels decline when trained continuously from Phase2 rather than
+# applied as a short refinement on an already-converged checkpoint. See
+# velocity_env_cfg_phase5_adjust.py's own module docstring and velocity_env_cfg_phase5.py's
+# RewardsCfgPhase5 docstring for the full reasoning. Run whenever Go2w-v1-Phase5's own
+# checkpoint has just been (re)trained and needs this specific polish, ~1000 iterations:
+#   --task Go2w-v1-Phase5-Adjust --resume --previous-task Go2w-v1-Phase5 --max_iterations 1000
+gym.register(
+    id="Go2w-v1-Phase5-Adjust",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_phase5_adjust:RobotEnvCfgPhase5Adjust",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_phase5_adjust:RobotPlayEnvCfgPhase5Adjust",
+        "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:GruPPORunnerCfg",
+    },
+)
+
 # v2: same phase curricula as v1, with a teacher-style privileged critic (xt encoder
 # concat ot). Actor is still TCN-100; checkpoints are not compatible with v1.
 gym.register(

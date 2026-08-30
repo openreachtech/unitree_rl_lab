@@ -76,7 +76,10 @@ from prettytable import PrettyTable
 # ones (several of which contain "Unitree" in their name), and our task IDs share
 # no single common prefix, so the accepted prefixes are enumerated here. train.py
 # imports get_task_ids() so that renaming a task only needs a change in one place.
-TASK_ID_PREFIXES = ("Unitree-", "Go2w-")
+# "Go2-" (not "Go2w-") covers the blind Go2-Blind-GRU-Phase* tasks ported from
+# origin/feat/lidar -- a proprioception-only-actor/privileged-critic lineage for the
+# wheel-less Go2, unrelated to the Go2w (wheeled) "Go2w-" tasks already listed here.
+TASK_ID_PREFIXES = ("Unitree-", "Go2w-", "Go2-")
 
 
 def get_task_ids() -> list[str]:

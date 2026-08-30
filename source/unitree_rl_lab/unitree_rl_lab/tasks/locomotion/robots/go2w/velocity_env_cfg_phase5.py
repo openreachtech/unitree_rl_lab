@@ -283,8 +283,29 @@ class RewardsCfgPhase5(RewardsCfgPhase3):
     Checked in MuJoCo: reaches a front-leg foothold at 0.60 m, the highest climb
     attempt confirmed so far -- but still shares the same not-yet-resolved "trembles
     and creeps forward while meant to be holding position" issue first flagged on
-    Try26's checkpoint (see the terrain_levels docstring below); this fold doesn't
-    touch that, still open.
+    Try26's checkpoint (see the terrain_levels docstring below).
+
+    wheel_vel_without_cmd (Try31) briefly folded in here 2026-08-28, then reverted
+    the same day: penalising wheel velocity under a zero command
+    (``mdp.wheel_vel_without_cmd_penalty``) fixed the trembling/creeping issue as a
+    short refinement on top of Try30's own already-converged checkpoint (weight
+    -0.001, confirmed in MuJoCo), but a fresh, continuous 3000-iteration run of the
+    default with all three folds present *from Phase2* told a different story:
+    terrain_levels peaked around iteration 3628 (~5.0) then declined steadily to 2.8
+    by the end, with bad_orientation climbing from ~1% to ~20.6% over that same
+    stretch. A 3-way ablation (Go2w-v1-Phase5-Try32/33/34, ~2000 iterations each from
+    Phase2) isolated the cause: Try32 (old-default reproduction, no folds) and Try33
+    (+Try26 only) and Try34 (+Try26+Try30, still no wheel_vel_without_cmd) all showed
+    a healthy, monotonically-improving terrain_levels trajectory with no decline --
+    only the combination *including* wheel_vel_without_cmd, trained continuously from
+    scratch over a long run, showed the decline. Conclusion: the term is safe and
+    effective as a short, targeted polish on an already-competent checkpoint, but not
+    as part of the base Phase2->Phase5 training recipe itself. Moved to a separate,
+    permanent adjustment task -- ``Go2w-v1-Phase5-Adjust``
+    (velocity_env_cfg_phase5_adjust.py), meant to be run for ~1000 iterations against
+    this default's own latest checkpoint whenever "trembles/creeps under a zero
+    command" needs addressing, rather than baked into this class. See sandbox/
+    SUMMARY.md for the full ablation record.
     """
 
     undesired_contacts = RewardsCfgPhase3().undesired_contacts.replace(
