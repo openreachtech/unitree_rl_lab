@@ -267,23 +267,47 @@ for _level in ("Weak", "Nominal", "Strong"):
         },
     )
 
-# The same Phase 4 environment, registered a second time so a run that skips the stair
-# phase gets its own log directory (experiment_name follows the task id). Nothing about
-# the env differs -- only which checkpoint the run resumes from:
-#   Go2-Blind-GRU-Phase4          <- Phase 3 (flat -> rough/boxes -> stairs -> walls)
-#   Go2-Blind-GRU-Phase4-NoStairs <- Phase 2 (flat -> rough/boxes -> walls)
-# The question is whether the stair phase helps wall crossing or costs it; earlier work
-# on this lineage saw stair training erode the wall-crossing ability it was meant to
-# build on. Note the two are not matched on total experience -- the stairs path arrives
-# with roughly 3500 more iterations behind it -- so read the gap with that in mind.
-#   --task Go2-Blind-GRU-Phase4-NoStairs --resume --load_run <phase2 run> --checkpoint ...
-gym.register(
-    id="Go2-Blind-GRU-Phase4-NoStairs",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_blind_phase4:RobotEnvCfgPhase4",
-        "play_env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_blind_phase4:RobotPlayEnvCfgPhase4",
-        "rsl_rl_cfg_entry_point": _RUNNER,
-    },
-)
+# ===========================================================================
+# Terrain-encoder training. The walking policy is frozen and only drives the robot;
+# what learns is the encoder in assets/models/terrain_encoder.py, trained by
+# scripts/rsl_rl/train_terrain_encoder.py rather than by train.py. These are the
+# Blind-GRU phase environments with the LiDAR fan and a clean target grid attached,
+# so each phase's encoder sees the terrain the phase's own policy can cross. See
+# velocity_env_cfg_terrain_encoder.py.
+#
+#   python scripts/rsl_rl/train_terrain_encoder.py --task Go2-Terrain-Encoder-Phase2 \
+#       --policy_checkpoint logs/rsl_rl/go2_blind_gru_phase2/<run>/model_6497.pt
+# ===========================================================================
+for _phase in (2, 3, 4):
+    gym.register(
+        id=f"Go2-Terrain-Encoder-Phase{_phase}",
+        entry_point="isaaclab.envs:ManagerBasedRLEnv",
+        disable_env_checker=True,
+        kwargs={
+            "env_cfg_entry_point": (
+                f"{_CFG}.velocity_env_cfg_terrain_encoder:RobotEnvCfgEncoderPhase{_phase}"
+            ),
+            "rsl_rl_cfg_entry_point": _RUNNER,
+        },
+    )
+
+# Watching the encoder. Each phase's own viewing course, cut down to something readable:
+#   Phase 2  rough | boxes,        5 difficulties
+#   Phase 3  pyramid | inverted,   step heights 5 / 10 / 15 cm
+#   Phase 4  solid | floating wall, wall heights 10 / 15 / 20 / 25 cm
+# play_terrain_encoder.py draws the fan's grid in green/red and the estimate in blue.
+for _phase in (2, 3, 4):
+    gym.register(
+        id=f"Go2-Terrain-Encoder-Phase{_phase}-Play",
+        entry_point="isaaclab.envs:ManagerBasedRLEnv",
+        disable_env_checker=True,
+        kwargs={
+            "env_cfg_entry_point": (
+                f"{_CFG}.velocity_env_cfg_terrain_encoder:RobotPlayEnvCfgEncoderPhase{_phase}"
+            ),
+            "play_env_cfg_entry_point": (
+                f"{_CFG}.velocity_env_cfg_terrain_encoder:RobotPlayEnvCfgEncoderPhase{_phase}"
+            ),
+            "rsl_rl_cfg_entry_point": _RUNNER,
+        },
+    )

@@ -347,6 +347,12 @@ class LidarElevationMap(ManagerTermBase):
         self._hold = grid
 
         kept = grid.index_select(1, self._keep_indices)
+        # Per-cell, over the whole grid, for whoever wants to split a metric by
+        # whether a beam actually landed. Published rather than returned: the policy
+        # must never read it -- a real spinning LiDAR cannot say which cells it
+        # covered inside one 20 ms control step -- but an evaluator computing
+        # reconstruction error per region is measuring, not observing.
+        env.lidar_map_unobserved_cells = unobserved
         self._record_diagnostics(env, unobserved.index_select(1, self._keep_indices))
 
         if debug_vis:

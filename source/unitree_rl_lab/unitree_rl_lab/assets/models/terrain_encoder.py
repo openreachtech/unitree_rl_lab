@@ -21,7 +21,7 @@ accumulation itself into the recurrent state. Two consequences follow:
   robot moved is a local operation for a convolution and a dense permutation for
   a fully connected layer -- see ``modules/conv_gru.py``.
 * The state has to be big enough to hold a map. 100 units cannot store 388
-  cells; the ``(32, 29, 21)`` state here is 19488.
+  cells; the ``(16, 29, 21)`` state here is 9744.
 
 No pooling. A 3x3 recurrent kernel propagates information one cell per step,
 while the robot covers 0.6 cells per step at the 1.5 m/s command ceiling
@@ -45,8 +45,8 @@ straight into the output. Per-cell rather than per-vector because reliability
 varies *within* one frame here -- the front band is measured, the body footprint
 never is, the shadow behind a wall is not.
 
-``l_e`` is computed from the exteroceptive channels alone, not from the
-proprioceptive ones. Gating a mixture would gate proprioception too, which is
+``l_e`` is computed from the height grid alone, not from the proprioceptive
+channels. Gating a mixture would gate proprioception too, which is
 the opposite of what the gate is for; proprioception reaches the state only
 through the recurrent path, as in the paper.
 
@@ -100,9 +100,34 @@ class TerrainEncoder(nn.Module):
             joint positions, joint velocities, previous action.
         proprio_channels: Width the proprioceptive vector is compressed to before
             being broadcast across the grid.
-        extero_channels: Width of ``l_e``, the encoded measurement.
-        hidden_channels: Width of the recurrent state.
+        extero_channels: Width of ``l_e``, the encoded measurement. The height
+            grid is a single channel and the kernel is 3x3, so the first layer has
+            nine degrees of freedom to spend plus a bias: anything past ten
+            channels is overcomplete before the activation, and 16 is already
+            generous.
+        hidden_channels: Width of the recurrent state. This is the module's price:
+            activation memory over the truncation window scales with it almost
+            exactly, and that memory is what limits how many environments and how
+            long a window will fit beside the simulator. Measured at 256
+            environments over a 24-step window, 8 / 16 / 32 channels cost
+            1.73 / 3.17 / 6.12 GiB. 16 is the default because the state has to
+            hold roughly a height and a confidence per cell -- 9744 numbers for
+            609 cells is already sixteen times the raw content -- and because the
+            budget it frees buys more environments or a longer window, which is
+            where a task about temporal accumulation is likelier to need it.
         kernel_size: Convolution kernel, odd.
+        height_scale: Multiplies the height before the first convolution. Heights
+            arrive in metres -- flat ground sits at 0.047 and a 20 cm wall moves a
+            cell by 0.2 -- so the grid varies by hundredths and would enter the
+            first layer as a nearly constant field. 10.0 brings it to a standard
+            deviation near 0.5. Miki et al. have no such knob because they
+            standardise every observation with a running mean and variance
+            upstream of the network; a fixed factor is preferred here because a
+            running estimate would drift as the terrain curriculum advances,
+            quietly changing the input scale mid-training.
+        height_offset: Subtracted from the height before scaling. Pass the
+            flat-ground value (``GO2_FLAT_SCAN_VALUE``) to centre level terrain on
+            zero. Affects the input only; ``mean`` stays in metres.
         log_std_bounds: Clamp on the predicted log sigma. The lower bound stops
             a confident cell from driving the likelihood to infinity early in
             training; the upper bound keeps a hopeless cell from being ignored
@@ -121,9 +146,11 @@ class TerrainEncoder(nn.Module):
         grid_shape: tuple[int, int] = (29, 21),
         proprio_dim: int = 45,
         proprio_channels: int = 8,
-        extero_channels: int = 32,
-        hidden_channels: int = 32,
+        extero_channels: int = 16,
+        hidden_channels: int = 16,
         kernel_size: int = 3,
+        height_scale: float = 10.0,
+        height_offset: float = 0.0,
         log_std_bounds: tuple[float, float] = (-7.0, 2.0),
         keep_index: torch.Tensor | None = None,
     ):
@@ -131,12 +158,14 @@ class TerrainEncoder(nn.Module):
         self.grid_shape = tuple(grid_shape)
         self.proprio_dim = proprio_dim
         self.hidden_channels = hidden_channels
+        self.height_scale = height_scale
+        self.height_offset = height_offset
         self.log_std_bounds = log_std_bounds
         padding = kernel_size // 2
 
-        # Exteroception: height and the observed-this-step mask. Kept separate from
-        # proprioception so the gate below acts on the measurement alone.
-        self.extero_conv = nn.Conv2d(2, extero_channels, kernel_size, padding=padding)
+        # Exteroception: the height grid alone. Kept separate from proprioception so
+        # the gate below acts on the measurement alone.
+        self.extero_conv = nn.Conv2d(1, extero_channels, kernel_size, padding=padding)
 
         # Proprioception has no spatial extent, so compressing it with a linear layer
         # and broadcasting is identical to the 1x1 convolution it stands in for, and
@@ -174,28 +203,33 @@ class TerrainEncoder(nn.Module):
         """Zero state for ``batch_size`` environments."""
         return self.rnn.init_hidden(batch_size, self.grid_shape, device)
 
-    def reset_hidden(self, hidden: torch.Tensor, env_ids: torch.Tensor) -> torch.Tensor:
-        """Zero the state of the given environments, in place.
+    def mask_hidden(self, hidden: torch.Tensor, done: torch.Tensor) -> torch.Tensor:
+        """Zero the state of the environments flagged in ``done``, out of place.
 
-        Call this on episode boundaries. Terrain memory carried across a reset is
-        memory of a different patch of ground.
+        Out of place because this is called inside the truncation window, where the
+        state is part of the graph. The two arms lay their state out differently --
+        ``(N, C, H, W)`` here, ``(layers, N, hidden)`` for the flat one -- so the
+        broadcast belongs with the model rather than in the training loop.
         """
-        hidden[env_ids] = 0.0
-        return hidden
+        return torch.where(done.view(-1, 1, 1, 1), torch.zeros_like(hidden), hidden)
+
 
     # -- flat observation <-> grid ------------------------------------------
 
     def scatter_observation(
-        self, flat: torch.Tensor, fill: float = 0.0
+        self, flat: torch.Tensor, fill: float | None = None
     ) -> torch.Tensor:
         """Place a flat observation vector into the full grid.
 
-        Cells outside ``keep_index`` -- the body footprint -- take ``fill``. For the
-        height channel that is a neutral value the mask marks as unobserved; the
-        network is not meant to read anything into it.
+        Cells outside ``keep_index`` -- the body footprint -- take ``fill``, which
+        defaults to ``height_offset``, so they enter the network as level ground.
+        No beam reaches them and nothing in the input says otherwise; what the
+        encoder can put there has to come from its own state.
         """
         if self.keep_index is None:
             raise RuntimeError("keep_index was not supplied to TerrainEncoder")
+        if fill is None:
+            fill = self.height_offset
         height, width = self.grid_shape
         grid = flat.new_full((flat.shape[0], height * width), fill)
         grid[:, self.keep_index] = flat
@@ -225,15 +259,21 @@ class TerrainEncoder(nn.Module):
     def forward(
         self,
         height: torch.Tensor,
-        mask: torch.Tensor,
         proprio: torch.Tensor,
         hidden: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """One step.
 
         Args:
-            height: ``(N, H, W)`` noisy elevation, any value where ``mask`` is 0.
-            mask: ``(N, H, W)`` 1 where a beam returned this step, else 0.
+            height: ``(N, H, W)`` noisy elevation in metres. Every cell carries a
+                value: whatever the fan returned this step, or the last value the
+                cell held. One channel, no companion validity mask -- a real LiDAR
+                streams points continuously and a spinning head covers only part of
+                a turn per control step, so "measured during this 20 ms" is a
+                simulator artefact, and the elevation map a robot actually reads
+                does not tag its cells with an age either. The encoder is meant to
+                treat a reading and a recollection alike, and sort out which to
+                trust from context.
             proprio: ``(N, proprio_dim)``.
             hidden: ``(N, hidden_channels, H, W)`` from the previous step.
 
@@ -241,10 +281,10 @@ class TerrainEncoder(nn.Module):
             ``(mean, log_std, hidden)`` -- the first two ``(N, H, W)``, the third
             the state to carry forward. Detach it at truncation boundaries.
         """
-        # A masked-out cell must not leak its arbitrary height into the convolution,
-        # and the mask channel alone cannot undo that once it has been summed in.
-        extero = torch.stack([height * mask, mask], dim=1)
-        l_e = self.activation(self.extero_conv(extero))
+        # Metres, so hundredths; the scaling is what stops the first layer from
+        # seeing a nearly constant field -- see ``height_scale``.
+        scaled = (height - self.height_offset) * self.height_scale
+        l_e = self.activation(self.extero_conv(scaled.unsqueeze(1)))
 
         proprio_feat = self.activation(self.proprio_fc(proprio))
         proprio_grid = proprio_feat[..., None, None].expand(
@@ -261,13 +301,6 @@ class TerrainEncoder(nn.Module):
         log_std = out[:, 1].clamp(*self.log_std_bounds)
         return mean, log_std, hidden
 
-    def gate(self, hidden: torch.Tensor) -> torch.Tensor:
-        """The gate's opening, for introspection. ``(N, extero_channels, H, W)``.
-
-        Averaging over channels gives a per-cell picture of where the encoder is
-        trusting the current measurement and where it has fallen back on memory.
-        """
-        return torch.sigmoid(self.gate_conv(hidden))
 
 
 def gaussian_nll_loss(
