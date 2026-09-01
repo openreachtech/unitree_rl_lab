@@ -138,6 +138,33 @@ def base_height_climb_reward(
     return reward
 
 
+def base_height_command_l2(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    sensor_cfg: SceneEntityCfg | None = None,
+) -> torch.Tensor:
+    """Penalize base height away from a per-env target read from a command term.
+
+    Same L2 kernel as ``isaaclab.envs.mdp.rewards.base_height_l2``, but the target comes
+    from ``env.command_manager.get_command(command_name)`` (shape (num_envs, 1)) instead of
+    a fixed float baked into the reward params. That is the only difference: a command term
+    (e.g. ``UniformHeightCommand``) owns the target and can resample/curriculum it per env,
+    where the stock function can only ever track one constant for the whole run -- which is
+    what a "crouch to a commanded height" task needs.
+
+    ``sensor_cfg``, if given, offsets the target by the mean height-scan ray height under the
+    robot (mirrors ``base_height_l2``'s rough-terrain adjustment); omit it on flat terrain,
+    where the target is already a world-frame height.
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    target_height = env.command_manager.get_command(command_name)[:, 0]
+    if sensor_cfg is not None:
+        sensor = env.scene[sensor_cfg.name]
+        target_height = target_height + torch.mean(sensor.data.ray_hits_w[..., 2], dim=1)
+    return torch.square(asset.data.root_pos_w[:, 2] - target_height)
+
+
 def joint_position_penalty(
     env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, stand_still_scale: float, velocity_threshold: float
 ) -> torch.Tensor:
@@ -904,6 +931,81 @@ def goal_arrival_reward(
         is_last_step = is_last_step & ~rough_env_mask
     reward = bonus * arrived.float() - distance
     return torch.where(is_last_step, reward, torch.zeros_like(reward))
+
+
+def undesired_contacts_column_aware(
+    env: ManagerBasedRLEnv,
+    threshold: float,
+    sensor_cfg: SceneEntityCfg,
+    command_name: str = "base_velocity",
+) -> torch.Tensor:
+    """Same formula as ``isaaclab.envs.mdp.rewards.undesired_contacts`` (count of named
+    bodies whose contact-history max force exceeds ``threshold``), but zeroed on a
+    goal-directed command term's "wall" columns when it exposes ``rough_env_mask`` (e.g.
+    ``MixedGoalVelocityCommand``).
+
+    Climbing a wall near standing height requires the legs to push against and rest on
+    it -- that is the intended, load-bearing contact this task exists to produce, not an
+    "undesired" one. Penalising it uniformly regardless of terrain column makes any
+    contact with the obstacle itself costly, which (compounded with
+    ``goal_dont_wait_penalty``'s own pressure to keep moving) plausibly incentivises
+    avoiding the wall altogether rather than climbing it -- see sandbox/SUMMARY.md's
+    Try27 record for a concrete instance of exactly that "avoid the obstacle" failure
+    mode (via a different mechanism). Contact on "rough" columns, where none of this
+    applies, is unaffected -- still penalised at the stock rate. Intended for the
+    thigh/calf portion of the default ``undesired_contacts`` body set specifically; Head
+    and hip contact are expected to stay penalised on every column (see Try30's
+    RewardsCfg, which splits the single stock term into this plus an unchanged,
+    non-column-aware one for Head/hip).
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    net_contact_forces = contact_sensor.data.net_forces_w_history
+    is_contact = torch.max(torch.norm(net_contact_forces[:, :, sensor_cfg.body_ids], dim=-1), dim=1)[0] > threshold
+    reward = torch.sum(is_contact, dim=1).float()
+
+    command_term = env.command_manager.get_term(command_name)
+    rough_env_mask = _rough_env_mask(command_term)
+    if rough_env_mask is None:
+        return reward
+    return torch.where(rough_env_mask, reward, torch.zeros_like(reward))
+
+
+def wheel_vel_without_cmd_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str = "base_velocity",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize wheel joint velocity while the commanded velocity is exactly zero
+    (Try31, 2026-08-27) -- a standing-env draw, or ``MixedGoalVelocityCommand``'s
+    post-arrival hold (see that class's ``_update_command``, which zeros
+    ``vel_command_b`` unconditionally, every step, once ``arrived``).
+
+    Motivated by an observed "trembles and creeps forward while meant to be holding
+    position" behaviour under a zero command, reproduced even on plain flat-ground
+    standing (not specific to post-climb arrival) -- see sandbox/SUMMARY.md's open
+    item on this. This project's earlier reward set (pre-2026-08-18 redesign) had a
+    dedicated ``wheel_motion_without_cmd_penalty`` for exactly this failure mode
+    (Go2W drives with wheels, so a policy that fails to zero wheel velocity under a
+    zero command will visibly creep even if every leg joint sits at its default
+    pose -- ``joint_position_penalty``'s stand-still branch only watches leg joint
+    *position*, never wheel *velocity*, and the wheels are deliberately excluded from
+    every position-based penalty since they spin continuously by design). That term
+    was deleted this session as dead code once the whole climb_progress/motion_
+    without_cmd reward set it belonged to was replaced -- but nothing in the new,
+    goal-directed reward set replaced its specific job. ``track_lin_vel_xy_exp``
+    (weight 1.5, std ``sqrt(0.25)``) does reward zero *body* velocity, but its
+    tolerance band is loose enough that a small residual creep still scores
+    highly (``exp(-0.3**2/0.25) ~= 0.70``), i.e. it may not supply a strong enough
+    training signal on its own to fully suppress this.
+
+    Not gated by ``rough_env_mask`` -- wheels rolling under a zero command is
+    equally undesired on every column, unlike the goal-tracking terms above (which
+    only make sense where a goal exists).
+    """
+    asset = env.scene[asset_cfg.name]
+    cmd = torch.linalg.norm(env.command_manager.get_command(command_name), dim=1)
+    wheel_vel = torch.sum(torch.square(asset.data.joint_vel[:, asset_cfg.joint_ids]), dim=1)
+    return torch.where(cmd > 0.0, torch.zeros_like(wheel_vel), wheel_vel)
 
 
 
