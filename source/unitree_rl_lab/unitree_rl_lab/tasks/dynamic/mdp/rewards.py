@@ -118,13 +118,17 @@ def motion_progress_reward(
         torch.exp(-torch.square(jump_error) / height_scale),
         progress,
     )
+    # Both pitch rotations are graded the same way -- the target's sign is what distinguishes a
+    # backflip from a handspring, and the error is already measured against it.
     progress = torch.where(
-        command.motion_code == command.MOTION_BACKFLIP,
+        (command.motion_code == command.MOTION_BACKFLIP)
+        | (command.motion_code == command.MOTION_HANDSPRING),
         torch.exp(-torch.square(pitch_error) / rotation_scale),
         progress,
     )
     progress = torch.where(
-        command.motion_code == command.MOTION_SIDEFLIP,
+        (command.motion_code == command.MOTION_SIDEFLIP)
+        | (command.motion_code == command.MOTION_SIDEFLIP_RIGHT),
         torch.exp(-torch.square(roll_error) / rotation_scale),
         progress,
     )
@@ -194,15 +198,17 @@ def non_target_angular_velocity_penalty(
 
     command = env.command_manager.get_term(command_name)
     attempted = command.trigger_step >= 0
-    backflip_penalty = torch.square(angular_velocity[:, 0]) + torch.square(angular_velocity[:, 2])
-    sideflip_penalty = torch.square(angular_velocity[:, 1]) + torch.square(angular_velocity[:, 2])
-    penalty = torch.where(
-        attempted & (command.motion_code == command.MOTION_BACKFLIP),
-        backflip_penalty,
-        all_axes,
-    )
-    return torch.where(
-        attempted & (command.motion_code == command.MOTION_SIDEFLIP),
-        sideflip_penalty,
-        penalty,
-    )
+
+    # Which axis to spare is decided by where the command's rotation target actually is, not by
+    # listing motion codes. Enumerating them left the two newest motions matching neither branch,
+    # so they fell through to `all_axes` and were penalised for the very rotation they had been
+    # commanded to perform -- a handspring and a right-hand sideflip were being asked to turn and
+    # charged for turning. Reading the target instead means a mirrored motion, or any motion added
+    # later, is covered the moment its target is set.
+    pitch_penalty = torch.square(angular_velocity[:, 0]) + torch.square(angular_velocity[:, 2])
+    roll_penalty = torch.square(angular_velocity[:, 1]) + torch.square(angular_velocity[:, 2])
+    rotates_in_pitch = command.target_pitch_turns != 0.0
+    rotates_in_roll = command.target_roll_turns != 0.0
+
+    penalty = torch.where(attempted & rotates_in_pitch, pitch_penalty, all_axes)
+    return torch.where(attempted & rotates_in_roll, roll_penalty, penalty)

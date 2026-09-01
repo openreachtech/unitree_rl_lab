@@ -101,19 +101,51 @@ class MultitaskCommandsCfgPhase2(CommandsCfgPhase2):
     base_velocity = _ZERO_VELOCITY_COMMAND
 
     jump = CommandsCfgPhase2().jump.replace(
+        # Five motions, one per heading, so no move fights the gait it interrupts: forward gets a
+        # handspring, backward a backflip, left and right their own sideflip, and the plain jump
+        # works from any heading. The two mirrors are the existing pulse applied at the opposite
+        # end or side, graded by the same rotation error -- only the sign of the target differs.
+        enable_jump=True,
+        enable_backflip=True,
+        enable_sideflip=True,
+        enable_handspring=True,
+        enable_sideflip_right=True,
+        # Mirrors of the existing pairs: the backflip lifts the front, so a forward rotation lifts
+        # the rear; the sideflip lifts the right, so a rightward roll lifts the left.
+        handspring_assist_body_names=("RR_hip", "RL_hip"),
+        sideflip_right_assist_body_names=("FL_hip", "RL_hip"),
+        # 410 N, not the backflip's 350 N. The hip offsets are 0.1934 m fore-aft against 0.0465 m
+        # left-right, so the same force has 4.2x the lever arm in pitch that it has in roll, and
+        # reusing the pitch figure left both sideflips at *exactly* zero assist-alone success --
+        # no successful trajectory for the policy to learn from, and nothing to open the EFGCL
+        # decay gate, which needs 0.60. The backflip's own assist-alone rate is only 0.066 and
+        # that was enough to reach 0.997, so the target is not 1.0 turns from the assist, it is
+        # simply to get off zero. Measured against the standing Phase 1 policy, 410 N gives
+        # 0.22 / 0.19 at a height (0.37 m) matching the backflip's (0.36 m). Both directions take
+        # the same value: across 350-560 N they never measured more than 0.048 turns apart, so a
+        # per-direction figure would be fitting noise and would bake an asymmetry into hardware.
+        sideflip_assist_force=410.0,
+        sideflip_right_assist_force=410.0,
         # Held for the whole motion rather than its first third. The 0.5 s default drops the
         # command -- and with it the `enabled` flag the merged policy's gate reads -- a third of
-        # the way through a ~1.2 s flip. Measured consequence in the merged task: 59% of the
-        # action came from the locomotion expert while the robot was inverted, flip success
-        # capped at 0.55, and the take-off speed curriculum stalled at 0.8 m/s. At 1.5 s the same
-        # numbers are 0.7% locomotion, 0.79 success, and the curriculum reaches its 3.5 m/s
-        # ceiling. Promoted from the Try-Long-Command sandbox.
+        # the way through the flip. Measured consequence in the merged task: 59% of the action
+        # came from the locomotion expert while the robot was inverted, flip success capped at
+        # 0.55, and the take-off speed curriculum stalled at 0.8 m/s.
+        #
+        # 1.0 s rather than the 1.5 s that first replaced it: a window that outlasts the motion
+        # keeps the routing prior pinned to the acrobatics expert after the robot has landed,
+        # which is felt as a jump that will not hand back cleanly to the gait. Measured trigger-
+        # to-landing times under zero assist: jump 0.82 s, both sideflips 0.82 s, handspring 0.84 s
+        # median / 0.96 s max, backflip 0.88 s median / 1.04 s max. So 1.0 s covers everything but
+        # the backflip's tail, and that tail belongs to a policy trained at 1.5 s -- one trained at
+        # 1.0 s has the window as part of its own observation.
         #
         # This value must equal the merged environment's ACRO_WINDOW_S and the deploy state's
         # command_duration_s: the expert, the reward window and the routing prior all key off the
         # same flag, and a disagreement is silent -- the robot still moves.
-        command_duration_s=1.5,
-        # Own curriculum state: assist decay must not be shared with the 0.5 s lineage.
+        command_duration_s=1.0,
+        # Own curriculum state: the per-motion assist decay must not be shared with the 0.5 s or
+        # 1.5 s lineages, whose scales were reached under a different window and a different force.
         state_file="logs/rsl_rl/go2_multitask_jump_phase2/jump_curriculum_state.json",
     )
 

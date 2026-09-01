@@ -406,3 +406,97 @@ resuming from the previous. A 0.05m step lands at reward 0.78, a 0.10m step at
 no harder than 0.30 was. `mdp.jump_height_ratchet` exists but is deliberately
 not wired into any task; automating the staircase reintroduces the scheduled
 target that failed in (1).
+
+---
+
+# Multi-task jump sandbox — the right sideflip (2026-08-31 / 09-01)
+
+Context: the five-motion acrobatics expert for the multi-task policy. One motion per heading, so no
+move fights the gait it interrupts — forward a handspring, backward a backflip, left and right their
+own sideflip, and a plain jump from any heading. Everything below has been folded into
+`jump_env_cfg_multitask.py`'s `MultitaskCommandsCfgPhase2`; the `try*.py` files are deleted per the
+convention at the top of this file. `inspect_assist.py` stays, because it is a measurement harness
+rather than an experiment.
+
+**Symptom.** `success_sideflip_right` sat at exactly 0.000 for a 3417-iteration run while the other
+four motions reached 0.97–1.00, and the aggregate `success` read 0.804 — healthy-looking. In Play
+the robot rolled about half a turn and landed on its side.
+
+**Three causes, compounding.**
+
+*1. The assist force was borrowed from the wrong axis.* The sideflips used the backflip's 350 N. The
+hip offsets are 0.1934 m fore-aft against 0.0465 m left-right, so the same force has 4.2x the lever
+arm in pitch that it has in roll. Measured against the standing Phase 1 policy at full assist, one
+motion at a time (~200 attempts each, 64 envs):
+
+| motion | force | achieved (median) | assist-alone success |
+|---|---|---|---|
+| backflip | 350 N | −0.888 turns | 0.066 |
+| handspring | 350 N | +1.089 turns | 0.579 |
+| sideflip left | 350 N | −0.797 turns | **0.000** |
+| sideflip right | 350 N | +0.780 turns | **0.000** |
+| sideflip left | 410 N | −0.942 turns | 0.254 |
+| sideflip right | 410 N | +0.934 turns | 0.174 |
+
+What matters is whether that last column is zero, not whether the rotation reaches 1.0 — the
+backflip does not reach 1.0 either, and 0.066 was enough for it to train to 0.997. At 350 N the
+sideflips returned *no* successful trajectory at all, so nothing seeded learning and nothing could
+open the EFGCL decay gate, which needs 0.60. 410 N was chosen over 430 N (flew too high in Play) and
+420 N; above ~445 N the distribution jumps to a second mode near 1.44 turns.
+
+*2. The assist curriculum was a shared scalar behind an `all()` gate.* `assist_force_decay` stepped
+only when *every* enabled motion cleared its threshold, so one motion at 0.000 froze the crutch at
+1.0 for all five. That is a deadlock rather than slow progress: at full assist the policy never has
+to contribute, so the failing motion has no pressure to improve and the gate it blocks never opens.
+Fixed by making `assist_scale` per motion (`assist_scale_by_motion`, indexed by motion code, with
+`assist_scale` now a property returning the per-env view) and deciding each motion independently,
+including its episode-count requirement — a rarely sampled motion used to hold back the rest.
+
+*3. Gradient interference.* Left and right are exact mirrors — verified in the config (target sign,
+`abs()` tolerance, reward), in the forces handed to the simulator (FR/RR 175 N against FL/RL 175 N,
+same ramp, same total), and in the robot (mass mirrored, mass-weighted CoM y = 0.00000 m, default
+pose mirrored). The asymmetry was in the *policy*, and it was created during training rather than
+inherited:
+
+| policy | left median | right median |
+|---|---|---|
+| random (untrained) | −0.626 | +0.749 |
+| Phase 1 (standing only) | −0.795 | +0.777 |
+| five-motion run, 3417 iters | −1.006 | **+0.530** |
+
+The right sideflip *regressed*, from a figure better than the left's. One network serves both
+directions with nothing tying its response to a left roll to its response to a right roll, and only
+the left was earning reward. It did not recur once both directions had a seed.
+
+**Result.** Assist decayed to 0.000 on all five motions by ~1600 iterations, and at zero assist,
+measured independently (192 attempts each, `--assist-scale 0.0`):
+
+| motion | success | achieved | target |
+|---|---|---|---|
+| jump | 1.000 | height 0.203 m | 0.20 |
+| backflip | 0.948 | pitch −1.007 | −1.000 |
+| handspring | 1.000 | pitch +1.004 | +1.000 |
+| sideflip left | 1.000 | roll −1.007 | −1.000 |
+| sideflip right | 1.000 | roll +0.989 | +1.000 |
+
+**Also changed, outside the sandbox.**
+
+- `ROBOT_CFG` in `multitask_env_cfg.py` moved to `UNITREE_GO2_CORRECTED_CFG` — the actuator model
+  Go2-Jump-60 was validated on hardware with. The stock model is the one whose sim2sim failures are
+  on record. **This invalidates the locomotion expert too**: Go2-Gallop reaches its robot through
+  `velocity_env_cfg`'s stock `ROBOT_CFG` and must be retrained before it can initialise the mixture.
+- `command_duration_s` 1.5 → 1.0, with `ACRO_WINDOW_S` to match. 1.5 s outlasts the motion and keeps
+  the routing prior on the acrobatics expert after landing. Trigger-to-landing under zero assist:
+  jump and both sideflips 0.82 s, handspring 0.84 s median / 0.96 s max, backflip 0.88 s median /
+  1.04 s max — so the backflip's tail is the one at risk.
+- `--experiment_name` was accepted by `cli_args.py` and never applied, so play/measure runs silently
+  loaded the checkpoint belonging to the task's own log folder. This produced one wrong diagnosis
+  here (Phase 1 reported as asymmetric when the numbers were really the five-motion run's).
+
+**Not pursued.** Two hypotheses were implemented and never run, because the causes above accounted
+for the behaviour: randomising the spawn drop height (fixed at exactly 0.4000 m, feet 10.4 cm clear,
+touchdown at 0.14 s — `feat/biped`'s `Go2-Biped-Single` learned a rise that depended on that fall),
+and perturbing roll at reset (roll and every initial angular velocity are exactly zero, so nothing
+asks the policy to handle a roll of either sign). Both remain reasonable if the symmetry question
+returns; the stronger tool is rsl_rl's `symmetry_cfg` / `RslRlSymmetryCfg`, which makes the two
+directions the same problem by construction.

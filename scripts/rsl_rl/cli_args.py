@@ -90,6 +90,13 @@ def update_rsl_rl_cfg(agent_cfg: RslRlOnPolicyRunnerCfg, args_cli: argparse.Name
         agent_cfg.wandb_project = args_cli.log_project_name
         agent_cfg.neptune_project = args_cli.log_project_name
 
+    # `--experiment_name` was accepted by the parser and then never read, so every run silently
+    # used the folder derived from the task name. That is invisible when the two agree and actively
+    # misleading when they do not: a play/measure run pointed at another run's checkpoints loaded the
+    # task's own instead and reported the numbers as if they came from the requested one.
+    if getattr(args_cli, "experiment_name", None):
+        agent_cfg.experiment_name = args_cli.experiment_name
+
     if agent_cfg.experiment_name == "":
         task_name = args_cli.task
         agent_cfg.experiment_name = task_name.lower().replace("-", "_").removesuffix("_play")

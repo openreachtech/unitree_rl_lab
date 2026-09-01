@@ -31,6 +31,14 @@ class JumpCommand(CommandTerm):
     MOTION_JUMP = 1
     MOTION_BACKFLIP = 2
     MOTION_SIDEFLIP = 3
+    # Mirror images of the two above, added so the motion set can be matched to the direction the
+    # robot is travelling. A backflip rotates backwards and a sideflip rolls left, so each one
+    # fights half of the velocity commands a merged locomotion policy receives; measured at 0.7 m/s,
+    # backflip success fell 0.90 -> 0.64 and sideflip 0.30 -> 0.17 once the robot was moving, while
+    # a jump -- which has no direction -- held 0.94 -> 0.90. With both mirrors available every
+    # heading has a rotation that goes *with* it.
+    MOTION_HANDSPRING = 4      # forward rotation: rear hips lifted, pitch +1 turn
+    MOTION_SIDEFLIP_RIGHT = 5  # rolls right: left hips lifted, roll +1 turn
 
     def __init__(self, cfg: JumpCommandCfg, env: ManagerBasedRLEnv):
         super().__init__(cfg, env)
@@ -52,6 +60,10 @@ class JumpCommand(CommandTerm):
         self.jump_force_indices = resolve_profile(cfg.jump_assist_body_names)
         self.backflip_force_indices = resolve_profile(cfg.backflip_assist_body_names)
         self.sideflip_force_indices = resolve_profile(cfg.sideflip_assist_body_names)
+        # Same upward pulse, applied at the opposite end / side. Lifting the rear rotates the body
+        # nose-down (forward); lifting the left side rolls it to the right.
+        self.handspring_force_indices = resolve_profile(cfg.handspring_assist_body_names)
+        self.sideflip_right_force_indices = resolve_profile(cfg.sideflip_right_assist_body_names)
 
         self.jump_assist_mass = (
             cfg.jump_assist_mass
@@ -80,28 +92,98 @@ class JumpCommand(CommandTerm):
         self.max_height = torch.zeros(self.num_envs, device=self.device)
         self.success = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
-        self.assist_scale = cfg.initial_assist_scale
         self.curriculum_success_rate = 0.0
         self.curriculum_episode_count = 0
         self.curriculum_success_count = 0
-        self.curriculum_episode_count_by_motion = torch.zeros(4, dtype=torch.long, device=self.device)
-        self.curriculum_success_count_by_motion = torch.zeros(4, dtype=torch.long, device=self.device)
+        # Indexed by motion code, so the length follows the number of motions rather than a
+        # constant. It was 4, which silently became wrong the moment two motions were added --
+        # the failure surfaced as a shape mismatch inside the curriculum, several files away from
+        # the change that caused it.
+        self._motion_metric_names = {
+            self.MOTION_JUMP: "success_jump",
+            self.MOTION_BACKFLIP: "success_backflip",
+            self.MOTION_SIDEFLIP: "success_sideflip",
+            self.MOTION_HANDSPRING: "success_handspring",
+            self.MOTION_SIDEFLIP_RIGHT: "success_sideflip_right",
+        }
+        self._motion_slots = max(self._motion_metric_names) + 1
+        # One assist scale per motion, not one for all of them. As a single scalar the decay was
+        # hostage to the weakest motion: `assist_force_decay` only stepped when *every* enabled
+        # motion cleared its success threshold, so one motion stuck at 0.000 froze the crutch at
+        # 1.0 for all five. That is a deadlock, not slow progress -- with the force doing the whole
+        # job the policy never has to contribute, so the failing motion cannot improve either, and
+        # the gate it is failing never opens. Measured on the five-motion expert: four motions
+        # at 0.97-1.00, the right sideflip at 0.000, assist_scale flat at 1.000 for the entire run
+        # -- while the aggregate `success` read 0.804 and looked healthy. Per motion, a motion that
+        # cannot yet stand on its own keeps its own crutch and the other four still wean off.
+        self.assist_scale_by_motion = torch.full(
+            (self._motion_slots,), cfg.initial_assist_scale, dtype=torch.float, device=self.device
+        )
+        self.curriculum_episode_count_by_motion = torch.zeros(
+            self._motion_slots, dtype=torch.long, device=self.device
+        )
+        self.curriculum_success_count_by_motion = torch.zeros(
+            self._motion_slots, dtype=torch.long, device=self.device
+        )
 
         if cfg.state_file is not None and os.path.isfile(cfg.state_file):
             with open(cfg.state_file) as f:
                 saved_state = json.load(f)
-            self.assist_scale = saved_state["assist_scale"]
+            saved_assist = saved_state["assist_scale"]
+            # State files written before the split hold a single number. Broadcast it rather than
+            # failing, so an in-progress curriculum resumes where it left off instead of silently
+            # restarting from a full crutch.
+            if isinstance(saved_assist, (int, float)):
+                self.assist_scale_by_motion.fill_(float(saved_assist))
+            else:
+                usable = min(len(saved_assist), self._motion_slots)
+                self.assist_scale_by_motion[:usable] = torch.tensor(
+                    saved_assist[:usable], dtype=torch.float, device=self.device
+                )
             self.curriculum_success_rate = saved_state["curriculum_success_rate"]
-            self.curriculum_episode_count_by_motion = torch.tensor(
-                saved_state["curriculum_episode_count_by_motion"], dtype=torch.long, device=self.device
+            # A state file written before a motion was added is shorter than the current layout.
+            # Pad rather than fail: the counters are a rolling window that refills within one
+            # curriculum step, so the missing entries cost nothing, while refusing to load would
+            # throw away the assist decay the file exists to preserve.
+            def _restore(values: list[int]) -> torch.Tensor:
+                restored = torch.zeros(self._motion_slots, dtype=torch.long, device=self.device)
+                usable = min(len(values), self._motion_slots)
+                restored[:usable] = torch.tensor(values[:usable], dtype=torch.long, device=self.device)
+                return restored
+
+            self.curriculum_episode_count_by_motion = _restore(
+                saved_state["curriculum_episode_count_by_motion"]
             )
-            self.curriculum_success_count_by_motion = torch.tensor(
-                saved_state["curriculum_success_count_by_motion"], dtype=torch.long, device=self.device
+            self.curriculum_success_count_by_motion = _restore(
+                saved_state["curriculum_success_count_by_motion"]
             )
 
         self.metrics["max_height"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["success"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["assist_scale"] = torch.zeros(self.num_envs, device=self.device)
+        # Signed rotation actually achieved, in turns, against the commanded target. The success
+        # flag only says pass/fail; these say which way the robot went and how far, which is the
+        # difference between a sign error, an underpowered launch, and a failed landing.
+        self.metrics["achieved_roll_turns"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["achieved_pitch_turns"] = torch.zeros(self.num_envs, device=self.device)
+        # Per-motion, because the aggregate cannot show one motion failing behind two that work:
+        # a task reporting success 1.00 with all three enabled says nothing about whether the
+        # sideflip in particular still lands. Reported as the conditional mean, broadcast so the
+        # manager's own averaging returns it unchanged.
+        for name in self._motion_metric_names.values():
+            self.metrics[name] = torch.zeros(self.num_envs, device=self.device)
+            # The assist each motion is still leaning on. The single global figure could not show
+            # one motion frozen at full assist behind four that had weaned off -- and that is
+            # exactly the state that went unnoticed for a whole run.
+            self.metrics["assist_" + name.removeprefix("success_")] = torch.zeros(
+                self.num_envs, device=self.device
+            )
+            # Share of environments assigned to this motion. The per-motion rates are conditional
+            # means, so they only recombine into the aggregate when weighted by these -- and the
+            # two disagreed once before (three rates near 0.46 against an aggregate of 0.998),
+            # which is not possible for a partition. Logging the weights makes that checkable
+            # instead of arguable.
+            self.metrics[name + "_share"] = torch.zeros(self.num_envs, device=self.device)
 
     @property
     def command(self) -> torch.Tensor:
@@ -115,6 +197,18 @@ class JumpCommand(CommandTerm):
             ),
             dim=-1,
         )
+
+    @property
+    def assist_scale(self) -> torch.Tensor:
+        """Per-environment assist scale, looked up from each env's commanded motion.
+
+        Keeps the name the scalar had, and stays a drop-in wherever it was used as a multiplier or
+        compared against zero. What changes is that it now varies across environments, so any use
+        that assigns into a masked subset of ``forces`` has to index this by the same mask -- an
+        unindexed ``(num_envs,)`` multiplied against a ``(num_masked,)`` ramp is a shape error, not
+        a silent one, which is why the force code below indexes explicitly.
+        """
+        return self.assist_scale_by_motion[self.motion_code]
 
     @property
     def height_delta(self) -> torch.Tensor:
@@ -192,6 +286,10 @@ class JumpCommand(CommandTerm):
                 enabled_motions.append(self.MOTION_BACKFLIP)
             if self.cfg.enable_sideflip:
                 enabled_motions.append(self.MOTION_SIDEFLIP)
+            if self.cfg.enable_handspring:
+                enabled_motions.append(self.MOTION_HANDSPRING)
+            if self.cfg.enable_sideflip_right:
+                enabled_motions.append(self.MOTION_SIDEFLIP_RIGHT)
             if not enabled_motions:
                 raise ValueError("At least one motion type must be enabled when auto_trigger=True")
 
@@ -249,11 +347,17 @@ class JumpCommand(CommandTerm):
                 sampled_height,
                 torch.full_like(sampled_height, launch_flip),
             )
+            # The mirrors negate the sampled target rather than taking their own range, so a single
+            # configured magnitude describes both directions and the two can never drift apart.
             self.target_pitch_turns[env_ids] = torch.where(
-                sampled_motion_codes == self.MOTION_BACKFLIP, sampled_pitch, 0.0
+                sampled_motion_codes == self.MOTION_BACKFLIP,
+                sampled_pitch,
+                torch.where(sampled_motion_codes == self.MOTION_HANDSPRING, -sampled_pitch, 0.0),
             )
             self.target_roll_turns[env_ids] = torch.where(
-                sampled_motion_codes == self.MOTION_SIDEFLIP, sampled_roll, 0.0
+                sampled_motion_codes == self.MOTION_SIDEFLIP,
+                sampled_roll,
+                torch.where(sampled_motion_codes == self.MOTION_SIDEFLIP_RIGHT, -sampled_roll, 0.0),
             )
             self.scheduled_trigger_time[env_ids] = sample_uniform(
                 self.cfg.trigger_time_range[0],
@@ -268,6 +372,37 @@ class JumpCommand(CommandTerm):
         self.metrics["max_height"][:] = self.max_height
         self.metrics["success"][:] = self.success.float()
         self.metrics["assist_scale"][:] = self.assist_scale
+        turns = 1.0 / (2.0 * math.pi)
+        attempted = self.trigger_step >= 0
+        self.metrics["achieved_roll_turns"][:] = torch.where(
+            attempted, self.accumulated_roll * turns, torch.zeros_like(self.accumulated_roll)
+        )
+        self.metrics["achieved_pitch_turns"][:] = torch.where(
+            attempted, self.accumulated_pitch * turns, torch.zeros_like(self.accumulated_pitch)
+        )
+        for code, name in self._motion_metric_names.items():
+            self.metrics["assist_" + name.removeprefix("success_")][:] = self.assist_scale_by_motion[code]
+            # Per *attempt*, from the counters assist_force_decay accumulates at episode reset --
+            # the same numbers the curriculum gates on, so what is logged and what decides the
+            # decay can no longer disagree.
+            #
+            # The previous instantaneous conditional mean, mean(success[motion_code == code]), did
+            # not survive its own arithmetic: weighting the five rates by their measured shares
+            # recombined to 0.427 against an aggregate of 0.812, which a partition cannot do. It is
+            # a per-timestep average, so it is dominated by however long each motion's environments
+            # happen to live, and an environment that crashes early contributes fewer samples of
+            # its own failure.
+            episodes = self.curriculum_episode_count_by_motion[code]
+            self.metrics[name][:] = (
+                self.curriculum_success_count_by_motion[code].float() / episodes
+                if episodes > 0
+                else 0.0
+            )
+            # Share of environments currently assigned to this motion. Not the sampling probability
+            # -- motions are drawn uniformly -- but occupancy, which is proportional to how long
+            # those episodes last. A share well below 1/n means that motion's episodes are ending
+            # early, i.e. the robot is crashing rather than merely missing the target.
+            self.metrics[name + "_share"][:] = (self.motion_code == code).float().mean()
 
     def _update_command(self):
         if self.cfg.auto_trigger:
@@ -315,10 +450,16 @@ class JumpCommand(CommandTerm):
             torch.abs(self.accumulated_roll - roll_target)
             < self.cfg.rotation_tolerance_rad
         )
+        rotates_in_pitch = (self.motion_code == self.MOTION_BACKFLIP) | (
+            self.motion_code == self.MOTION_HANDSPRING
+        )
+        rotates_in_roll = (self.motion_code == self.MOTION_SIDEFLIP) | (
+            self.motion_code == self.MOTION_SIDEFLIP_RIGHT
+        )
         reached_target = (
             ((self.motion_code == self.MOTION_JUMP) & jump_target_reached)
-            | ((self.motion_code == self.MOTION_BACKFLIP) & backflip_target_reached)
-            | ((self.motion_code == self.MOTION_SIDEFLIP) & sideflip_target_reached)
+            | (rotates_in_pitch & backflip_target_reached)
+            | (rotates_in_roll & sideflip_target_reached)
         )
         self.success |= landed & reached_target
 
@@ -384,7 +525,7 @@ class JumpCommand(CommandTerm):
         ) -> None:
             motion_mask = assist_active & (self.motion_code == motion_code)
             if torch.any(motion_mask):
-                force_per_body = total_force * self.assist_scale / len(force_indices)
+                force_per_body = total_force * self.assist_scale[motion_mask] / len(force_indices)
                 for force_index in force_indices:
                     forces[motion_mask, force_index, 2] = force_per_body * ramp_progress[motion_mask]
 
@@ -405,10 +546,20 @@ class JumpCommand(CommandTerm):
                 2.0 * self.cfg.gravity * self.launch_height[jump_mask].clamp(min=0.0)
             )
             total_force = self.jump_assist_mass * initial_velocity / self.cfg.assist_duration_s
-            force_per_body = total_force * self.assist_scale / len(self.jump_force_indices)
+            force_per_body = total_force * self.assist_scale[jump_mask] / len(self.jump_force_indices)
             for force_index in self.jump_force_indices:
                 forces[jump_mask, force_index, 2] = force_per_body * ramp_progress[jump_mask]
 
+        apply_profile(
+            self.MOTION_HANDSPRING,
+            self.handspring_force_indices,
+            self.cfg.handspring_assist_force,
+        )
+        apply_profile(
+            self.MOTION_SIDEFLIP_RIGHT,
+            self.sideflip_right_force_indices,
+            self.cfg.sideflip_right_assist_force,
+        )
         apply_profile(
             self.MOTION_BACKFLIP,
             self.backflip_force_indices,
@@ -434,24 +585,35 @@ class JumpCommand(CommandTerm):
         # Delaying it past take-off lets the same mechanism act on a free body, where it is
         # so effective that the magnitude has to come DOWN rather than up -- 350 N in the
         # air would be roughly nine rotations.
-        sideflip_mask = assist_active & (self.motion_code == self.MOTION_SIDEFLIP)
-        couple_delay = self.cfg.sideflip_couple_delay_s
-        if couple_delay > 0.0:
-            couple_mask = (
-                (self.motion_code == self.MOTION_SIDEFLIP)
-                & (self.trigger_step >= 0)
-                & (elapsed >= couple_delay)
-                & (elapsed < couple_delay + self.cfg.sideflip_couple_duration_s)
-                & (self.assist_scale > 0.0)
-            )
-        else:
-            couple_mask = sideflip_mask
-        if torch.any(sideflip_mask):
-            force_per_body = (
-                self.cfg.sideflip_assist_force * self.assist_scale / len(self.sideflip_force_indices)
-            )
-            for force_index in self.sideflip_force_indices:
-                forces[sideflip_mask, force_index, 2] = force_per_body * ramp_progress[sideflip_mask]
+        # Both sideflips run through this block. Which hips get lifted is the only difference
+        # between them, so the couple below reverses with it automatically. Writing the block for
+        # MOTION_SIDEFLIP alone is what left the right-hand mirror with only the plain one-sided
+        # pulse -- and the comments here are the record of that pulse being, on its own,
+        # insufficient: it succeeded 0.48 with this machinery and 0.00 without it.
+        for motion, side_indices, side_force in (
+            (self.MOTION_SIDEFLIP, self.sideflip_force_indices, self.cfg.sideflip_assist_force),
+            (
+                self.MOTION_SIDEFLIP_RIGHT,
+                self.sideflip_right_force_indices,
+                self.cfg.sideflip_right_assist_force,
+            ),
+        ):
+            sideflip_mask = assist_active & (self.motion_code == motion)
+            couple_delay = self.cfg.sideflip_couple_delay_s
+            if couple_delay > 0.0:
+                couple_mask = (
+                    (self.motion_code == motion)
+                    & (self.trigger_step >= 0)
+                    & (elapsed >= couple_delay)
+                    & (elapsed < couple_delay + self.cfg.sideflip_couple_duration_s)
+                    & (self.assist_scale > 0.0)
+                )
+            else:
+                couple_mask = sideflip_mask
+            if torch.any(sideflip_mask):
+                force_per_body = side_force * self.assist_scale[sideflip_mask] / len(side_indices)
+                for force_index in side_indices:
+                    forces[sideflip_mask, force_index, 2] = force_per_body * ramp_progress[sideflip_mask]
 
             # Extra roll, added as a COUPLE: up on the sideflip bodies, down on the others.
             # The one-sided force above cannot be scaled up to buy more rotation, because it
@@ -465,17 +627,16 @@ class JumpCommand(CommandTerm):
             # Sizing, from the measured single rotation (omega ~ 12.6 rad/s off 350 N
             # one-sided, implying I_roll ~ 0.166 kg*m^2): a second turn needs roughly the
             # same angular impulse again, which a couple supplies at about half the force.
-        if self.cfg.sideflip_couple_force > 0.0:
-            couple_per_body = (
-                self.cfg.sideflip_couple_force * self.assist_scale / len(self.sideflip_force_indices)
-            )
-            opposite = [i for i in range(len(self.body_ids)) if i not in self.sideflip_force_indices]
-            for force_index in self.sideflip_force_indices:
-                forces[couple_mask, force_index, 2] += couple_per_body
-            for force_index in opposite:
-                forces[couple_mask, force_index, 2] -= (
-                    self.cfg.sideflip_couple_force * self.assist_scale / max(len(opposite), 1)
-                )
+            if self.cfg.sideflip_couple_force > 0.0:
+                couple_scale = self.assist_scale[couple_mask]
+                couple_per_body = self.cfg.sideflip_couple_force * couple_scale / len(side_indices)
+                opposite = [i for i in range(len(self.body_ids)) if i not in side_indices]
+                for force_index in side_indices:
+                    forces[couple_mask, force_index, 2] += couple_per_body
+                for force_index in opposite:
+                    forces[couple_mask, force_index, 2] -= (
+                        self.cfg.sideflip_couple_force * couple_scale / max(len(opposite), 1)
+                    )
 
 
         self.robot.set_external_force_and_torque(
@@ -502,6 +663,10 @@ class JumpCommandCfg(CommandTermCfg):
     jump_assist_body_names: tuple[str, ...] = ()
     backflip_assist_body_names: tuple[str, ...] = ()
     sideflip_assist_body_names: tuple[str, ...] = ()
+    handspring_assist_body_names: tuple[str, ...] = ()
+    """Bodies the forward-rotation pulse lifts -- the rear hips, mirroring backflip's front pair."""
+    sideflip_right_assist_body_names: tuple[str, ...] = ()
+    """Bodies the roll-right pulse lifts -- the left hips, mirroring sideflip's right pair."""
 
     state_file: str | None = None
     """Path used to persist/restore the EFGCL assist-force curriculum (assist_scale and the
@@ -513,6 +678,8 @@ class JumpCommandCfg(CommandTermCfg):
     enable_jump: bool = True
     enable_backflip: bool = False
     enable_sideflip: bool = False
+    enable_handspring: bool = False
+    enable_sideflip_right: bool = False
     trigger_time_range: tuple[float, float] = (0.8, 1.2)
     target_height_range: tuple[float, float] = (0.20, 0.20)
     target_pitch_turns_range: tuple[float, float] = (0.0, 0.0)
@@ -557,6 +724,11 @@ class JumpCommandCfg(CommandTermCfg):
     jump_assist_mass: float | None = None
     """Mass (kg) used to derive the jump assist force via projectile motion. If ``None``,
     it is auto-detected from the robot's simulated total mass at init time."""
+    handspring_assist_force: float = 350.0
+    """Matched to ``backflip_assist_force`` by default -- it is the same pulse at the other end, and
+    350.0 is the value that converged cleanly for both existing rotations."""
+    sideflip_right_assist_force: float = 350.0
+    """Matched to ``sideflip_assist_force`` for the same reason."""
     backflip_assist_force: float = 350.0
     sideflip_assist_force: float = 600.0
     sideflip_couple_delay_s: float = 0.0
