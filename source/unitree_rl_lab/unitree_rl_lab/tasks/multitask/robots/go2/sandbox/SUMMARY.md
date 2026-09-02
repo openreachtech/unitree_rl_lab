@@ -93,3 +93,36 @@ has not been measured.
 merged environment now runs the corrected one (see `multitask_env_cfg.py`). Go2-Gallop reaches its
 robot through `velocity_env_cfg`'s stock `ROBOT_CFG`; retraining it under the corrected model is
 the remaining piece.
+
+## Which expert actually drives (`scripts/rsl_rl/measure_gate.py`, model_3000)
+
+Training logs the gate split by the jump command's `enabled` flag, which averages over whatever
+velocity command happened to be sampled -- a gallop and a backward walk land in the same bucket.
+Holding one command fixed for the whole run separates them. 64 environments, checkpoint
+`2026-09-02_11-42-39/model_3000.pt`.
+
+| condition | locomotion | acrobatics | transition |
+|---|---|---|---|
+| gallop, vx +3.0 m/s (400 steps, no move ever fires) | 0.989 | 0.011 | 0.000 |
+| backward walk, vx -0.8 m/s, between moves | 0.989 | 0.010 | 0.000 |
+| backward walk, inside the backflip's command window | 0.004 | 0.995 | 0.000 |
+| backward walk, 1.0-2.0 s after the trigger | 0.989 | 0.010 | 0.001 |
+
+**The transition expert is unused.** It never exceeds 0.001 in any condition, including the
+0.9-1.0 s bin where the hand-back happens and it would have the most to contribute. It was given
+random weights and no prior on purpose, to earn its weight from the gate; after 3000 iterations it
+has not. The two pre-trained experts are carrying the policy alone, so the third expert's
+parameters and its share of every forward pass are currently pure cost.
+
+**The hand-back is a step function on the flag, not on the robot's state.** Binned against time
+since the trigger, acrobatics holds 0.99+ through 0.9 s, then drops to 0.008-0.013 in the very next
+bin -- exactly where `command_duration_s` (1.0 s) ends. The gate is following the command flag it
+was given as a prior rather than anything physical, so a move still recovering at 1.0 s is handed
+to the locomotion expert mid-recovery. That is a plausible mechanism for flips that rotate fully
+and still fail to hold the landing, and it is measurable: lengthening `ACRO_WINDOW_S` moves the
+step, and if landing success moves with it the flag is the binding constraint.
+
+Note for anyone extending the tool: this environment sets `rearm_after_s` equal to
+`command_duration_s`, so the command's own `in_motion` flag expires at the same instant `enabled`
+does. Bucketing on `in_motion` therefore leaves the recovery in no bucket at all -- the script
+follows a fixed `--follow` window from the rising edge instead.
