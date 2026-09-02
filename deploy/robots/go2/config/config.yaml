@@ -161,9 +161,20 @@ FSM:
     # policy_dir and command_duration_s MUST be changed together -- they are one setting
     # split across two lines, and a mismatch fails silently rather than loudly:
     #
-    #   go2_multitask                   -> command_duration_s: 1.5   (current)
-    #   go2_multitask_phase1            -> command_duration_s: 0.5   (pre-promotion runs)
-    #   go2_multitask_try_long_command  -> command_duration_s: 1.5   (the promoted run's logs)
+    #   go2_multitask (runs from 2026-09-02) -> command_duration_s: 1.0   (current policy_dir)
+    #   go2_multitask_try_3                  -> command_duration_s: 1.5
+    #   go2_multitask (older runs)           -> command_duration_s: 1.5
+    #   go2_multitask_try_long_command       -> command_duration_s: 1.5
+    #   go2_multitask_phase1                 -> command_duration_s: 0.5
+    #
+    # Note that `go2_multitask` appears twice: `parser_policy_dir` picks the newest run under the
+    # root that has an `exported` folder, so which value is right depends on when that run was
+    # trained. Check the run before trusting the line below.
+    #
+    # The default moved 1.5 -> 1.0 on 2026-09-01. A window that outlasts the motion keeps the
+    # routing prior pinned to the acrobatics expert after the robot has landed, which is felt as
+    # a move that will not hand back cleanly to the gait. Measured trigger-to-landing under zero
+    # assist: both sideflips 0.82 s, handspring 0.84 s, backflip 0.88 s median.
     #
     # command_duration_s is not a deploy-side timeout. It sets how long the `enabled` flag
     # stays high in the observation, and this policy's gate keys its expert-routing prior
@@ -172,7 +183,7 @@ FSM:
     # upside down -- measured at 59% of the action, and worth 0.55 flip success against
     # 0.79. The robot will still move, so nothing announces the error.
     policy_dir: ../../../logs/rsl_rl/go2_multitask
-    command_duration_s: 1.5
+    command_duration_s: 1.0
     time_scale: 1.0
     rearm_delay_s: 0.3
 
@@ -185,22 +196,33 @@ FSM:
     keyboard_vel_scale: 0.35
     # keyboard_alpha: 0.15      # low-pass on the command; higher = quicker to build up
 
-    # Targets are given explicitly rather than by name. The `motion:` shorthand fills in
-    # defaults shared with the Dynamic state, and its sideflip default is +1.0 turn --
-    # correct for Go2-Sideflip-Double, but this policy trained on
-    # target_roll_turns_range=(-1.0, -1.0) and a +1.0 command asks it to roll the way it
-    # never learned. Backflip and jump happen to match the shared defaults; sideflip does
-    # not, which is exactly the motion that failed in MuJoCo.
+    # Four rotations, one per heading -- the set the merged policy is trained on. Each is
+    # what the gait it interrupts is already doing, so nothing has to reverse its own
+    # momentum: run forward and hand-spring forward, back up and back-flip, strafe left or
+    # right and side-flip that way.
+    #
+    # There is no jump entry. The merged environment sets enable_jump = False: a vertical
+    # jump existed only as the substitute fired when the sampled move fought the commanded
+    # direction, and with all four rotations trained there is nothing left for it to
+    # stand in for. Commanding one here would ask for a motion this policy never saw.
+    #
+    # Targets are still written out rather than left to the `motion:` shorthand. The
+    # shorthand now agrees with them (see apply_targets in State_Multitask.cpp), but the
+    # sign is the entire difference between a move and its mirror, and it is worth being
+    # able to read that off the config rather than out of the C++.
     motions:
       - key: "3"
-        motion: jump
-        target_height: 0.20
-      - key: "4"
         motion: backflip
         target_pitch_turns: -1.0
+      - key: "4"
+        motion: handspring
+        target_pitch_turns: 1.0
       - key: "5"
         motion: sideflip
         target_roll_turns: -1.0
+      - key: "6"
+        motion: sideflip_right
+        target_roll_turns: 1.0
 
     # Fall -> Passive guard. Values carried over from Dynamic, where they were tuned on
     # hardware: at 0.3 s the guard armed while the front feet were still slamming down and

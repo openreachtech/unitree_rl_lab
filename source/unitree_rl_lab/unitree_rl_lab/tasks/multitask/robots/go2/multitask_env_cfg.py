@@ -22,16 +22,29 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
-from unitree_rl_lab.assets.robots.unitree import UNITREE_GO2_CFG
+from unitree_rl_lab.assets.robots.unitree import UNITREE_GO2_CORRECTED_CFG
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import EventCfg as LocomotionEventCfg
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_phase1 import RobotSceneCfgPhase1
 from unitree_rl_lab.tasks.multitask import mdp
 from unitree_rl_lab.tasks.multitask.obs_spec import HISTORY_LENGTH
 
-# Both source tasks use the stock actuator model (the locomotion side reaches this via
-# velocity_env_cfg's ROBOT_CFG); Go2-Run and Go2-Speed's UNITREE_GO2_CORRECTED_CFG is deliberately
-# not used here, because an expert trained under one actuator model is not valid under the other.
-ROBOT_CFG = UNITREE_GO2_CFG
+# The corrected actuator model -- the same one Go2-Jump-60, Go2-Run and Go2-Speed use, and the only
+# one that has been checked against hardware. It differs from the stock model in three places, each
+# closing a gap against the project's MuJoCo model: joint friction (Fs 0.2 / Fd 0.1 against none at
+# all), a flat calf torque envelope with no speed derate, and armature 0.01 on every joint.
+#
+# This file previously took the stock model on the reasoning that an expert trained under one
+# actuator model is not valid under the other, and that both source experts were trained under the
+# stock one. That is true, and it is the cost rather than the argument: the stock model is the one
+# whose sim2sim failures are on record -- a jump policy scoring 0.998 in Isaac Lab that pitches ~160
+# deg and lands on its back in MuJoCo, and an armature mismatch that produced a full tumble. Keeping
+# it means the merged policy is tuned against physics known to disagree with the robot it deploys
+# to, which is what the MuJoCo runs of this task have been showing.
+#
+# Consequence to carry forward: this invalidates the *locomotion* expert too. Go2-Gallop reaches its
+# robot through velocity_env_cfg's stock ROBOT_CFG, so it has to be retrained under this model
+# before it can initialise the mixture, exactly as the acrobatics expert does.
+ROBOT_CFG = UNITREE_GO2_CORRECTED_CFG
 
 
 @configclass

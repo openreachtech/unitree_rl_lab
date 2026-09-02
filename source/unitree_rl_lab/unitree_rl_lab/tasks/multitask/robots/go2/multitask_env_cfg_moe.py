@@ -34,7 +34,9 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.utils import configclass
 
-from unitree_rl_lab.tasks.dynamic.robots.go2.jump_env_cfg_phase2 import CommandsCfgPhase2
+from unitree_rl_lab.tasks.dynamic.robots.go2.jump_env_cfg_multitask import (
+    MultitaskCommandsCfgPhase2,
+)
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import ActionsCfg
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_run import (
     _GAIT_FEET,
@@ -55,7 +57,7 @@ from unitree_rl_lab.tasks.multitask.robots.go2.multitask_env_cfg import (
     apply_multitask_post_init,
 )
 
-ACRO_WINDOW_S = 1.5
+ACRO_WINDOW_S = 1.0
 """How long a commanded move counts as in progress.
 
 Covers flight, landing and recovery: ``minimum_landing_time_s`` alone is 0.8 s, so anything shorter
@@ -85,10 +87,6 @@ original weights, since scaling those would make attempting a move less attracti
 """
 
 
-MAX_COMMANDED_SPEED = 3.5
-"""Ceiling of the locomotion task's forward command, and therefore of the take-off curriculum."""
-
-
 def _multi_trigger_jump_cfg():
     """The acrobatics Phase 2 jump command, re-typed to re-arm, with all assistance off.
 
@@ -96,7 +94,14 @@ def _multi_trigger_jump_cfg():
     schedule, motion mix, rotation targets and tolerances are exactly the ones the expert learned
     against -- there are around twenty of them and several were tuned the hard way.
     """
-    trained = CommandsCfgPhase2().jump
+    # `MultitaskCommandsCfgPhase2`, the class the acrobatics expert is actually trained under -- not
+    # the `CommandsCfgPhase2` it derives from. Copying the base instead was silently wrong: the
+    # merged environment then ran on the base's three motions, its 350 N sideflip force and its
+    # window, none of which the loaded expert had ever seen. Most of that happened to be masked
+    # here (the assist is off, so its forces do not matter, and the enables and window were
+    # restated below), which is exactly what makes it worth pinning down -- the next field added to
+    # the trained config would have gone missing with nothing to show for it.
+    trained = MultitaskCommandsCfgPhase2().jump
     cfg = mdp.MultiTriggerJumpCommandCfg(
         **{f.name: getattr(trained, f.name) for f in fields(trained) if f.name != "class_type"}
     )
@@ -120,6 +125,15 @@ def _multi_trigger_jump_cfg():
     # touching which environments qualify, so the task itself does not get harder.
     cfg.retrigger_interval_range = (1.5, 3.0)
     cfg.velocity_command_name = "base_velocity"
+    # No plain jump here, unlike the expert's own task. Every remaining move carries a direction and
+    # `_select_motion_for_direction` hands the commanded heading the one that goes with it -- so the
+    # move is decided by the gait rather than sampled and then patched up. The vertical jump was
+    # what the earlier design substituted whenever the sampled move fought the direction, which kept
+    # the interruption but discarded the rotation and left half the headings with nothing else to
+    # do. With all four rotations trained (handspring mirroring the backflip, right sideflip
+    # mirroring the left) the substitute is no longer needed, and dropping it means every attempt
+    # trains a rotation the robot is actually being asked for.
+    cfg.enable_jump = False
     return cfg
 
 
@@ -349,13 +363,47 @@ class MoeTerminationsCfg:
     )
 
 
+ACRO_SPEED_CEILING = 1.0
+"""Fastest commanded speed at which an acrobatic move may be triggered, in m/s.
+
+Not the locomotion ceiling, and that distinction is the whole point. The take-off limit gates
+*whether a move fires at all*, so raising it to the locomotion ceiling (3.5 m/s) tells the policy to land a
+flip while being asked for 3.5 m/s -- and the only way to do that is to stop. Measured over 3000
+iterations with the ceiling at 3.5: the limit reached it halfway through, and velocity tracking
+error went 0.03 -> 2.11 while the flips kept landing 74% of attempts. The policy had bought flip
+success by giving up running, exactly as ``takeoff_speed_levels`` warns.
+
+Above this speed the robot simply runs; no acrobatic move is offered. That is the intended
+behaviour rather than a limitation -- a flip from 3.5 m/s is not a skill being withheld, it is one
+that does not exist.
+
+Choosing 1.0 also evens out *which* move fires. The gate is on the speed magnitude, and the command
+ranges are ``lin_vel_x`` [-1.0, 3.5] against ``lin_vel_y`` [-1.0, 1.0]; since the heading picks the
+move by dominant axis, a fore-aft span three times wider makes lateral commands -- and so both
+sideflips -- a small minority. Below 1.0 m/s the two axes span the same range and the four motions
+fire about equally.
+"""
+
+MAX_LOCOMOTION_ERROR = 0.6
+"""Velocity-tracking error above which the take-off limit may not rise, and below which it falls.
+
+Without it the curriculum promotes on flip success alone, which is what let the limit climb while
+running fell apart. Measured from ``MultiTriggerJumpCommand.locomotion_error``, which excludes the
+steps spent mid-flip -- the robot cannot follow a ground velocity command while inverted, and
+charging the gate for that made the limit oscillate instead of settle. For scale, the locomotion
+expert on its own sits at 0.30-0.40, and the collapsed run reported 0.95 on this restricted figure
+against 2.11 unrestricted.
+"""
+
+
 @configclass
 class MoeCurriculumCfg:
     takeoff_speed = CurrTerm(
         func=mdp.takeoff_speed_levels,
         params={
             "command_name": "jump",
-            "maximum_speed": MAX_COMMANDED_SPEED,
+            "maximum_speed": ACRO_SPEED_CEILING,
+            "max_velocity_error": MAX_LOCOMOTION_ERROR,
             "state_file": "logs/rsl_rl/go2_multitask/takeoff_speed_state.json",
         },
     )
@@ -388,6 +436,10 @@ class RobotPlayEnvCfgMoe(RobotEnvCfgMoe):
         self.scene.terrain.terrain_generator.num_rows = 3
         self.scene.terrain.terrain_generator.num_cols = 5
         self.observations.policy.enable_corruption = False
-        # Play exercises the finished skill: no take-off speed restriction.
+        # Play exercises the finished skill, so the curriculum is off -- but the ceiling stays.
+        # The ceiling still applies: the limit is not a training restriction
+        # to be lifted at the end, but the speed above which an acrobatic move is not offered at
+        # all. Letting Play fire one at 3.5 m/s shows a failure the deployed robot will never be
+        # asked to produce.
         self.curriculum.takeoff_speed = None
-        self.commands.jump.initial_takeoff_speed_limit = MAX_COMMANDED_SPEED
+        self.commands.jump.initial_takeoff_speed_limit = ACRO_SPEED_CEILING

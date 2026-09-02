@@ -78,6 +78,7 @@ class MoEPPO(PPO):
         lr_scales: dict[str, float] | None = None,
         actor_warmup_iterations: int = 0,
         gravity_z_index: int | None = None,
+        action_clip: float | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(policy, **kwargs)
@@ -91,6 +92,9 @@ class MoEPPO(PPO):
         self.lr_scales = {**DEFAULT_LR_SCALES, **(lr_scales or {})}
         self.actor_warmup_iterations = int(actor_warmup_iterations)
         self.gravity_z_index = gravity_z_index
+        # Only for reporting how often the wrapper's clip binds; the clipping itself happens in
+        # RslRlVecEnvWrapper, outside this class and outside the exported policy.
+        self.action_clip = action_clip
         self._iteration = 0
 
         named_groups = policy.parameter_groups()
@@ -165,11 +169,38 @@ class MoEPPO(PPO):
                     stats[f"gate/{label}_{suffix}"] = weights[mask, index].mean().item()
         return stats
 
+    @torch.no_grad()
+    def _action_statistics(self, clip: float | None = None) -> dict[str, float]:
+        """How large the policy's raw actions are, before any wrapper clipping.
+
+        Worth logging because a clip applied by ``RslRlVecEnvWrapper`` lives outside the
+        environment and is therefore *not* exported to deploy: the robot receives whatever the
+        network emits, bounded only by the action term's own much looser clip. If the training clip
+        is binding, training and deployment are running different policies, and the symptom on
+        hardware is a joint target slammed into its limit rather than anything that looks like a
+        bad gait.
+        """
+        storage = getattr(self, "storage", None)
+        if storage is None or getattr(storage, "actions", None) is None:
+            return {}
+        actions = storage.actions.reshape(-1, storage.actions.shape[-1])
+        magnitude = actions.abs()
+        stats = {
+            "action/abs_mean": magnitude.mean().item(),
+            "action/abs_p99": magnitude.flatten().quantile(0.99).item(),
+            "action/abs_max": magnitude.max().item(),
+        }
+        if clip is not None:
+            stats["action/fraction_at_clip"] = (magnitude >= clip * 0.999).float().mean().item()
+        return stats
+
     def update(self) -> dict[str, float]:
         self._apply_lr_scales()
         gate_stats = self._gate_statistics()
+        action_stats = self._action_statistics(self.action_clip)
         loss_dict = super().update()
         loss_dict.update(gate_stats)
+        loss_dict.update(action_stats)
         self._iteration += 1
         # Surfaces the warm-up boundary and the effective rates in TensorBoard, so a run that
         # behaves oddly early on can be checked against the schedule rather than guessed at.

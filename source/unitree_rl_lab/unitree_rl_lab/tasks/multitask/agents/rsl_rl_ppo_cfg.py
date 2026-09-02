@@ -81,6 +81,14 @@ class RslRlMoePpoCfg(RslRlPpoAlgorithmCfg):
     """Column of projected gravity's z component, used to split the gate statistics by whether the
     trunk is upright, tilted or inverted. Derived from the layout so it cannot drift out of step."""
 
+    action_clip: float | None = 10.0
+    """Mirror of the runner's ``clip_actions``, for reporting only.
+
+    Lets the logs show how often that clip actually binds. It matters because ``clip_actions`` is
+    applied by the vec-env wrapper, so it is not part of the environment and not exported to
+    deploy -- if it binds during training, the deployed policy is a different one.
+    """
+
     actor_warmup_iterations: int = 50
     """Iterations during which every ``actor_*`` group is held at scale 0.
 

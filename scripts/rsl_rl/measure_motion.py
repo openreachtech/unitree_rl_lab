@@ -22,8 +22,6 @@ parser.add_argument("--assist-scale", type=float, default=None,
                     help="Override initial_assist_scale. The Go2-Multitask-Jump-Inspect-* tasks hold\n"
                          "it at 1.0 to show the launch mechanics; 0.0 measures the policy unaided,\n"
                          "which is the condition the merged environment actually runs in.")
-parser.add_argument("--random-policy", action="store_true",
-                    help="Skip loading the checkpoint. Isolates what the environment does from what a\ntrained policy does -- every checkpoint in this project descends from the same standing phase, so\nagreement between two of them is not independent evidence.")
 parser.add_argument("--window", type=int, default=100, help="Steps after a trigger that count as one attempt.")
 AppLauncher.add_app_launcher_args(parser)
 import cli_args  # noqa: E402
@@ -60,10 +58,7 @@ def main():
         jump_cfg.state_file = None  # else a saved curriculum overwrites the value being asked for
         print(f"[INFO] initial_assist_scale = {args_cli.assist_scale}")
     agent_cfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
-    resume_path = None
-    if args_cli.random_policy:
-        pass
-    elif args_cli.checkpoint:
+    if args_cli.checkpoint:
         resume_path = retrieve_file_path(args_cli.checkpoint)
     else:
         root = os.path.abspath(os.path.join("logs", "rsl_rl", agent_cfg.experiment_name))
@@ -73,10 +68,7 @@ def main():
     env = gym.make(args_cli.task, cfg=env_cfg)
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
-    if args_cli.random_policy:
-        print("[INFO] random policy: checkpoint NOT loaded")
-    else:
-        runner.load(resume_path)
+    runner.load(resume_path)
     policy = runner.get_inference_policy(device=env.unwrapped.device)
     command = env.unwrapped.command_manager.get_term("jump")
 

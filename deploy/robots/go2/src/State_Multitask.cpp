@@ -15,8 +15,17 @@ std::string to_lower(std::string s)
     return s;
 }
 
-// Same defaults State_Flip applies when a motion names itself but gives no explicit targets, so a
-// config entry means the same thing in either state.
+// Defaults for a motion that names itself and gives no explicit targets.
+//
+// The four rotations are two mirrored pairs, and the sign is the only thing that separates each
+// pair: a handspring is a backflip's pitch reversed, a right sideflip is a sideflip's roll
+// reversed. That is exactly how the training task defines them -- it negates the sampled target
+// rather than carrying a second range -- so the names here mean what they mean there.
+//
+// `sideflip` is -1.0, unlike State_Flip's +1.0. State_Flip's value is right for
+// Go2-Sideflip-Double; every multi-task policy trained on target_roll_turns_range=(-1.0, -1.0),
+// and commanding +1.0 asks it to roll the way it never learned. That mismatch is what made the
+// sideflip fail in MuJoCo while the backflip and jump worked.
 void apply_targets(YAML::Node node, const std::string & motion, float & h, float & p, float & r)
 {
     h = node["target_height"] ? node["target_height"].as<float>() : 0.0f;
@@ -24,9 +33,11 @@ void apply_targets(YAML::Node node, const std::string & motion, float & h, float
     r = node["target_roll_turns"] ? node["target_roll_turns"].as<float>() : 0.0f;
     if (h == 0.0f && p == 0.0f && r == 0.0f)
     {
-        if (motion == "jump")          h = 0.20f;
-        else if (motion == "backflip") p = -1.0f;
-        else if (motion == "sideflip") r = 1.0f;
+        if (motion == "jump")                h = 0.20f;   // vertical, no rotation
+        else if (motion == "backflip")       p = -1.0f;   // backward: front hips lifted
+        else if (motion == "handspring")     p = +1.0f;   // forward:  rear hips lifted
+        else if (motion == "sideflip")       r = -1.0f;   // left:     right hips lifted
+        else if (motion == "sideflip_right") r = +1.0f;   // right:    left hips lifted
     }
 }
 }  // namespace

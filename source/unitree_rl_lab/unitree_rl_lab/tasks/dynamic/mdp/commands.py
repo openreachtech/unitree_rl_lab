@@ -125,6 +125,16 @@ class JumpCommand(CommandTerm):
         self.curriculum_success_count_by_motion = torch.zeros(
             self._motion_slots, dtype=torch.long, device=self.device
         )
+        # Lifetime per-motion tallies, kept here rather than read back out of the assist
+        # curriculum. The metrics used to read `curriculum_*_by_motion`, which only
+        # `assist_force_decay` ever fills -- correct in this task, and silently zero in the merged
+        # one, which runs no assist curriculum at all. Every per-motion success there read 0.000
+        # for a full 3000-iteration run while the attempts were in fact landing 74% of the time.
+        # Incremented in `_resample_command`, which both attempt-ending paths funnel through: an
+        # episode reset here, and the merged command's mid-episode re-arm via its own
+        # `super()._resample_command(...)`.
+        self.attempts_by_motion = torch.zeros(self._motion_slots, dtype=torch.long, device=self.device)
+        self.successes_by_motion = torch.zeros(self._motion_slots, dtype=torch.long, device=self.device)
 
         if cfg.state_file is not None and os.path.isfile(cfg.state_file):
             with open(cfg.state_file) as f:
@@ -252,6 +262,16 @@ class JumpCommand(CommandTerm):
     def _resample_command(self, env_ids: Sequence[int]):
         if len(env_ids) == 0:
             return
+        # Before anything is cleared: `motion_code` and `success` still describe the attempt that
+        # is ending.
+        ending = self.trigger_step[env_ids] >= 0
+        if torch.any(ending):
+            codes = self.motion_code[env_ids][ending]
+            wins = self.success[env_ids][ending].float()
+            self.attempts_by_motion += torch.bincount(codes, minlength=self._motion_slots)
+            self.successes_by_motion += torch.bincount(
+                codes, weights=wins, minlength=self._motion_slots
+            ).long()
         self.enabled[env_ids] = False
         self.previous_enabled[env_ids] = False
         self.command_issued[env_ids] = False
@@ -382,9 +402,9 @@ class JumpCommand(CommandTerm):
         )
         for code, name in self._motion_metric_names.items():
             self.metrics["assist_" + name.removeprefix("success_")][:] = self.assist_scale_by_motion[code]
-            # Per *attempt*, from the counters assist_force_decay accumulates at episode reset --
-            # the same numbers the curriculum gates on, so what is logged and what decides the
-            # decay can no longer disagree.
+            # Per *attempt*, from this command's own lifetime tallies -- not the assist
+            # curriculum's rolling window, which does not exist in every task that uses this
+            # command.
             #
             # The previous instantaneous conditional mean, mean(success[motion_code == code]), did
             # not survive its own arithmetic: weighting the five rates by their measured shares
@@ -392,11 +412,9 @@ class JumpCommand(CommandTerm):
             # a per-timestep average, so it is dominated by however long each motion's environments
             # happen to live, and an environment that crashes early contributes fewer samples of
             # its own failure.
-            episodes = self.curriculum_episode_count_by_motion[code]
+            attempts = self.attempts_by_motion[code]
             self.metrics[name][:] = (
-                self.curriculum_success_count_by_motion[code].float() / episodes
-                if episodes > 0
-                else 0.0
+                self.successes_by_motion[code].float() / attempts if attempts > 0 else 0.0
             )
             # Share of environments currently assigned to this motion. Not the sampling probability
             # -- motions are drawn uniformly -- but occupancy, which is proportional to how long
