@@ -81,6 +81,18 @@ public:
     _pressed_keys.clear();
   }
 
+  /** @brief One-shot version of pressed(): true (once) if key is latched, and removes it
+   *  from the latched set so holding the key down has no repeated effect. Use this instead
+   *  of pressed() for keys that select between mutually-exclusive discrete states (e.g. a
+   *  height preset), where -- unlike f/b/l/r/y/u's additive velocity components -- letting
+   *  more than one stay latched at once would be ambiguous rather than combine sensibly. */
+  bool consume(const std::string& key)
+  {
+    std::lock_guard<std::mutex> lock(_pressed_mutex);
+    const std::string& k = (key == "space") ? " " : key;
+    return _pressed_keys.erase(k) > 0;
+  }
+
   /** @brief True once after space bar; clears latched motion keys. */
   bool consume_velocity_stop()
   {

@@ -47,7 +47,8 @@ parser.add_argument(
     default=False,
     help=(
         "Write deploy.yaml with keyboard_velocity_commands instead of velocity_commands "
-        "(for deploy controllers without a wireless remote)."
+        "(for deploy controllers without a wireless remote), and keyboard_base_height_command "
+        "instead of base_height_command if the task has one (e.g. Go2-Crouch)."
     ),
 )
 parser.add_argument(
@@ -248,6 +249,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     observation_renames = None
     if args_cli.deploy_keyboard_commands:
         observation_renames = {"velocity_commands": "keyboard_velocity_commands"}
+        # Go2-Crouch and similar tasks only -- most tasks have no base_height command at all.
+        if hasattr(env.unwrapped.cfg.observations.policy, "base_height_command"):
+            observation_renames["base_height_command"] = "keyboard_base_height_command"
     export_deploy_cfg(env.unwrapped, log_dir, observation_renames=observation_renames)
     # copy the environment configuration file to the log directory
     shutil.copy(

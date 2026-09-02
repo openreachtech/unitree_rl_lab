@@ -101,3 +101,19 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
     },
 )
+
+# Based on Phase1 (same small velocity-command ranges, flat ground) plus a new
+# base_height command term: walk while tracking a commanded base height. Fixed at
+# 0.3m (a 10cm crouch off UNITREE_GO2_CFG's 0.4m standing height) for now -- see
+# velocity_env_cfg_crouch.py for why it's a command rather than a reward constant.
+gym.register(
+    id="Go2-Crouch",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_crouch:RobotEnvCfgCrouch",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_crouch:RobotPlayEnvCfgCrouch",
+        "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
+    },
+)
+

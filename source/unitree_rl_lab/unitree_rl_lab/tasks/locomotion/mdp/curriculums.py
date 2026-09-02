@@ -64,6 +64,40 @@ def ang_vel_cmd_levels(
     return torch.tensor(ranges.ang_vel_z[1], device=env.device)
 
 
+def crouch_depth_levels(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    reward_term_name: str = "track_base_height",
+    step: float = 0.01,
+) -> torch.Tensor:
+    """Deepens the commanded crouch the same way ``lin_vel_cmd_levels`` widens speed: once
+    ``reward_term_name`` (an exp-kernel tracking reward, e.g. ``track_base_height_depth_scaled_exp``)
+    clears 80% of its max weight -- averaged over the envs resetting this step -- the *lower*
+    end of ``base_height``'s range drops by ``step`` meters toward ``limit_ranges``, clamped
+    there.
+
+    Only the lower bound moves. ``lin_vel_cmd_levels`` widens symmetrically because velocity
+    has no natural center other than 0; height's natural starting point is standing height
+    (``ranges.base_height`` starts degenerate at the standing value, e.g. ``(0.4, 0.4)``), and
+    "deeper" only ever means "lower", so the upper bound -- standing height -- never needs to
+    move. This is what makes a Go2-Crouch curriculum "start at 0 crouch depth, gradually widen
+    down to the deepest commanded crouch" rather than get there in one jump.
+    """
+    command_term = env.command_manager.get_term("base_height")
+    ranges = command_term.cfg.ranges
+    limit_ranges = command_term.cfg.limit_ranges
+
+    reward_term = env.reward_manager.get_term_cfg(reward_term_name)
+    reward = torch.mean(env.reward_manager._episode_sums[reward_term_name][env_ids]) / env.max_episode_length_s
+
+    if env.common_step_counter % env.max_episode_length == 0:
+        if reward > reward_term.weight * 0.8:
+            new_min = max(ranges.base_height[0] - step, limit_ranges.base_height[0])
+            ranges.base_height = (new_min, ranges.base_height[1])
+
+    return torch.tensor(ranges.base_height[0], device=env.device)
+
+
 def lin_vel_cmd_levels_column_aware(
     env: ManagerBasedRLEnv,
     env_ids: Sequence[int],

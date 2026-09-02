@@ -4,8 +4,15 @@ FSM:
       id: 1
     FixStand:
       id: 2
-    Velocity:
-      id: 3
+    # Velocity disabled: its policy_dir (unitree_go2_velocity_v1) doesn't exist on this
+    # machine (crashes CtrlFSM's constructor, which eagerly loads every enabled state's
+    # policy_dir up front) -- re-enable once that checkpoint is trained/exported here, and
+    # restore its transitions/keyboard_transitions/block below (still present, commented).
+    # Velocity:
+    #   id: 3
+    #   type: RLBase
+    Crouch:
+      id: 4
       type: RLBase
   Passive:
     transitions:
@@ -17,10 +24,11 @@ FSM:
   FixStand:
     transitions:
       Passive: LT + B.on_pressed
-      Velocity: start.on_pressed
+      # Velocity: start.on_pressed
     keyboard_transitions:
       Passive: "0"
-      Velocity: enter
+      # Velocity: enter
+      Crouch: "2"
     kp: [60, 80, 80, 60, 80, 80, 60, 80, 80, 60, 80, 80]
     kd: [5, 4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4]
     ts: [0, 1, 2]
@@ -29,9 +37,20 @@ FSM:
       [0.0, 1.36, -2.65, 0.0, 1.36, -2.65, 0.0, 1.36, -2.65, 0.0, 1.36, -2.65],
       [0., 0.8, -1.5, 0., 0.8, -1.5, 0., 0.8, -1.5, 0., 0.8, -1.5],
     ]
-  Velocity:
+  # Velocity:
+  #   transitions:
+  #     Passive: LT + B.on_pressed
+  #   keyboard_transitions:
+  #     Passive: "0"
+  #   policy_dir: ../../../logs/rsl_rl/unitree_go2_velocity_v1
+  # Go2-Crouch: base_velocity via f/b/l/r/y/u as usual, plus base_height via 3 presets --
+  # t (stand, no crouch) / m (middle) / c (deepest crouch) -- see State_RLBase.cpp's
+  # keyboard_base_height_command. Requires a checkpoint trained+exported with
+  # --deploy-keyboard-commands (renames both velocity_commands and base_height_command to
+  # their keyboard_* observation names).
+  Crouch:
     transitions:
       Passive: LT + B.on_pressed
     keyboard_transitions:
       Passive: "0"
-    policy_dir: ../../../logs/rsl_rl/unitree_go2_velocity_v1
+    policy_dir: ../../../logs/rsl_rl/go2_crouch

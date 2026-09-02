@@ -138,31 +138,68 @@ def base_height_climb_reward(
     return reward
 
 
-def base_height_command_l2(
+"""
+Depth-scaled Go2-Crouch base-height reward.
+
+A flat exp-kernel tracking reward (pull toward the target exactly as strong at a 25cm
+crouch as at 0) plateaued at 10cm of a 25cm commandable depth: holding a low base height
+costs more static joint torque/energy almost by physics, so penalties like
+joint_torques_l2/energy get relatively more expensive the deeper the commanded crouch, while
+a flat incentive to be there doesn't -- an increasingly lopsided trade the deeper training
+pushes. track_base_height_depth_scaled_exp below fixes that by scaling the incentive itself
+up with depth (see its docstring); this was compared against two alternatives -- a flat
+weight bump, and discounting the penalties instead of scaling the incentive -- in sandbox
+Try 1/2/3 (deleted after Try 2, this one, won by reaching the full 25cm ceiling stably; see
+velocity_env_cfg_crouch.py's module docstring for the comparison).
+"""
+
+
+def _crouch_depth_fraction(
+    env: ManagerBasedRLEnv, command_name: str, standing_height: float, max_depth: float
+) -> torch.Tensor:
+    """(standing_height - target_height) / max_depth, clamped to [0, 1] -- how deep the
+    per-env commanded crouch currently is, as a fraction of the deepest crouch the task
+    allows. 0 at standing height, 1 at the deepest commandable target."""
+    target_height = env.command_manager.get_command(command_name)[:, 0]
+    depth = torch.clamp(standing_height - target_height, min=0.0)
+    return torch.clamp(depth / max_depth, 0.0, 1.0)
+
+
+def track_base_height_depth_scaled_exp(
     env: ManagerBasedRLEnv,
     command_name: str,
+    standing_height: float,
+    max_depth: float,
+    std_min: float,
+    std_max: float,
+    weight_min: float,
+    weight_max: float,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     sensor_cfg: SceneEntityCfg | None = None,
 ) -> torch.Tensor:
-    """Penalize base height away from a per-env target read from a command term.
+    """Depth-scaled variant of ``track_base_height_exp`` (sandbox Try 2): both the reward's
+    strength and its error tolerance grow with commanded crouch depth instead of staying
+    flat across the whole range.
 
-    Same L2 kernel as ``isaaclab.envs.mdp.rewards.base_height_l2``, but the target comes
-    from ``env.command_manager.get_command(command_name)`` (shape (num_envs, 1)) instead of
-    a fixed float baked into the reward params. That is the only difference: a command term
-    (e.g. ``UniformHeightCommand``) owns the target and can resample/curriculum it per env,
-    where the stock function can only ever track one constant for the whole run -- which is
-    what a "crouch to a commanded height" task needs.
-
-    ``sensor_cfg``, if given, offsets the target by the mean height-scan ray height under the
-    robot (mirrors ``base_height_l2``'s rough-terrain adjustment); omit it on flat terrain,
-    where the target is already a world-frame height.
+    Linear in depth fraction (0 at standing, 1 at ``max_depth``):
+        weight_scale = weight_min + (weight_max - weight_min) * depth_frac
+        std_eff      = std_min + (std_max - std_min) * depth_frac
+    The RewTerm's own ``weight`` still applies on top as an overall multiplier -- these
+    params only shape how that budget is spent across the depth range (same pattern as
+    ``base_height_climb_reward``'s std/nominal_clearance).
     """
     asset: RigidObject = env.scene[asset_cfg.name]
     target_height = env.command_manager.get_command(command_name)[:, 0]
     if sensor_cfg is not None:
         sensor = env.scene[sensor_cfg.name]
         target_height = target_height + torch.mean(sensor.data.ray_hits_w[..., 2], dim=1)
-    return torch.square(asset.data.root_pos_w[:, 2] - target_height)
+
+    depth_frac = _crouch_depth_fraction(env, command_name, standing_height, max_depth)
+    weight_scale = weight_min + (weight_max - weight_min) * depth_frac
+    std_eff = std_min + (std_max - std_min) * depth_frac
+
+    height_error = torch.square(asset.data.root_pos_w[:, 2] - target_height)
+    return weight_scale * torch.exp(-height_error / std_eff**2)
 
 
 def joint_position_penalty(

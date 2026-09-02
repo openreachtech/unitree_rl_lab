@@ -89,6 +89,50 @@ REGISTER_OBSERVATION(keyboard_velocity_commands)
     return std::vector<float>(cmd.begin(), cmd.end());
 }
 
+// deploy.yaml:
+//   observations: keyboard_base_height_command  (not base_height_command)
+//   commands.base_height.ranges.base_height: [h_min, h_max]
+//
+// Three discrete presets, not a continuous integrator: "t" stand (no crouch, h_max), "m"
+// middle (halfway), "c" deepest crouch (h_min). Matches how the target was actually trained
+// -- a fixed setpoint the robot settles into over a resample period, not something ramped
+// by hand -- and sidesteps the latch-combination ambiguity a held-key integrator would have
+// here: t/m/c select mutually exclusive states, unlike f/b/l/r/y/u's additive velocity
+// components, so consume() (not pressed()) is used -- holding a key after the press has no
+// repeated effect, and the three keys can't pile up in the latched set the way space-cleared
+// movement keys do.
+REGISTER_OBSERVATION(keyboard_base_height_command)
+{
+    if (!FSMState::keyboard)
+    {
+        FSMState::keyboard = std::make_shared<Keyboard>();
+    }
+
+    auto keyboard = FSMState::keyboard;
+    const auto cmd_cfg = env->cfg["commands"]["base_height"];
+    const auto ranges = cmd_cfg["ranges"]["base_height"];
+    const float h_min = ranges[0].as<float>();
+    const float h_max = ranges[1].as<float>();
+    const float h_mid = 0.5f * (h_min + h_max);
+
+    static float cmd = h_max; // start standing
+
+    if (keyboard->consume("t"))
+    {
+        cmd = h_max;
+    }
+    if (keyboard->consume("m"))
+    {
+        cmd = h_mid;
+    }
+    if (keyboard->consume("c"))
+    {
+        cmd = h_min;
+    }
+
+    return std::vector<float>{cmd};
+}
+
 } // namespace isaaclab
 
 State_RLBase::State_RLBase(int state_mode, std::string state_string)

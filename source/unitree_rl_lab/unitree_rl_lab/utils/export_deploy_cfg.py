@@ -62,6 +62,14 @@ def export_deploy_cfg(
         for item_name in ["lin_vel_x", "lin_vel_y", "ang_vel_z"]:
             ranges[item_name] = list(ranges[item_name])
         cfg["commands"]["base_velocity"]["ranges"] = ranges
+    if hasattr(env.cfg.commands, "base_height"):  # Go2-Crouch and similar tasks only
+        cfg["commands"]["base_height"] = {}
+        if hasattr(env.cfg.commands.base_height, "limit_ranges"):
+            ranges = env.cfg.commands.base_height.limit_ranges.to_dict()
+        else:
+            ranges = env.cfg.commands.base_height.ranges.to_dict()
+        ranges["base_height"] = list(ranges["base_height"])
+        cfg["commands"]["base_height"]["ranges"] = ranges
 
     # --- actions ---
     action_names = env.action_manager.active_terms
