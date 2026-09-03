@@ -20,7 +20,6 @@ from __future__ import annotations
 
 from isaaclab.utils import configclass
 
-from unitree_rl_lab.tasks.dynamic.robots.go2.jump_env_cfg import CommandsCfg as JumpCommandsCfg
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_run import (
     CommandsCfgGo2GallopPhase1,
     CommandsCfgGo2GallopPhase2,
@@ -28,19 +27,12 @@ from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_run import (
     RobotEnvCfgGo2GallopPhase2,
 )
 from unitree_rl_lab.tasks.multitask.robots.go2.multitask_env_cfg import (
+    IDLE_HANDSTAND_COMMAND,
+    IDLE_JUMP_COMMAND,
     MultitaskEventCfg,
     MultitaskSceneCfg,
     UnifiedObservationsCfg,
     apply_multitask_post_init,
-)
-
-# The acrobatics task's own jump command, held inert. Reusing it rather than writing a zero stub
-# keeps a single definition of what those five observation columns mean across both families.
-_IDLE_JUMP_COMMAND = JumpCommandsCfg().jump.replace(
-    auto_trigger=False,
-    initial_assist_scale=0.0,
-    state_file=None,
-    debug_vis=False,
 )
 
 
@@ -51,7 +43,8 @@ _IDLE_JUMP_COMMAND = JumpCommandsCfg().jump.replace(
 
 @configclass
 class MultitaskCommandsCfgGallopPhase1(CommandsCfgGo2GallopPhase1):
-    jump = _IDLE_JUMP_COMMAND
+    jump = IDLE_JUMP_COMMAND
+    handstand = IDLE_HANDSTAND_COMMAND
 
     tow_assist = CommandsCfgGo2GallopPhase1().tow_assist.replace(
         # Own decay state: sharing it with the 117-column run would make it impossible to tell
@@ -92,7 +85,8 @@ class RobotPlayEnvCfgMultitaskGallopPhase1(RobotEnvCfgMultitaskGallopPhase1):
 
 @configclass
 class MultitaskCommandsCfgGallopPhase2(CommandsCfgGo2GallopPhase2):
-    jump = _IDLE_JUMP_COMMAND
+    jump = IDLE_JUMP_COMMAND
+    handstand = IDLE_HANDSTAND_COMMAND
 
     tow_assist = CommandsCfgGo2GallopPhase2().tow_assist.replace(
         state_file="logs/rsl_rl/go2_multitask_gallop_phase2/tow_assist_state.json"

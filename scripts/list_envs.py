@@ -58,7 +58,16 @@ def _walk_packages(
 
 def import_packages():
     sys.path.insert(0, f"{pathlib.Path(__file__).parent.parent}/source/unitree_rl_lab/unitree_rl_lab/tasks/")
-    for package in ["locomotion.robots", "mimic.robots", "dynamic.robots", "multitask.robots"]:
+    # Hardcoded rather than walked, unlike `tasks/__init__.py`, which discovers every sub-package.
+    # A family missing from this list is registered and trainable but invisible here, which reads
+    # exactly like a registration that failed -- add new families as they appear.
+    for package in [
+        "locomotion.robots",
+        "mimic.robots",
+        "dynamic.robots",
+        "biped.robots",
+        "multitask.robots",
+    ]:
         package = importlib.import_module(package)
         for _ in _walk_packages(package.__path__, package.__name__ + "."):
             pass

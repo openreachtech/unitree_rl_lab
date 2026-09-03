@@ -126,3 +126,62 @@ Note for anyone extending the tool: this environment sets `rearm_after_s` equal 
 `command_duration_s`, so the command's own `in_motion` flag expires at the same instant `enabled`
 does. Bucketing on `in_motion` therefore leaves the recovery in no bucket at all -- the script
 follows a fixed `--follow` window from the rising edge instead.
+
+## Next stage: a bipedal expert, and the observation change it forced
+
+`Go2-Multitask-Handstand` trains a front-leg stance -- the robot rises onto its front legs, hind
+legs tucked, and walks there tracking a velocity command. It is meant to become a fourth expert.
+The task config carries its own rationale; what belongs here is what it did to the shared layout.
+
+**The unified observation grew, and every existing checkpoint has to be re-widened.**
+
+| | before | after |
+|---|---|---|
+| actor | 122 | 124 |
+| critic | 330 | 335 |
+
+The actor gains `handstand_command` = `(enabled, stance)` -- a flag and its sign, +1 front / -1
+hind, so the mirror stance can be trained later without moving any column again. The critic gains
+the same two plus `com_cop` (3), the vector from the centre of pressure to the centre of mass,
+which is the state variable the bipedal balance rewards are written in.
+
+`jump_command` did not move: the new block sits after `jump_time`, so the gate's routing prior
+still points at column 9 and needs no change.
+
+This cost a re-widen, not a retrain, and the re-widen has been done. `widen_checkpoint.py` carried
+`Go2-Multitask-Jump-Phase2` (model_2298, five motions at success 1.000) and
+`Go2-Multitask-Gallop-Phase2` (model_2498) onto the new widths, placing the old weights and zeroing
+the new columns; verified column by column, with every copied block bit-identical and columns
+14-15 / 17-18 / 25-27 all zero. A widened network computes exactly the function it did before, so
+both experts keep everything they knew.
+
+The snapshot of the old layout (`POLICY_UNIFIED_V1` / `CRITIC_UNIFIED_V1`) was deleted once that
+was done, along with `widen_checkpoint.py`'s table entries for it -- a compatibility shim with
+nothing left to be compatible with is just a second layout to confuse the next reader. Git history
+has it if a 122-column checkpoint ever turns up.
+
+The merged policy's own checkpoint was deliberately *not* widened: it is rebuilt from the experts by
+`build_moe_checkpoint.py`, and it needs retraining anyway now that `resolve_gated_term_params`
+changed what several of its reward terms compute.
+
+Every non-handstand multi-task task now carries `IDLE_HANDSTAND_COMMAND`, scheduled past the end of
+any episode so the two columns read `(0, 0)`. Filling the slot truthfully rather than omitting the
+term is what keeps the column indices the expert weights are placed by from shifting.
+
+**A latent bug came out with it.** `resolve_gated_term_params` and `assert_observation_layout` were
+both written to run as startup events, documented as running as startup events, and registered
+nowhere. The first one matters: Isaac Lab resolves a `SceneEntityCfg` only at the top level of a
+term's `params`, and an unresolved one does not raise -- `body_ids` defaults to `slice(None)`,
+meaning *every body*. So in the merged environment `feet_slide` has been evaluating over all 17
+links instead of the four feet, and `paired_gait`'s `preserve_order=True` selection has been
+getting the default order. Terms whose selector was `.*` are unaffected.
+
+Both are now registered on `MultitaskEventCfg`, which every multi-task environment inherits. Note
+what this means for comparisons: the merged policy's reward function is not the one `model_3000`
+was trained against. Given the observation change already forces a retrain, fixing it now costs
+nothing extra -- but a metric from before this point cannot be read against one from after.
+
+The handstand expert's own experiments are recorded with the skill, in
+`tasks/biped/robots/go2/sandbox/SUMMARY.md`, following the same split the acrobatics and locomotion
+experts use -- what the merged observation had to become belongs here, what the stance had to learn
+belongs there.

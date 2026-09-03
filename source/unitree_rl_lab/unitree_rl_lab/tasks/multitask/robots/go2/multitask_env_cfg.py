@@ -23,6 +23,7 @@ from isaaclab.utils import configclass
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 from unitree_rl_lab.assets.robots.unitree import UNITREE_GO2_CORRECTED_CFG
+from unitree_rl_lab.tasks.dynamic.robots.go2.jump_env_cfg import CommandsCfg as JumpCommandsCfg
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import EventCfg as LocomotionEventCfg
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_phase1 import RobotSceneCfgPhase1
 from unitree_rl_lab.tasks.multitask import mdp
@@ -62,6 +63,33 @@ class MultitaskSceneCfg(RobotSceneCfgPhase1):
     robot: ArticulationCfg = ROBOT_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
 
+IDLE_JUMP_COMMAND = JumpCommandsCfg().jump.replace(
+    auto_trigger=False,
+    initial_assist_scale=0.0,
+    state_file=None,
+    debug_vis=False,
+)
+"""The acrobatics task's own jump command, held inert. Reusing it rather than writing a zero stub
+keeps a single definition of what those five observation columns mean across every task family."""
+
+IDLE_HANDSTAND_COMMAND = mdp.HandstandCommandCfg(
+    asset_name="robot",
+    pinned=False,
+    # Scheduled past the end of any episode, so the stance is never entered and the two columns
+    # read (0, 0) throughout. Present rather than absent because the observation slot has to be
+    # filled truthfully: a task that simply omitted the term would shift every column after it and
+    # silently mis-feed every expert.
+    trigger_time_range=(1.0e9, 1.0e9),
+    hold_duration_range=(0.0, 0.0),
+    debug_vis=False,
+)
+"""The bipedal-stance command, held off. For every multi-task environment that is not the
+handstand expert's own -- see :mod:`..handstand_env_cfg`."""
+
+_ALL_FEET = SceneEntityCfg("robot", body_names=".*_foot")
+_ALL_FEET_CONTACTS = SceneEntityCfg("contact_forces", body_names=".*_foot")
+
+
 @configclass
 class UnifiedObservationsCfg:
     """The 122-column actor / 330-column critic superset.
@@ -81,6 +109,10 @@ class UnifiedObservationsCfg:
         # -- acrobatics task selector: (enabled, target_height, pitch_turns, roll_turns) + phase
         jump_command = ObsTerm(func=mdp.generated_commands, clip=(-100, 100), params={"command_name": "jump"})
         jump_time = ObsTerm(func=mdp.jump_time_encoding, clip=(-100, 100), params={"command_name": "jump"})
+        # -- bipedal task selector: (enabled, stance)
+        handstand_command = ObsTerm(
+            func=mdp.generated_commands, clip=(-100, 100), params={"command_name": "handstand"}
+        )
         # -- proprioception, with the locomotion side's history (the acrobatics task had none;
         #    the extra frames are what let one network serve a gait and a flip)
         joint_pos_rel = ObsTerm(
@@ -112,6 +144,9 @@ class UnifiedObservationsCfg:
         )
         jump_command = ObsTerm(func=mdp.generated_commands, clip=(-100, 100), params={"command_name": "jump"})
         jump_time = ObsTerm(func=mdp.jump_time_encoding, clip=(-100, 100), params={"command_name": "jump"})
+        handstand_command = ObsTerm(
+            func=mdp.generated_commands, clip=(-100, 100), params={"command_name": "handstand"}
+        )
         # -- privileged state the acrobatics critic was trained on
         root_height = ObsTerm(func=mdp.root_height, clip=(-100, 100))
         root_roll_angle = ObsTerm(func=mdp.root_roll_angle, clip=(-100, 100))
@@ -122,6 +157,14 @@ class UnifiedObservationsCfg:
         )
         accumulated_root_roll = ObsTerm(
             func=mdp.accumulated_root_roll, clip=(-100, 100), params={"command_name": "jump"}
+        )
+        # -- privileged balance state the bipedal critic reads. All four feet: the force-weighted
+        #    centre of pressure collapses onto whichever ones are loaded, so one term covers the
+        #    quadruped gait and either stance without being told which is in progress.
+        com_cop = ObsTerm(
+            func=mdp.com_cop_vector,
+            clip=(-100, 100),
+            params={"asset_cfg": _ALL_FEET, "sensor_cfg": _ALL_FEET_CONTACTS},
         )
         # -- proprioception
         joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel, clip=(-100, 100), history_length=HISTORY_LENGTH)
@@ -180,3 +223,17 @@ class MultitaskEventCfg(LocomotionEventCfg):
     ideal either. It is to train the acrobatics expert against them too, so both halves arrive
     equally hardened. Sharing one config is what stops the two from drifting apart again.
     """
+
+    # Both of these are startup checks/fixups that every multi-task environment needs, and both
+    # were written for that purpose and then never registered anywhere.
+    #
+    # `resolve_gated_term_params` is the one with teeth. Isaac Lab resolves a `SceneEntityCfg` only
+    # at the top level of a term's params, and an unresolved one does not fail -- `body_ids`
+    # defaults to `slice(None)`, which means *every body*. So a `gated` term carrying
+    # `SceneEntityCfg("robot", body_names=".*_foot")` inside `term_params` has been silently
+    # evaluating over all 17 links rather than the four feet, and a `preserve_order=True` selection
+    # has been getting the default order. Registering the resolver corrects that -- which does
+    # change what several of the merged environment's reward terms compute, so a checkpoint trained
+    # before this is not comparable to one trained after.
+    resolve_gated_terms = EventTerm(func=mdp.resolve_gated_term_params, mode="startup")
+    assert_layout = EventTerm(func=mdp.assert_observation_layout, mode="startup")

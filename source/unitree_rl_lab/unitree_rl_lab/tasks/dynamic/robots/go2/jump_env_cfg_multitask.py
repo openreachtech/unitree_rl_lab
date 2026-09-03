@@ -35,6 +35,7 @@ from unitree_rl_lab.tasks.dynamic.robots.go2.jump_env_cfg_phase2 import Commands
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_phase1 import CommandsCfgPhase1
 from unitree_rl_lab.tasks.multitask import mdp
 from unitree_rl_lab.tasks.multitask.robots.go2.multitask_env_cfg import (
+    IDLE_HANDSTAND_COMMAND,
     MultitaskEventCfg,
     MultitaskSceneCfg,
     UnifiedObservationsCfg,
@@ -65,6 +66,7 @@ _ZERO_VELOCITY_COMMAND = CommandsCfgPhase1().base_velocity.replace(
 @configclass
 class MultitaskCommandsCfgPhase1(CommandsCfg):
     base_velocity = _ZERO_VELOCITY_COMMAND
+    handstand = IDLE_HANDSTAND_COMMAND
 
 
 @configclass
@@ -99,6 +101,7 @@ class RobotPlayEnvCfgMultitaskPhase1(RobotEnvCfgMultitaskPhase1):
 @configclass
 class MultitaskCommandsCfgPhase2(CommandsCfgPhase2):
     base_velocity = _ZERO_VELOCITY_COMMAND
+    handstand = IDLE_HANDSTAND_COMMAND
 
     jump = CommandsCfgPhase2().jump.replace(
         # Five motions, one per heading, so no move fights the gait it interrupts: forward gets a

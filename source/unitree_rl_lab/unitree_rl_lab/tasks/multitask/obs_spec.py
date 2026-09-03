@@ -58,11 +58,24 @@ POLICY_UNIFIED: tuple[Block, ...] = (
     Block("velocity_commands", 3),
     Block("jump_command", 4),
     Block("jump_time", 1),
+    Block("handstand_command", 2),
     Block("joint_pos_rel", NUM_JOINTS, HISTORY_LENGTH),
     Block("joint_vel_rel", NUM_JOINTS, HISTORY_LENGTH),
     Block("last_action", NUM_JOINTS, HISTORY_LENGTH),
 )
-"""Unified actor observation: 122 columns."""
+"""Unified actor observation: 124 columns.
+
+``handstand_command`` is ``(enabled, stance)``: a 0/1 flag saying a bipedal stance is commanded,
+and its sign -- +1 for the front-leg stance, -1 for the hind-leg one, 0 while disabled. Two columns
+rather than one so the mirror stance can be trained later without moving every column after it
+again; a layout change costs a re-widen of every checkpoint that exists.
+
+Adding it took this layout from 122 columns to 124, and the critic's from 330 to 335. The
+checkpoints trained on the old widths were carried across with ``widen_checkpoint.py`` -- the new
+columns start at zero weight, so a widened network computes exactly the function it computed
+before -- and the snapshot of the old layout was deleted once they had been. Recover it from git
+history if another 122-column checkpoint ever turns up, rather than reconstructing it by hand.
+"""
 
 POLICY_LOCOMOTION: tuple[Block, ...] = (
     Block("base_ang_vel", 3),
@@ -97,19 +110,27 @@ CRITIC_UNIFIED: tuple[Block, ...] = (
     Block("velocity_commands", 3),
     Block("jump_command", 4),
     Block("jump_time", 1),
+    Block("handstand_command", 2),
     Block("root_height", 1),
     Block("root_roll_angle", 1),
     Block("root_pitch_angle", 1),
     Block("maximum_jump_height", 1),
     Block("accumulated_root_pitch", 1),
     Block("accumulated_root_roll", 1),
+    Block("com_cop", 3),
     Block("joint_pos_rel", NUM_JOINTS, HISTORY_LENGTH),
     Block("joint_vel_rel", NUM_JOINTS, HISTORY_LENGTH),
     Block("joint_effort", NUM_JOINTS),
     Block("last_action", NUM_JOINTS, HISTORY_LENGTH),
     Block("height_scan", HEIGHT_SCAN_DIM),
 )
-"""Unified critic observation: 330 columns."""
+"""Unified critic observation: 335 columns.
+
+``com_cop`` is the vector from the centre of pressure to the centre of mass, the state variable the
+bipedal balance rewards are written in (TumblerNet). Privileged, so it costs nothing at deployment,
+and computed over all four feet -- the force-weighted centre of pressure collapses onto whichever
+feet are actually loaded, so one term serves the quadruped gait and either bipedal stance.
+"""
 
 CRITIC_LOCOMOTION: tuple[Block, ...] = (
     Block("base_lin_vel", 3),

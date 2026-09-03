@@ -36,6 +36,25 @@ window because ``motion_progress_reward`` keys off ``motion_code`` alone and so 
 non-zero value from the moment the episode's motion is drawn -- well before any trigger.
 """
 
+GATE_HANDSTAND = "handstand"
+"""While a two-legged stance is commanded.
+
+Keyed on the handstand command's ``enabled`` flag rather than on a window measured from a trigger,
+because a stance is a mode that is held, not a move that runs to completion. Everything describing
+bipedal walking hangs off this, so the whole reward set retires with the command and the locomotion
+and acrobatics sets never have to know it exists.
+"""
+
+GATE_HANDSTAND_UPRIGHT = "handstand_upright"
+"""Commanded *and* actually up on two legs.
+
+The paper gates its velocity-tracking and balance rewards on "is upright, else 0", and the reason
+is worth stating plainly: those terms are all satisfiable from a quadruped stance. A robot that
+never attempts the rise tracks its velocity command beautifully and holds perfectly still, and
+would collect full marks for both. Gating them on the rise having happened is what makes the rise
+the only way to reach them.
+"""
+
 GATE_STANDING = "standing"
 """Barely moving, regardless of the window.
 
@@ -74,6 +93,25 @@ def gate_mask(
             standing.
     """
     command = env.command_manager.get_term(command_name)
+
+    if gate in (GATE_HANDSTAND, GATE_HANDSTAND_UPRIGHT):
+        stance = command.enabled.float()
+        if crossfade_s > 0.0:
+            # Fade out after the stance ends rather than stepping to zero with the flag. Measured
+            # on the merged policy, the acrobatics gate hands back as a step function exactly at
+            # command_duration_s -- 0.986 acrobatics in the bin before, 0.008 in the bin after --
+            # which drops a robot that is still recovering. A stance has a longer way down than a
+            # flip does, so the same edge is worth softening here from the start.
+            since_end = command.elapsed_since_trigger - command.hold_duration
+            settling = ((crossfade_s - since_end) / crossfade_s).clamp(0.0, 1.0)
+            stance = torch.maximum(stance, settling * (command.trigger_step >= 0).float())
+        if gate == GATE_HANDSTAND:
+            return stance
+        # The ramp, not the boolean: a step at the success threshold would put a cliff in the middle
+        # of the rise, with everything the robot is working toward arriving at once and nothing
+        # grading the approach. See HandstandCommand.upright_ramp.
+        return stance * command.upright_ramp
+
     elapsed = command.elapsed_since_trigger
     triggered = command.trigger_step >= 0
 
@@ -96,5 +134,6 @@ def gate_mask(
         return standing if gate == GATE_STANDING else acrobatics * standing
     raise ValueError(
         f"Unknown gate {gate!r}; expected one of {GATE_LOCOMOTION!r}, {GATE_ACROBATICS!r},"
-        f" {GATE_ACROBATICS_STANDING!r}, {GATE_STANDING!r}."
+        f" {GATE_ACROBATICS_STANDING!r}, {GATE_STANDING!r}, {GATE_HANDSTAND!r},"
+        f" {GATE_HANDSTAND_UPRIGHT!r}."
     )
