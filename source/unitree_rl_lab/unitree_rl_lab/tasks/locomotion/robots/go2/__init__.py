@@ -102,17 +102,47 @@ gym.register(
     },
 )
 
-# Based on Phase1 (same small velocity-command ranges, flat ground) plus a new
-# base_height command term: walk while tracking a commanded base height. Fixed at
-# 0.3m (a 10cm crouch off UNITREE_GO2_CFG's 0.4m standing height) for now -- see
-# velocity_env_cfg_crouch.py for why it's a command rather than a reward constant.
+# Go2-Crouch-Phase1 (renamed from Go2-Crouch on 2026-09-02, when Phase2 was introduced):
+# based on Phase1 (same small velocity-command ranges, flat ground) plus a new base_height
+# command term: walk while tracking a commanded base height, curriculum-widened from
+# standing height down to a 25cm crouch -- see velocity_env_cfg_crouch_phase1.py for why
+# it's a command rather than a reward constant, and for the reward-tuning history.
 gym.register(
-    id="Go2-Crouch",
+    id="Go2-Crouch-Phase1",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_crouch:RobotEnvCfgCrouch",
-        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_crouch:RobotPlayEnvCfgCrouch",
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_crouch_phase1:RobotEnvCfgCrouchPhase1",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_crouch_phase1:RobotPlayEnvCfgCrouchPhase1",
+        "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
+    },
+)
+
+# Phase 2: rough terrain and boxes (2 columns x 10 rows), base_velocity's lin_vel_x/lin_vel_y
+# limits both widened to +-1.0 m/s. base_height command/curriculum/reward unchanged from
+# Phase1 -- see velocity_env_cfg_crouch_phase2.py.
+gym.register(
+    id="Go2-Crouch-Phase2",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_crouch_phase2:RobotEnvCfgCrouchPhase2",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_crouch_phase2:RobotPlayEnvCfgCrouchPhase2",
+        "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
+    },
+)
+
+# Phase 4 (no Phase3 -- see module docstring): rough terrain and thin walls to step over
+# (4 columns x 10 rows, 1 rough : 3 wall). undesired_contacts split terrain-column-aware
+# for the wall columns, terrain_levels_climb_demote_on_fail curriculum -- see
+# velocity_env_cfg_crouch_phase4.py.
+gym.register(
+    id="Go2-Crouch-Phase4",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_crouch_phase4:RobotEnvCfgCrouchPhase4",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_crouch_phase4:RobotPlayEnvCfgCrouchPhase4",
         "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
     },
 )

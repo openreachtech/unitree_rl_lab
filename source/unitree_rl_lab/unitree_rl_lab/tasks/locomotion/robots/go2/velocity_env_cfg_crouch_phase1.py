@@ -1,4 +1,4 @@
-"""Go2-Crouch: walk while tracking a commanded base height, on an infinite flat plane.
+"""Go2-Crouch-Phase1: walk while tracking a commanded base height, on an infinite flat plane.
 
 Based on Unitree-Go2-Velocity-v1-Phase1 (same small velocity-command ranges -- walking
 should stay slow while crouched, this isn't about speed) with these changes:
@@ -27,11 +27,11 @@ Two fixed values a fixed-height try established:
 1000-iteration run (2026-09-01): crouch_depth_levels reached a 0.40 -> 0.30 lower bound
 (10cm of the 25cm ceiling) by iteration 900, then stalled -- the flat tracking reward settled
 just under the curriculum's 80% gate, so widening self-throttled there. Play afterward,
-sampling the *full* [0.15, 0.40] range (see RobotPlayEnvCfgCrouch), showed barely any
+sampling the *full* [0.15, 0.40] range (see RobotPlayEnvCfgCrouchPhase1), showed barely any
 visible crouching: most sampled depths were below the 0.30m frontier training had actually
 reached, i.e. out of distribution for what the policy had practiced. A second 1000-iteration
-run with lin_vel_x's limit cut 1.5 -> 1.0 (see CommandsCfgCrouch below) reproduced the exact
-same 0.30m plateau, ruling out "competing with top speed" as the bottleneck.
+run with lin_vel_x's limit cut 1.5 -> 1.0 (see CommandsCfgCrouchPhase1 below) reproduced the
+exact same 0.30m plateau, ruling out "competing with top speed" as the bottleneck.
 
 Working theory: the flat tracking reward's pull toward the target was exactly as strong at
 a 25cm crouch as at 0, but penalties like joint_torques_l2/energy get relatively more
@@ -46,8 +46,13 @@ std 0.05->0.10 both scaling with depth -- reached the full 25cm ceiling (0.15m) 
 improving to ~0.024m.** Confirmed in Play. Promoted here as the default reward; the other
 two tries were deleted after losing the comparison.
 
-No phases yet -- this is a single flat-terrain task to validate that base-height tracking
-actually produces a crouched gait before building anything else on top of it.
+This is Phase1: a single flat-terrain task to validate that base-height tracking actually
+produces a crouched gait before building anything else on top of it. Phase2 (see
+velocity_env_cfg_crouch_phase2.py) adds terrain variety (rough ground + boxes).
+
+(Renamed from Go2-Crouch/velocity_env_cfg_crouch.py to Go2-Crouch-Phase1 on 2026-09-02, when
+Phase2 was introduced -- no functional changes, only the Crouch* -> CrouchPhase1 class/id
+rename.)
 """
 
 import isaaclab.sim as sim_utils
@@ -73,7 +78,7 @@ MAX_CROUCH_DEPTH = 0.25
 
 
 @configclass
-class RobotSceneCfgCrouch(RobotSceneCfg):
+class RobotSceneCfgCrouchPhase1(RobotSceneCfg):
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="plane",
@@ -88,7 +93,7 @@ class RobotSceneCfgCrouch(RobotSceneCfg):
 
 
 @configclass
-class CommandsCfgCrouch(CommandsCfgGo2):
+class CommandsCfgCrouchPhase1(CommandsCfgGo2):
     base_velocity = CommandsCfgGo2().base_velocity.replace(
         ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
             lin_vel_x=(-0.1, 0.1), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-0.5, 0.5)
@@ -116,27 +121,27 @@ class CommandsCfgCrouch(CommandsCfgGo2):
 
 
 @configclass
-class PolicyCfgCrouch(PolicyCfgGo2):
+class PolicyCfgCrouchPhase1(PolicyCfgGo2):
     base_height_command = ObsTerm(
         func=mdp.generated_commands, clip=(-100, 100), params={"command_name": "base_height"}
     )
 
 
 @configclass
-class CriticCfgCrouch(CriticCfgGo2):
+class CriticCfgCrouchPhase1(CriticCfgGo2):
     base_height_command = ObsTerm(
         func=mdp.generated_commands, clip=(-100, 100), params={"command_name": "base_height"}
     )
 
 
 @configclass
-class ObservationsCfgCrouch(ObservationsCfgGo2):
-    policy: PolicyCfgCrouch = PolicyCfgCrouch()
-    critic: CriticCfgCrouch = CriticCfgCrouch()
+class ObservationsCfgCrouchPhase1(ObservationsCfgGo2):
+    policy: PolicyCfgCrouchPhase1 = PolicyCfgCrouchPhase1()
+    critic: CriticCfgCrouchPhase1 = CriticCfgCrouchPhase1()
 
 
 @configclass
-class RewardsCfgCrouch(RewardsCfgGo2):
+class RewardsCfgCrouchPhase1(RewardsCfgGo2):
     # Promoted from sandbox Try 2 (2026-09-02): depth-scaled exp-kernel, not a flat
     # track_base_height_exp. At standing height (depth_frac=0): weight_scale=1.0, std=0.05
     # -- what the original flat version used everywhere. At the deepest commandable crouch
@@ -165,7 +170,7 @@ class RewardsCfgCrouch(RewardsCfgGo2):
 
 
 @configclass
-class CurriculumCfgCrouch(CurriculumCfg):
+class CurriculumCfgCrouchPhase1(CurriculumCfg):
     """Infinite plane, not a generated terrain grid -- no levels for terrain_levels_vel."""
 
     terrain_levels = None
@@ -173,19 +178,19 @@ class CurriculumCfgCrouch(CurriculumCfg):
 
 
 @configclass
-class RobotEnvCfgCrouch(RobotEnvCfgGo2):
-    """Go2-Crouch: walk while tracking a commanded base height, curriculum-widened from
-    standing height down toward MAX_CROUCH_DEPTH by crouch_depth_levels."""
+class RobotEnvCfgCrouchPhase1(RobotEnvCfgGo2):
+    """Go2-Crouch-Phase1: walk while tracking a commanded base height, curriculum-widened
+    from standing height down toward MAX_CROUCH_DEPTH by crouch_depth_levels."""
 
-    scene: RobotSceneCfgCrouch = RobotSceneCfgCrouch(num_envs=4096, env_spacing=2.5)
-    observations: ObservationsCfgCrouch = ObservationsCfgCrouch()
-    commands: CommandsCfgCrouch = CommandsCfgCrouch()
-    rewards: RewardsCfgCrouch = RewardsCfgCrouch()
-    curriculum: CurriculumCfgCrouch = CurriculumCfgCrouch()
+    scene: RobotSceneCfgCrouchPhase1 = RobotSceneCfgCrouchPhase1(num_envs=4096, env_spacing=2.5)
+    observations: ObservationsCfgCrouchPhase1 = ObservationsCfgCrouchPhase1()
+    commands: CommandsCfgCrouchPhase1 = CommandsCfgCrouchPhase1()
+    rewards: RewardsCfgCrouchPhase1 = RewardsCfgCrouchPhase1()
+    curriculum: CurriculumCfgCrouchPhase1 = CurriculumCfgCrouchPhase1()
 
 
 @configclass
-class RobotPlayEnvCfgCrouch(RobotEnvCfgCrouch):
+class RobotPlayEnvCfgCrouchPhase1(RobotEnvCfgCrouchPhase1):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 32

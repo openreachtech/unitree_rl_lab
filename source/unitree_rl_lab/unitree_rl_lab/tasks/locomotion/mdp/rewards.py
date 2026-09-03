@@ -150,7 +150,7 @@ pushes. track_base_height_depth_scaled_exp below fixes that by scaling the incen
 up with depth (see its docstring); this was compared against two alternatives -- a flat
 weight bump, and discounting the penalties instead of scaling the incentive -- in sandbox
 Try 1/2/3 (deleted after Try 2, this one, won by reaching the full 25cm ceiling stably; see
-velocity_env_cfg_crouch.py's module docstring for the comparison).
+velocity_env_cfg_crouch_phase1.py's module docstring for the comparison).
 """
 
 
@@ -1005,6 +1005,60 @@ def undesired_contacts_column_aware(
     if rough_env_mask is None:
         return reward
     return torch.where(rough_env_mask, reward, torch.zeros_like(reward))
+
+
+def _terrain_column_mask(env: ManagerBasedRLEnv, terrain_names: tuple[str, ...]) -> torch.Tensor | None:
+    """Boolean per-env mask, True where the env's terrain column's sub-terrain name is in
+    ``terrain_names`` -- same column-assignment replication as
+    ``MixedGoalVelocityCommand``'s/``UniformTerrainGatedVelocityCommand``'s own masks (see
+    their docstrings for why this matches ``TerrainGenerator``'s actual column ->
+    sub-terrain mapping exactly), but read directly from ``env.scene.terrain`` instead of a
+    command term's optional ``rough_env_mask`` attribute -- so it works with any velocity
+    command, not just ``MixedGoalVelocityCommand``. Returns None if there's no
+    curriculum-driven terrain grid to read a column from (e.g. an infinite plane).
+    """
+    terrain = env.scene.terrain
+    terrain_generator_cfg = terrain.cfg.terrain_generator
+    if terrain_generator_cfg is None or not terrain_generator_cfg.curriculum:
+        return None
+    names = list(terrain_generator_cfg.sub_terrains.keys())
+    proportions = torch.tensor(
+        [terrain_generator_cfg.sub_terrains[n].proportion for n in names], dtype=torch.float32
+    )
+    proportions = proportions / proportions.sum()
+    cumsum = torch.cumsum(proportions, dim=0)
+    num_cols = terrain_generator_cfg.num_cols
+    col_matches = torch.zeros(num_cols, dtype=torch.bool)
+    for col in range(num_cols):
+        sub_index = int(torch.nonzero(col / num_cols + 0.001 < cumsum, as_tuple=False)[0])
+        col_matches[col] = names[sub_index] in terrain_names
+    return col_matches.to(env.device)[terrain.terrain_types]
+
+
+def undesired_contacts_terrain_column_aware(
+    env: ManagerBasedRLEnv,
+    threshold: float,
+    sensor_cfg: SceneEntityCfg,
+    exempt_terrain_names: tuple[str, ...],
+) -> torch.Tensor:
+    """Same formula as ``undesired_contacts_column_aware``, but the "which columns are
+    exempt" mask comes directly from the terrain generator (``_terrain_column_mask``)
+    instead of a command term's ``rough_env_mask`` attribute -- so it works with a plain
+    ``UniformLevelVelocityCommand`` (Go2-Crouch's own command), not just
+    ``MixedGoalVelocityCommand``. See ``undesired_contacts_column_aware``'s docstring for
+    why exempting wall contact matters for a wall-crossing task in the first place --
+    pushing against and resting on the wall is the intended, load-bearing contact stepping
+    over it requires, not an undesired one.
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    net_contact_forces = contact_sensor.data.net_forces_w_history
+    is_contact = torch.max(torch.norm(net_contact_forces[:, :, sensor_cfg.body_ids], dim=-1), dim=1)[0] > threshold
+    reward = torch.sum(is_contact, dim=1).float()
+
+    exempt_mask = _terrain_column_mask(env, exempt_terrain_names)
+    if exempt_mask is None:
+        return reward
+    return torch.where(exempt_mask, torch.zeros_like(reward), reward)
 
 
 def wheel_vel_without_cmd_penalty(
