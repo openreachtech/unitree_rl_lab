@@ -157,13 +157,56 @@ class HandstandRewardsCfg:
     dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-10.0)
     energy = RewTerm(func=mdp.energy, weight=-2e-5)
     # The stance legs' own thigh and calf are included deliberately: one of them on the ground
-    # means the support leg has collapsed, which is no better than a swing leg dragging.
+    # means the support leg has collapsed, which is no better than a swing leg dragging. The head
+    # is *not* here -- it has its own term below, at a weight a shared one cannot carry.
     undesired_contacts = RewTerm(
         func=mdp.undesired_contacts,
         weight=-1.0,
         params={
             "threshold": 1.0,
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["Head_.*", ".*_thigh", ".*_calf"]),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[".*_thigh", ".*_calf"]),
+        },
+    )
+    # The single most consequential term in this task, and the last one to be found.
+    #
+    # Before it existed, the trunk's front end struck the ground in 3.1% of steps at a peak of
+    # 4050 N -- around 27 times body weight, in every environment -- and nothing charged for it:
+    # `base` and the hips terminate at 1 N but the head is not in that list, and the only term
+    # covering it was `undesired_contacts`, a bounded per-body count shared with six other links.
+    # A 5000 N head strike cost about 0.05 per step.
+    #
+    # That free lunch was the whole problem. Resting the head on the floor means never having to
+    # stand up, so four rounds of reward tuning aimed at height moved nothing: `base_height` at
+    # four times the weight moved the stance 1.2 mm, `front_hip_height` at ten times moved it a
+    # centimetre. The 45 mm "clearance" they were all aimed at was not a clearance -- it was the
+    # head's contact height, and reward weights do not move floors.
+    #
+    # Pricing it properly, and changing nothing else, took the stance from 0.374 m to 0.530 m of
+    # base height and eliminated the contact outright (0 N, 0% of steps). The original -0.5 on
+    # `base_height` was enough all along.
+    #
+    # A count, not a force. `feat/biped` paid twice for the alternative: a raw-Newton penalty made
+    # ending the episode immediately cheaper than enduring it, and every episode collapsed to 5-8
+    # steps for 2000 iterations. At -20.0 and the old 3.1% duty cycle this is about -1.2 per step
+    # averaged, well inside the -200 termination penalty over a 20 s episode.
+    #
+    # Chosen over terminating on head contact, which was tried alongside it at 1 N and at 20 N.
+    # All three removed the strike completely; this one keeps the episode, and with it the learning
+    # signal for everything else that was going right in it. It measured best or joint-best on
+    # every secondary axis -- 0/64 falls, the lowest stance-knee torque (31.9 N*m peak against a
+    # 45.4 N*m rating, where the 20 N termination reached 46.2), the tightest forward-tracking
+    # tail, and the best yaw tracking.
+    head_contact = RewTerm(
+        func=mdp.gated,
+        weight=-20.0,
+        params={
+            "gate": GATE_HANDSTAND,
+            "gate_command_name": "handstand",
+            "term": mdp.undesired_contacts,
+            "term_params": {
+                "threshold": 1.0,
+                "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["Head_.*"]),
+            },
         },
     )
     # Isaac Lab's RewardManager sums weighted terms with no clamp, unlike the reference
@@ -184,22 +227,20 @@ class HandstandRewardsCfg:
         weight=-0.5,
         params={"gate": GATE_HANDSTAND, "gate_command_name": "handstand", "term": mdp.stance_roll_penalty},
     )
-    # -2.0 rather than the bipedal recipe's -0.5. At -0.5 this term contributed 0.017 per step
-    # against `stance_held`'s 1.0, and the measured stance sat 0.37 m high with the head clearing
-    # the floor by 45 mm -- visibly about to scrape, and agreed on by every environment (p10 to p90
-    # spanned one millimetre). The reference recipe could afford -0.5 because its stance stood on
-    # nearly straight legs and satisfied the term for free; this one crouches, so the term has to
-    # do real work.
+    # -0.5, the bipedal recipe's value. This term does not regulate the stance's height in
+    # practice and cannot: `feat/biped` measured the reason and wrote it down -- Go2's thigh and
+    # calf are 0.213 m each, so 0.426 m is the whole leg, and a 0.55 m root target borrowed from an
+    # unrelated reference robot was never reachable. A squared penalty against an unreachable
+    # target is a weak uniform pull with no information in it about what to move.
     #
-    # Raising *this* term rather than `front_hip_height`, which regulates the shoulders directly:
-    # base height can only be satisfied by rising. Standing back down on four legs does not help --
-    # a 0.322 m quadruped stance is further from the 0.55 m target than the handstand already is,
-    # so the penalty gets worse, not better. And extending the front legs moves the stance calf
-    # away from the flexion limit it currently presses against, so `dof_pos_limits` pushes the same
-    # way for once.
+    # Raised to -2.0 once, to see whether four times the weight would lift the stance. It did not:
+    # base height moved 0.3653 -> 0.3665 across a full 2000-iteration run, head clearance stayed at
+    # 45 mm to the millimetre, and the only things that changed were the stance knee's peak torque
+    # (22.2 -> 26.0 N*m, touching its 39.22 N*m ceiling) and the lateral-lean tail. Reverted.
+    # `front_hip_height` below is the term that carries a reachable target, and the one to push.
     base_height = RewTerm(
         func=mdp.gated,
-        weight=-2.0,
+        weight=-0.5,
         params={
             "gate": GATE_HANDSTAND,
             "gate_command_name": "handstand",
@@ -207,9 +248,22 @@ class HandstandRewardsCfg:
             "term_params": {"target_height": BASE_HEIGHT_TARGET},
         },
     )
+    # -5.0, ten times the bipedal recipe's -0.5, and the one deliberate departure from it here.
+    #
+    # The recipe added this term for exactly the symptom this task shows -- `feat/biped`'s front
+    # stance "touched the ground with the head at a standstill" -- and 0.30 m against 0.426 m of
+    # leg is a target the robot can actually reach, which is what makes it the right lever. What
+    # differs is the company it keeps. That reward set had no completion term and no upright-balance
+    # term; this one adds `stance_held` (+0.97 realised) and `upright_balance` (+0.77), both fully
+    # banked by a crouch. At -0.5 this term measured -0.024 against their +1.74 -- a ratio of about
+    # 1 to 52 -- and the stance settled with the stance hips at 0.185 m and 45 mm of head clearance.
+    #
+    # At -5.0, closing the shortfall is worth about 0.19 per step, near a fifth of `stance_held`.
+    # The escape route of pitching less rather than rising is worth under a centimetre, because
+    # `success_alignment` pins the pitch above 68.5 degrees.
     front_hip_height = RewTerm(
         func=mdp.gated,
-        weight=-0.5,
+        weight=-5.0,
         params={
             "gate": GATE_HANDSTAND,
             "gate_command_name": "handstand",

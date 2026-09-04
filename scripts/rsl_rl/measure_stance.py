@@ -51,7 +51,13 @@ import torch  # noqa: E402
 from isaaclab.utils.assets import retrieve_file_path  # noqa: E402
 from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper  # noqa: E402
 from isaaclab_tasks.utils import get_checkpoint_path  # noqa: E402
+from isaaclab.utils.math import yaw_quat  # noqa: E402
 from rsl_rl.runners import OnPolicyRunner  # noqa: E402
+
+try:
+    from isaaclab.utils.math import quat_apply_inverse  # noqa: E402
+except ImportError:  # depends on the installed isaaclab version
+    from isaaclab.utils.math import quat_rotate_inverse as quat_apply_inverse  # noqa: E402
 
 import unitree_rl_lab.tasks  # noqa: F401, E402
 from unitree_rl_lab.utils.parser_cfg import parse_env_cfg  # noqa: E402
@@ -99,6 +105,10 @@ def main():
     # body pitches nose-down, so the head leads everything else toward the floor. `front_hip_height`
     # regulates the shoulders, which sit behind it and higher.
     head_ids, head_names = robot.find_bodies(["Head_.*", "base"])
+    # Whether the front of the trunk is *touching*, not just close. Three runs with different
+    # reward compositions all settled at a minimum head height of 0.045 m to the millimetre, which
+    # is not what a reward-shaped quantity looks like -- it is what a floor looks like.
+    head_sensor_ids, _ = env.unwrapped.scene.sensors["contact_forces"].find_bodies(["Head_.*", "base"])
     # The joints carrying the robot's weight in this stance, by group. The thigh joint is the one
     # `feat/biped`'s hardware trace found pinned at the actuator ceiling.
     joint_groups = {
@@ -119,6 +129,20 @@ def main():
     base_z = torch.zeros(steps, num_envs, device=device)
     hip_z = torch.zeros(steps, num_envs, device=device)
     head_z = torch.zeros(steps, num_envs, device=device)
+    head_force = torch.zeros(steps, num_envs, device=device)
+    # Velocity tracking, measured rather than read off the reward. Both tracking terms are wrapped
+    # in the upright ramp, so their logged values mix "how well it follows the command" with "how
+    # far into the stance it is" -- two runs can differ on the second and look different on the
+    # first while tracking identically.
+    err_planar = torch.zeros(steps, num_envs, device=device)
+    err_forward = torch.zeros(steps, num_envs, device=device)
+    err_lateral = torch.zeros(steps, num_envs, device=device)
+    err_yaw = torch.zeros(steps, num_envs, device=device)
+    commanded = torch.zeros(steps, num_envs, device=device)
+    # The forward command's own magnitude, kept separately from the planar norm. Without it the
+    # forward error cannot be read: a run that happened to draw faster commands shows a larger
+    # absolute error at identical tracking quality.
+    cmd_forward = torch.zeros(steps, num_envs, device=device)
     torque = {name: torch.zeros(steps, num_envs, device=device) for name in joint_groups}
     # How close the stance legs run to their travel limits. `dof_pos_limits` carries weight -10 here
     # (the merged set's value; the validated bipedal recipe used -1), and a barrier that works reads
@@ -144,6 +168,21 @@ def main():
         base_z[step] = robot.data.root_pos_w[:, 2]
         hip_z[step] = robot.data.body_pos_w[:, stance_hip_ids, 2].mean(dim=-1)
         head_z[step] = robot.data.body_pos_w[:, head_ids, 2].amin(dim=-1)
+        head_force[step] = torch.linalg.norm(
+            env.unwrapped.scene.sensors["contact_forces"].data.net_forces_w[:, head_sensor_ids, :], dim=-1
+        ).amax(dim=-1)
+        # Yaw frame, not body frame: the trunk is pitched 70-90 degrees, so its xy plane is nowhere
+        # near the world-horizontal plane the velocity command lives in. Same frame the reward uses.
+        # Named apart from `command`, which is the handstand command *term* this loop also reads.
+        velocity_command = inner.command_manager.get_command("base_velocity")
+        actual = quat_apply_inverse(yaw_quat(robot.data.root_quat_w), robot.data.root_lin_vel_w)
+        err_forward[step] = (velocity_command[:, 0] - actual[:, 0]).abs()
+        err_lateral[step] = (velocity_command[:, 1] - actual[:, 1]).abs()
+        err_planar[step] = torch.linalg.norm(velocity_command[:, :2] - actual[:, :2], dim=-1)
+        err_yaw[step] = (velocity_command[:, 2] - robot.data.root_ang_vel_w[:, 2]).abs()
+        commanded[step] = torch.linalg.norm(velocity_command[:, :2], dim=-1)
+        cmd_forward[step] = velocity_command[:, 0].abs()
+
         applied = robot.data.applied_torque
         limits = robot.data.soft_joint_pos_limits
         for name, ids in joint_groups.items():
@@ -188,6 +227,26 @@ def main():
     print(f"  stance hip height, settled (m)  {quantiles(settled(hip_z))}")
     print(f"  head/trunk clearance, min (m)   {quantiles(trough(head_z))}")
     print(f"  head/trunk clearance, settl(m)  {quantiles(settled(head_z))}")
+    print(f"  head/trunk contact, peak    (N)  {quantiles(peak(head_force))}")
+    touching = ((head_force > 1.0) & alive).float().sum(dim=0) / counts.clamp(min=1).float()
+    print(f"  head/trunk touching, fraction   {quantiles(touching[live])}")
+    # Averaged over the steps where a move was actually asked for. Including the standing
+    # environments would reward a policy for holding still in the 10% that are commanded to.
+    moving = alive & (commanded > 0.1)
+    def tracked(series: torch.Tensor) -> torch.Tensor:
+        weights = moving.float()
+        return ((series * weights).sum(dim=0) / weights.sum(dim=0).clamp(min=1.0))[live]
+    print()
+    print(f"  velocity error, planar  (m/s)   {quantiles(tracked(err_planar))}")
+    print(f"  velocity error, forward (m/s)   {quantiles(tracked(err_forward))}")
+    print(f"  velocity error, lateral (m/s)   {quantiles(tracked(err_lateral))}")
+    print(f"  yaw-rate error        (rad/s)   {quantiles(tracked(err_yaw))}")
+    print(f"  commanded speed while moving    {quantiles(tracked(commanded))}")
+    print(f"  commanded |v_x| while moving    {quantiles(tracked(cmd_forward))}")
+    # Error as a fraction of what was asked for, so runs that drew different command
+    # distributions can be compared. Per environment, not a ratio of medians.
+    ratio = tracked(err_forward) / tracked(cmd_forward).clamp(min=1.0e-3)
+    print(f"  forward error / commanded |v_x| {quantiles(ratio)}")
     for name in joint_groups:
         print(f"  |tau| {name:<14} peak (N*m)  {quantiles(peak(torque[name]))}")
         print(f"  |tau| {name:<14} settl(N*m)  {quantiles(settled(torque[name]))}")
