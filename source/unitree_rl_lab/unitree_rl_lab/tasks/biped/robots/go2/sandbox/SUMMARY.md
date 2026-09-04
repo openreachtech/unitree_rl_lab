@@ -1,6 +1,6 @@
 # Go2 bipedal stance -- summary of experiments
 
-The front-leg handstand (`Go2-Multitask-Handstand`), trained as a fourth expert for the multi-task
+The front-leg handstand (`Go2-Multitask-Biped-Front`), trained as a fourth expert for the multi-task
 policy. Reward design follows two sources: the balance terms come from TumblerNet by way of
 `feat/biped`, which took both a hind-leg and a front-leg stance to hardware, and the task terms
 follow "Bipedalism for Quadrupedal Robots" (Zhang et al.), Table I. See

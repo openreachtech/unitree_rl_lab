@@ -129,7 +129,7 @@ follows a fixed `--follow` window from the rising edge instead.
 
 ## Next stage: a bipedal expert, and the observation change it forced
 
-`Go2-Multitask-Handstand` trains a front-leg stance -- the robot rises onto its front legs, hind
+`Go2-Multitask-Biped-Front` trains a front-leg stance -- the robot rises onto its front legs, hind
 legs tucked, and walks there tracking a velocity command. It is meant to become a fourth expert.
 The task config carries its own rationale; what belongs here is what it did to the shared layout.
 

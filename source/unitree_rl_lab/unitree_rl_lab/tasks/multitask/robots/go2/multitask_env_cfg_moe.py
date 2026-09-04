@@ -156,7 +156,7 @@ class MoeCommandsCfg:
 
     jump = _multi_trigger_jump_cfg()
 
-    # Off. The bipedal stance has its own expert (`Go2-Multitask-Handstand`) but is not part of
+    # Off. The bipedal stance has its own expert (`Go2-Multitask-Biped-Front`) but is not part of
     # this mixture yet -- adding it means a fourth expert and a re-widen of the other three, which
     # is the next stage, not this one. The command is carried anyway so its observation columns are
     # filled truthfully rather than left for something else to occupy.

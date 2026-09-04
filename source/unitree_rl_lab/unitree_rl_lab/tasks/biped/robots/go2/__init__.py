@@ -3,7 +3,13 @@
 import gymnasium as gym
 
 # =================================================================================================
-# Go2-Multitask-Handstand -- the bipedal expert.
+# Go2-Multitask-Biped-Front -- the bipedal expert.
+#
+# Named for the stance rather than the pose, so the mirror (`Go2-Multitask-Biped-Hind`) has an
+# obvious name and the pair reads as one family -- the same shape as `feat/biped`'s own
+# `Go2-Biped-Front`. The `Go2-Multitask-` prefix names the observation layout, not this directory;
+# `Go2-Multitask-Jump-*` lives under `dynamic/` and `Go2-Multitask-Gallop-*` under `locomotion/`
+# for the same reason.
 #
 # The robot rises onto its front legs, hind legs tucked, and walks there tracking a velocity command
 # of up to 1 m/s. Same observation layout, control rate and actuator model as the locomotion and
@@ -15,11 +21,11 @@ import gymnasium as gym
 # that policy carries a jointly-trained state estimator and its own proprio-history layout, so its
 # weights do not map onto this network. The recipe carries over; the checkpoint does not.
 #
-#   python scripts/rsl_rl/train_and_aggregate.py --task Go2-Multitask-Handstand
+#   python scripts/rsl_rl/train_and_aggregate.py --task Go2-Multitask-Biped-Front
 # =================================================================================================
 
 gym.register(
-    id="Go2-Multitask-Handstand",
+    id="Go2-Multitask-Biped-Front",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={

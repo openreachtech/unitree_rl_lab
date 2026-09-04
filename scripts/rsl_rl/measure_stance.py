@@ -16,8 +16,8 @@ iteration 205 to 2000 and reported nothing in between.
 This walks the environments individually and prints distributions, in the same quantities and the
 same conditions as the tables it needs to be compared against.
 
-    python scripts/rsl_rl/measure_stance.py --task Go2-Multitask-Handstand --num_envs 32 --steps 1000
-    python scripts/rsl_rl/measure_stance.py --task Go2-Multitask-Handstand --delay 0
+    python scripts/rsl_rl/measure_stance.py --task Go2-Multitask-Biped-Front --num_envs 32 --steps 1000
+    python scripts/rsl_rl/measure_stance.py --task Go2-Multitask-Biped-Front --delay 0
 """
 
 import argparse
@@ -25,7 +25,7 @@ import argparse
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--task", type=str, default="Go2-Multitask-Handstand")
+parser.add_argument("--task", type=str, default="Go2-Multitask-Biped-Front")
 parser.add_argument("--num_envs", type=int, default=32)
 parser.add_argument("--steps", type=int, default=1000)
 parser.add_argument("--delay", type=int, default=None,
