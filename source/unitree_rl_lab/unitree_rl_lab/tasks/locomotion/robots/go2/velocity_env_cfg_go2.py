@@ -12,6 +12,8 @@ from unitree_rl_lab.tasks.locomotion.agents.rsl_rl_distillation_cfg import Belie
 from unitree_rl_lab.tasks.locomotion import mdp
 from unitree_rl_lab.tasks.locomotion.mdp.observations import height_scan_excluding_body
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import (
+    HEIGHT_SCAN_RESOLUTION,
+    HEIGHT_SCAN_SIZE,
     CommandsCfg,
     ObservationsCfg,
     RewardsCfg,
@@ -24,8 +26,9 @@ CRITIC_HISTORY_LENGTH = 3
 # Applied to RobotSceneCfg.height_scanner.pattern_cfg in RobotEnvCfgGo2.__post_init__.
 # X is 1.4 m (+0.20 m front and back over a plain 1.0 m square) so the body-centered grid
 # reaches further past the robot's own front/rear footprint.
-HEIGHT_SCAN_RESOLUTION = 0.05
-HEIGHT_SCAN_SIZE = (1.4, 1.0)
+# HEIGHT_SCAN_RESOLUTION / HEIGHT_SCAN_SIZE come from velocity_env_cfg, which declares
+# the scanner built on them; imported above and re-exported here so the many modules
+# that already reach for them through this one keep working.
 # Body-footprint exclusion rectangle: 60 cm x 40 cm (half extents below).
 GO2_BODY_HALF_EXTENT_X = 0.30
 GO2_BODY_HALF_EXTENT_Y = 0.20
@@ -283,19 +286,3 @@ class TeacherPPORunnerCfg(BasePPORunnerCfg):
         self.policy.priv_obs_dim = priv
 
 
-@configclass
-class StudentDistillationRunnerCfg(BeliefDistillationRunnerCfg):
-    """Belief-encoder student distillation (BC + height-map reconstruction)."""
-
-    def __post_init__(self):
-        # Ensure class symbol is imported for config serialization/debug.
-        _ = StudentTeacher
-        proprio, extero, priv = _go2_obs_block_dims()
-        self.policy.proprio_obs_dim = proprio
-        self.policy.extero_obs_dim = extero
-        # TeacherポリシーはPreveledgedInfoを使っていないが、ゼロ埋めしている。
-        # そのため、Studentポリシーも同じゼロ埋めを行う必要がある。
-        self.policy.priv_obs_dim = priv
-
-        # TeacherポリシーのExteroceptiveEncoderをStudentポリシーに転送しない。
-        # self.policy.transfer_extero_encoder_from_teacher = False

@@ -62,3 +62,20 @@ class GruPPORunnerCfg(BasePPORunnerCfg):
         rnn_hidden_dim=256,
         rnn_num_layers=1,
     )
+
+
+@configclass
+class PerceptiveGruPPORunnerCfg(GruPPORunnerCfg):
+    """``GruPPORunnerCfg`` with observation normalisation on.
+
+    The perceptive arms put a height grid in metres next to proprioceptive terms that
+    have been scaled to order one; terrain varies by hundredths of a metre, so without
+    a running mean and variance the map enters the GRU some twenty times quieter than
+    everything beside it. Miki et al. normalise for the same reason. Kept as a separate
+    config so the blind lineage's runs stay exactly as they were.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.policy.actor_obs_normalization = True
+        self.policy.critic_obs_normalization = True

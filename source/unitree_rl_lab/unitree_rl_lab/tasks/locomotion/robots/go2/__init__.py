@@ -1,6 +1,9 @@
 import gymnasium as gym
 
-from . import sandbox  # noqa: F401
+# Shared by every registration below. Module-qualified rather than an absolute string so
+# train.py's task filter, which keys on the "locomotion." prefix, still matches.
+_CFG = __name__
+_RUNNER = "unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:GruPPORunnerCfg"
 
 gym.register(
     id="Unitree-Go2-Velocity-v0",
@@ -13,162 +16,6 @@ gym.register(
     },
 )
 
-gym.register(
-    id="Go2-v3-Phase1",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_phase1:RobotEnvCfgPhase1",
-        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_phase1:RobotPlayEnvCfgPhase1",
-        "rsl_rl_cfg_entry_point": f"{__name__}.velocity_env_cfg_go2:TeacherPPORunnerCfg",
-    },
-)
-
-gym.register(
-    id="Go2-v3-Phase2",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_phase2:RobotEnvCfgPhase2",
-        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_phase2:RobotPlayEnvCfgPhase2",
-        "rsl_rl_cfg_entry_point": f"{__name__}.velocity_env_cfg_go2:TeacherPPORunnerCfg",
-    },
-)
-
-gym.register(
-    id="Go2-v3-Phase3",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_phase3:RobotEnvCfgPhase3",
-        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_phase3:RobotPlayEnvCfgPhase3",
-        "rsl_rl_cfg_entry_point": f"{__name__}.velocity_env_cfg_go2:TeacherPPORunnerCfg",
-    },
-)
-
-# Promoted from sandbox Try-4: terrain-adaptive foot clearance for a natural
-# flat-ground gait, terrain_levels >= 4.5 (reached 4.899).
-gym.register(
-    id="Go2-v3-Phase3-balance",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_phase3:RobotEnvCfgPhase3Balance",
-        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_phase3:RobotPlayEnvCfgPhase3Balance",
-        "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
-    },
-)
-
-# Promoted from sandbox Try-1 + Try-2: maximizes terrain_levels (~5.3-5.4),
-# exaggerated flat-ground gait as a tradeoff.
-gym.register(
-    id="Go2-v3-Phase3-stairfocus",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_phase3:RobotEnvCfgPhase3StairFocus",
-        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_phase3:RobotPlayEnvCfgPhase3StairFocus",
-        "rsl_rl_cfg_entry_point": f"{__name__}.velocity_env_cfg_go2:TeacherPPORunnerCfg",
-    },
-)
-
-# Balance rewards + terrain mix that includes floating inverted pyramid stairs.
-# Promoted from sandbox Try-1 through Try-7:
-#   Try-1: anti-stall rewards (base_height_climb, stall_penalty, stair_commit)
-#     + relaxed bad_orientation, fixing the robot freezing at the stair edge
-#     instead of climbing. terrain_levels 5.514 (vs 4.899 without the fix).
-#   Try-2/3/4: fixed MuJoCo deploy testing showing the policy flattening/
-#     flapping its legs on flat ground at zero command -- rel_standing_envs
-#     0.01 -> 0.1, plus command-gating base_height_climb and
-#     wild_foot_clearance (both otherwise unconditional on command).
-#   Try-5/6/7: added quiet_standing_reward (positive reward for literal
-#     stillness), gated by both command and terrain flatness so it can't
-#     compete with stair-climbing behavior; weight settled at 0.5 (Try-7).
-# See velocity_env_cfg_phase3.py for full per-try results and reasoning.
-gym.register(
-    id="Go2-v3-Phase3-balance-floating",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_phase3:RobotEnvCfgPhase3BalanceFloating",
-        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_phase3:RobotPlayEnvCfgPhase3BalanceFloating",
-        "rsl_rl_cfg_entry_point": f"{__name__}.velocity_env_cfg_go2:TeacherPPORunnerCfg",
-    },
-)
-
-# Continual learning on top of Phase3-balance-floating: dedicated terrain mix
-# for stepping over short free-standing walls (10% flat, 90% thin_wall --
-# height 0.05 -> 0.25 m and thickness 0.15 -> 0.03 m, both narrowing/rising
-# with difficulty). Stair-climbing is expected to carry over from the
-# checkpoint, not from keeping stairs in this phase's mix.
-# Rewards/terminations/commands are unchanged from Phase3-balance-floating.
-# Train with --previous-task Unitree-Go2-Velocity-v2-Phase3-balance-floating.
-gym.register(
-    id="Go2-v3-Phase4",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_phase4:RobotEnvCfgPhase4",
-        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_phase4:RobotPlayEnvCfgPhase4",
-        "rsl_rl_cfg_entry_point": f"{__name__}.velocity_env_cfg_go2:TeacherPPORunnerCfg",
-    },
-)
-
-# Belief-encoder student distillation, split the way the paper schedules it
-# (see velocity_env_cfg_student.py): flat terrain and a clean height scan first,
-# then the deployment terrain mix with the height-scan noise ramping in.
-# Phase1 distills the Phase4 teacher; Phase2 continues from the Phase1 student:
-#   --task Go2-v3-Student-Phase1 --resume --previous-task Go2-v3-Phase4
-#   --task Go2-v3-Student-Phase2 --resume --previous-task Go2-v3-Student-Phase1
-gym.register(
-    id="Go2-v3-Student-Phase1",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_student:RobotEnvCfgStudentPhase1",
-        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_student:RobotPlayEnvCfgStudentPhase1",
-        "rsl_rl_cfg_entry_point": f"{__name__}.velocity_env_cfg_go2:StudentDistillationRunnerCfg",
-    },
-)
-
-gym.register(
-    id="Go2-v3-Student-Phase2",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg_student:RobotEnvCfgStudentPhase2",
-        "play_env_cfg_entry_point": f"{__name__}.velocity_env_cfg_student:RobotPlayEnvCfgStudentPhase2",
-        "rsl_rl_cfg_entry_point": f"{__name__}.velocity_env_cfg_go2:StudentDistillationRunnerCfg",
-    },
-)
-
-# ---------------------------------------------------------------------------
-# Blind Go2 with a recurrent policy -- the traversal half of the two-stage plan for
-# the LiDAR height map. The end goal is an encoder/decoder that recovers true terrain
-# from a noisy fan-built map, trained behind a *frozen* controller; a blind policy is
-# the right one to freeze, since it cannot lean on the exteroceptive input the encoder
-# is still learning to produce, so the two stages stay separable.
-#
-# Two ingredients, both taken from existing work rather than invented here:
-#   * the Unitree-Go2-Velocity-v1 configs from feat/go2-curriculum, whose actor is
-#     proprioception-only and whose critic keeps the privileged height scan -- ported
-#     into velocity_env_cfg_blind*.py in this package;
-#   * GruPPORunnerCfg, the GRU actor-critic used by Go2W-v1-Phase* on feat/go2w.
-#
-# The curriculum is v1's, unchanged: flat, then rough ground and boxes, then stairs.
-#   --task Go2-Blind-GRU-Phase1
-#   --task Go2-Blind-GRU-Phase2 --resume --previous-task Go2-Blind-GRU-Phase1
-#   --task Go2-Blind-GRU-Phase3 --resume --previous-task Go2-Blind-GRU-Phase2
-# ---------------------------------------------------------------------------
-
-_RUNNER = "unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:GruPPORunnerCfg"
-# Relative to this package. The launcher filters tasks on env_cfg_entry_point
-# starting with "locomotion.", and the walk that discovers these packages makes
-# __name__ resolve to exactly that prefix; a hardcoded absolute path is silently
-# skipped instead.
-_CFG = __name__
-
-# Phase 1: flat ground. Establishes a gait before any terrain is introduced.
 gym.register(
     id="Go2-Blind-GRU-Phase1",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
@@ -267,47 +114,174 @@ for _level in ("Weak", "Nominal", "Strong"):
         },
     )
 
-# ===========================================================================
-# Terrain-encoder training. The walking policy is frozen and only drives the robot;
-# what learns is the encoder in assets/models/terrain_encoder.py, trained by
-# scripts/rsl_rl/train_terrain_encoder.py rather than by train.py. These are the
-# Blind-GRU phase environments with the LiDAR fan and a clean target grid attached,
-# so each phase's encoder sees the terrain the phase's own policy can cross. See
-# velocity_env_cfg_terrain_encoder.py.
-#
-#   python scripts/rsl_rl/train_terrain_encoder.py --task Go2-Terrain-Encoder-Phase2 \
-#       --policy_checkpoint logs/rsl_rl/go2_blind_gru_phase2/<run>/model_6497.pt
-# ===========================================================================
-for _phase in (2, 3, 4):
-    gym.register(
-        id=f"Go2-Terrain-Encoder-Phase{_phase}",
-        entry_point="isaaclab.envs:ManagerBasedRLEnv",
-        disable_env_checker=True,
-        kwargs={
-            "env_cfg_entry_point": (
-                f"{_CFG}.velocity_env_cfg_terrain_encoder:RobotEnvCfgEncoderPhase{_phase}"
-            ),
-            "rsl_rl_cfg_entry_point": _RUNNER,
-        },
-    )
 
-# Watching the encoder. Each phase's own viewing course, cut down to something readable:
-#   Phase 2  rough | boxes,        5 difficulties
-#   Phase 3  pyramid | inverted,   step heights 5 / 10 / 15 cm
-#   Phase 4  solid | floating wall, wall heights 10 / 15 / 20 / 25 cm
-# play_terrain_encoder.py draws the fan's grid in green/red and the estimate in blue.
-for _phase in (2, 3, 4):
-    gym.register(
-        id=f"Go2-Terrain-Encoder-Phase{_phase}-Play",
-        entry_point="isaaclab.envs:ManagerBasedRLEnv",
-        disable_env_checker=True,
-        kwargs={
-            "env_cfg_entry_point": (
-                f"{_CFG}.velocity_env_cfg_terrain_encoder:RobotPlayEnvCfgEncoderPhase{_phase}"
-            ),
-            "play_env_cfg_entry_point": (
-                f"{_CFG}.velocity_env_cfg_terrain_encoder:RobotPlayEnvCfgEncoderPhase{_phase}"
-            ),
-            "rsl_rl_cfg_entry_point": _RUNNER,
-        },
-    )
+
+# ===========================================================================
+# Perceptive arms: what a height map buys the blind policy, and how much of that
+# depends on the map being clean. Four arms x four phases; see
+# velocity_env_cfg_perceptive.py for what differs between them (only the actor's
+# exteroceptive input, and the fan's presence in the scene).
+#
+# Phase 4 resumes from Phase 2, not Phase 3 -- stair training was measured to cost
+# wall-crossing on this lineage.
+#
+#   python scripts/rsl_rl/train.py --task Go2-HM-Belief-Phase2 --resume \
+#       --load_run <phase1 run> --checkpoint model_500.pt
+# ===========================================================================
+_PERCEPTIVE_RUNNER = "unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:PerceptiveGruPPORunnerCfg"
+
+gym.register(
+    id="Go2-HM-Blind-Phase1",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_perceptive:BlindEnvCfgPhase1",
+        "rsl_rl_cfg_entry_point": _PERCEPTIVE_RUNNER,
+    },
+)
+gym.register(
+    id="Go2-HM-Blind-Phase2",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_perceptive:BlindEnvCfgPhase2",
+        "rsl_rl_cfg_entry_point": _PERCEPTIVE_RUNNER,
+    },
+)
+gym.register(
+    id="Go2-HM-Blind-Phase3",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_perceptive:BlindEnvCfgPhase3",
+        "play_env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_perceptive:BlindPlayCfgPhase3",
+        "rsl_rl_cfg_entry_point": _PERCEPTIVE_RUNNER,
+    },
+)
+gym.register(
+    id="Go2-HM-Blind-Phase4",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_perceptive:BlindEnvCfgPhase4",
+        "play_env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_perceptive:BlindPlayCfgPhase4",
+        "rsl_rl_cfg_entry_point": _PERCEPTIVE_RUNNER,
+    },
+)
+
+gym.register(
+    id="Go2-HM-Belief-Phase1",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_perceptive:BeliefEnvCfgPhase1",
+        "rsl_rl_cfg_entry_point": _PERCEPTIVE_RUNNER,
+    },
+)
+gym.register(
+    id="Go2-HM-Belief-Phase2",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_perceptive:BeliefEnvCfgPhase2",
+        "rsl_rl_cfg_entry_point": _PERCEPTIVE_RUNNER,
+    },
+)
+gym.register(
+    id="Go2-HM-Belief-Phase3",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_perceptive:BeliefEnvCfgPhase3",
+        "play_env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_perceptive:BeliefPlayCfgPhase3",
+        "rsl_rl_cfg_entry_point": _PERCEPTIVE_RUNNER,
+    },
+)
+gym.register(
+    id="Go2-HM-Belief-Phase4",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_perceptive:BeliefEnvCfgPhase4",
+        "play_env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_perceptive:BeliefPlayCfgPhase4",
+        "rsl_rl_cfg_entry_point": _PERCEPTIVE_RUNNER,
+    },
+)
+
+gym.register(
+    id="Go2-HM-Noisy-Phase1",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_perceptive:NoisyEnvCfgPhase1",
+        "rsl_rl_cfg_entry_point": _PERCEPTIVE_RUNNER,
+    },
+)
+gym.register(
+    id="Go2-HM-Noisy-Phase2",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_perceptive:NoisyEnvCfgPhase2",
+        "rsl_rl_cfg_entry_point": _PERCEPTIVE_RUNNER,
+    },
+)
+gym.register(
+    id="Go2-HM-Noisy-Phase3",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_perceptive:NoisyEnvCfgPhase3",
+        "play_env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_perceptive:NoisyPlayCfgPhase3",
+        "rsl_rl_cfg_entry_point": _PERCEPTIVE_RUNNER,
+    },
+)
+gym.register(
+    id="Go2-HM-Noisy-Phase4",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_perceptive:NoisyEnvCfgPhase4",
+        "play_env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_perceptive:NoisyPlayCfgPhase4",
+        "rsl_rl_cfg_entry_point": _PERCEPTIVE_RUNNER,
+    },
+)
+
+gym.register(
+    id="Go2-HM-Clean-Phase1",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_perceptive:CleanEnvCfgPhase1",
+        "rsl_rl_cfg_entry_point": _PERCEPTIVE_RUNNER,
+    },
+)
+gym.register(
+    id="Go2-HM-Clean-Phase2",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_perceptive:CleanEnvCfgPhase2",
+        "rsl_rl_cfg_entry_point": _PERCEPTIVE_RUNNER,
+    },
+)
+gym.register(
+    id="Go2-HM-Clean-Phase3",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_perceptive:CleanEnvCfgPhase3",
+        "play_env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_perceptive:CleanPlayCfgPhase3",
+        "rsl_rl_cfg_entry_point": _PERCEPTIVE_RUNNER,
+    },
+)
+gym.register(
+    id="Go2-HM-Clean-Phase4",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_perceptive:CleanEnvCfgPhase4",
+        "play_env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_perceptive:CleanPlayCfgPhase4",
+        "rsl_rl_cfg_entry_point": _PERCEPTIVE_RUNNER,
+    },
+)

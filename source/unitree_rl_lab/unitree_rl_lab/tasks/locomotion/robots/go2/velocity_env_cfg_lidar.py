@@ -45,14 +45,6 @@ from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_go2 import (
     HEIGHT_SCAN_SIZE,
     ObservationsCfgGo2,
 )
-from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_phase1 import (
-    RobotEnvCfgPhase1,
-    RobotSceneCfgPhase1,
-)
-from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_phase4 import (
-    RobotEnvCfgPhase4,
-    RobotSceneCfgPhase4,
-)
 
 # ---------------------------------------------------------------------------
 # Mount. Base frame; the front-hip line, on top of the trunk.

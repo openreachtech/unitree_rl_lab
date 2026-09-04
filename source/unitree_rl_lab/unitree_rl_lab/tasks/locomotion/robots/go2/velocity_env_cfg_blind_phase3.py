@@ -68,6 +68,63 @@ PHASE3_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
 # the narrow-tread rows. Used by Phase3-stairfocus below (sandbox Try-10
 # result: terrain_levels 4.869, softer initial collapse on first stairs
 # contact, faster recovery than the fixed-width PHASE3_TERRAIN_CFG).
+# ===========================================================================
+# Phase 3 with floating treads mixed in: 5 columns of 10 difficulty rows, laid out
+# 1 : 2 : 2 by the 20 / 40 / 40 proportions below.
+#
+#   col 0      floating pyramid stairs      ascending, open risers
+#   col 1-2    inverted pyramid stairs      descending, solid -- the old default
+#   col 3-4    floating inverted stairs     descending, open risers
+#
+# Weighted toward descending because that is where this lineage struggled, and toward
+# floating because an open riser is the case a blind policy cannot feel ahead of time:
+# there is nothing under the tread to catch a trailing leg against, so the terrain has
+# to be seen rather than probed. That makes it the sharper test of whether a height map
+# earns its place -- which is the question the four perceptive arms are asking.
+#
+# Step geometry matches the fixed-width stairs it sits beside (height 0.05 -> 0.25,
+# tread 0.27 -> 0.23 with difficulty) so a row means the same thing across columns.
+# ===========================================================================
+PHASE3_TERRAIN_CFG_FLOATING = terrain_gen.TerrainGeneratorCfg(
+    size=(8.0, 8.0),
+    border_width=20.0,
+    num_cols=5,
+    num_rows=10,
+    horizontal_scale=0.1,
+    vertical_scale=0.005,
+    slope_threshold=0.75,
+    difficulty_range=(0.0, 1.0),
+    use_cache=False,
+    sub_terrains={
+        "floating_pyramid_stairs": terrains.MeshFloatingPyramidStairsTerrainCfg(
+            proportion=0.20,
+            step_height_range=(0.05, 0.25),
+            step_width_range=(0.27, 0.23),
+            platform_width=2.0,
+            border_width=1.0,
+            holes=False,
+        ),
+        "pyramid_stairs_inv": terrains.MeshInvertedPyramidStairsVariableWidthCfg(
+            proportion=0.40,
+            step_height_range=(0.05, 0.25),
+            step_width_range=(0.27, 0.23),
+            platform_width=2.0,
+            border_width=1.0,
+            holes=False,
+        ),
+        "floating_pyramid_stairs_inv": terrains.MeshFloatingInvertedPyramidStairsTerrainCfg(
+            proportion=0.40,
+            step_height_range=(0.05, 0.25),
+            step_width_range=(0.27, 0.23),
+            platform_width=2.0,
+            border_width=1.0,
+            holes=False,
+        ),
+    },
+)
+"""5 x 10: floating | inverted x2 | floating inverted x2, rows ascending in difficulty."""
+
+
 PHASE3_TERRAIN_CFG_VARIABLE_WIDTH = terrain_gen.TerrainGeneratorCfg(
     size=(8.0, 8.0),
     border_width=20.0,
