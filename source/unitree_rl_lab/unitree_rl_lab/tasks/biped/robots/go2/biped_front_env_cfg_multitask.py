@@ -60,6 +60,11 @@ LIFTED_FEET = ["RR_foot", "RL_foot"]
 LIFTED_HIP_JOINTS = ["RR_hip_joint", "RL_hip_joint"]
 LIFTED_THIGH_JOINTS = ["RR_thigh_joint", "RL_thigh_joint"]
 LIFTED_CALF_JOINTS = ["RR_calf_joint", "RL_calf_joint"]
+# Leg links above the foot, split by which pair is carrying the robot. A stance leg resting one of
+# these on the ground is the support collapsing; a lifted leg brushing one is untidy but not the
+# same thing, and they are priced apart accordingly.
+STANCE_LEG_LINKS = ["FR_thigh", "FL_thigh", "FR_calf", "FL_calf"]
+LIFTED_LEG_LINKS = ["RR_thigh", "RL_thigh", "RR_calf", "RL_calf"]
 # Physically at the front of the body whichever end is standing. In this stance they are the
 # lowest part of the trunk, which is why they need a height floor of their own.
 FRONT_HIPS = ["FR_hip", "FL_hip"]
@@ -159,15 +164,46 @@ class BipedFrontRewardsCfg:
     action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.1)
     dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-10.0)
     energy = RewTerm(func=mdp.energy, weight=-2e-5)
-    # The stance legs' own thigh and calf are included deliberately: one of them on the ground
-    # means the support leg has collapsed, which is no better than a swing leg dragging. The head
-    # is *not* here -- it has its own term below, at a weight a shared one cannot carry.
+    # The lifted pair only. The stance legs and the head each have their own term below, at weights
+    # a shared one cannot carry -- see `stance_leg_contact` for what happens when they do not.
     undesired_contacts = RewTerm(
         func=mdp.undesired_contacts,
         weight=-1.0,
         params={
             "threshold": 1.0,
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[".*_thigh", ".*_calf"]),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=LIFTED_LEG_LINKS),
+        },
+    )
+    # The same lesson as `head_contact`, one link further down, found the same way.
+    #
+    # The hind stance -- which mirrors this config -- settled with its left shin striking the ground
+    # 8.7% of the time at up to 3215 N, in bursts of 39 ms arriving twice a second: a scrape locked
+    # to the gait, not an occasional knock. It was kneeling on one leg and sliding. Its stance feet
+    # stayed planted for 1.4-3.1 s at a time against this stance's 214-276 ms, so it was not
+    # stepping at all, and its hips sat 11 cm lower.
+    #
+    # And it was paying -0.09 per step for it, because a bounded count shared across eight links
+    # cannot price a 3 kN collapse differently from a calf brushing the floor. Exactly the shape of
+    # the head problem: cheap enough to be worth doing, so no amount of height reward competes.
+    #
+    # Inert in this stance -- the front legs' thigh and calf measure under 0.05% duty here -- which
+    # is the mirror of `head_contact` being inert in the hind one. Both are carried by both stances
+    # so that neither has an unpoliced way to rest part of itself on the floor.
+    #
+    # -20.0 at the measured 9.1% duty is about -1.8 per step averaged, -36 over a 20 s episode,
+    # against a -200 termination penalty. Well inside the margin `feat/biped` collapsed three
+    # separate runs by crossing.
+    stance_leg_contact = RewTerm(
+        func=mdp.gated,
+        weight=-20.0,
+        params={
+            "gate": GATE_HANDSTAND,
+            "gate_command_name": "handstand",
+            "term": mdp.undesired_contacts,
+            "term_params": {
+                "threshold": 1.0,
+                "sensor_cfg": SceneEntityCfg("contact_forces", body_names=STANCE_LEG_LINKS),
+            },
         },
     )
     # The single most consequential term in this task, and the last one to be found.

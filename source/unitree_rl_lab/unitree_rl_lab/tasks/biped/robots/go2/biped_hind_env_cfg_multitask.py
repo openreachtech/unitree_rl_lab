@@ -58,6 +58,8 @@ LIFTED_FEET = ["FR_foot", "FL_foot"]
 LIFTED_HIP_JOINTS = ["FR_hip_joint", "FL_hip_joint"]
 LIFTED_THIGH_JOINTS = ["FR_thigh_joint", "FL_thigh_joint"]
 LIFTED_CALF_JOINTS = ["FR_calf_joint", "FL_calf_joint"]
+STANCE_LEG_LINKS = ["RR_thigh", "RL_thigh", "RR_calf", "RL_calf"]
+LIFTED_LEG_LINKS = ["FR_thigh", "FL_thigh", "FR_calf", "FL_calf"]
 
 
 @configclass
@@ -90,6 +92,31 @@ class BipedHindRewardsCfg(BipedFrontRewardsCfg):
     ``base_height``, ``upright_balance``, ``stance_held``, ``termination_penalty`` -- are inherited
     untouched and are correct for either stance as written.
     """
+
+    # -- what is allowed to touch the ground, and at what price ----------------------------------
+    # The measurement that put this here was taken on this stance: the left shin on the floor 8.7%
+    # of the time at 3215 N, twice a second. See the front config for the full reasoning.
+    undesired_contacts = RewTerm(
+        func=mdp.undesired_contacts,
+        weight=-1.0,
+        params={
+            "threshold": 1.0,
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=LIFTED_LEG_LINKS),
+        },
+    )
+    stance_leg_contact = RewTerm(
+        func=mdp.gated,
+        weight=-20.0,
+        params={
+            "gate": GATE_HANDSTAND,
+            "gate_command_name": "handstand",
+            "term": mdp.undesired_contacts,
+            "term_params": {
+                "threshold": 1.0,
+                "sensor_cfg": SceneEntityCfg("contact_forces", body_names=STANCE_LEG_LINKS),
+            },
+        },
+    )
 
     # -- the lifted legs: off the ground, and tucked ---------------------------------------------
     lifted_contact = RewTerm(
