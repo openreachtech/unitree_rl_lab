@@ -85,7 +85,7 @@ settled stand the deploy FSM actually provides are both in distribution."""
 
 
 @configclass
-class HandstandCommandsCfg:
+class BipedFrontCommandsCfg:
     """A velocity command to follow, and the stance to follow it in."""
 
     # Built by replacing ranges on the locomotion command rather than constructing a fresh term, so
@@ -124,8 +124,11 @@ class HandstandCommandsCfg:
 
 
 @configclass
-class HandstandEventCfg(MultitaskEventCfg):
-    """The shared multi-task events, plus a spawn height that spans the drop."""
+class BipedEventCfg(MultitaskEventCfg):
+    """The shared multi-task events, plus a spawn height that spans the drop.
+
+    Not stance-specific -- the hind stance inherits it unchanged, which is why the name does not
+    carry a side."""
 
     def __post_init__(self):
         if hasattr(super(), "__post_init__"):
@@ -137,7 +140,7 @@ class HandstandEventCfg(MultitaskEventCfg):
 
 
 @configclass
-class HandstandRewardsCfg:
+class BipedFrontRewardsCfg:
     """The bipedal reward set, every task term gated on the stance being commanded.
 
     Weights on the balance and posture terms are ``feat/biped``'s, which trained this stance to
@@ -436,7 +439,9 @@ class HandstandRewardsCfg:
 
 
 @configclass
-class HandstandTerminationsCfg:
+class BipedTerminationsCfg:
+    """Shared by both stances: nothing here names a side."""
+
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
     # Any hip on the ground -- all four, not just the lifted pair. In this stance the front hips
     # are the lowest part of the trunk, so this is what stops the robot from resting its shoulders
@@ -452,14 +457,14 @@ class HandstandTerminationsCfg:
 
 
 @configclass
-class RobotEnvCfgHandstand(ManagerBasedRLEnvCfg):
+class RobotEnvCfgBipedFront(ManagerBasedRLEnvCfg):
     scene: MultitaskSceneCfg = MultitaskSceneCfg(num_envs=4096, env_spacing=2.5)
     observations: UnifiedObservationsCfg = UnifiedObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
-    commands: HandstandCommandsCfg = HandstandCommandsCfg()
-    rewards: HandstandRewardsCfg = HandstandRewardsCfg()
-    terminations: HandstandTerminationsCfg = HandstandTerminationsCfg()
-    events: HandstandEventCfg = HandstandEventCfg()
+    commands: BipedFrontCommandsCfg = BipedFrontCommandsCfg()
+    rewards: BipedFrontRewardsCfg = BipedFrontRewardsCfg()
+    terminations: BipedTerminationsCfg = BipedTerminationsCfg()
+    events: BipedEventCfg = BipedEventCfg()
 
     def __post_init__(self):
         self.episode_length_s = 20.0
@@ -473,7 +478,7 @@ class RobotEnvCfgHandstand(ManagerBasedRLEnvCfg):
 
 
 @configclass
-class RobotPlayEnvCfgHandstand(RobotEnvCfgHandstand):
+class RobotPlayEnvCfgBipedFront(RobotEnvCfgBipedFront):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 32

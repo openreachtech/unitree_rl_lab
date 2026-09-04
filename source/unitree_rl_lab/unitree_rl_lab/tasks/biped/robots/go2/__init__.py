@@ -29,8 +29,37 @@ gym.register(
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.handstand_env_cfg_multitask:RobotEnvCfgHandstand",
-        "play_env_cfg_entry_point": f"{__name__}.handstand_env_cfg_multitask:RobotPlayEnvCfgHandstand",
+        "env_cfg_entry_point": f"{__name__}.biped_front_env_cfg_multitask:RobotEnvCfgBipedFront",
+        "play_env_cfg_entry_point": f"{__name__}.biped_front_env_cfg_multitask:RobotPlayEnvCfgBipedFront",
+        "rsl_rl_cfg_entry_point": "unitree_rl_lab.tasks.dynamic.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
+    },
+)
+
+
+# =================================================================================================
+# Go2-Multitask-Biped-Hind -- the mirror stance.
+#
+# Same skill on the other pair of legs, and the harder of the two: `feat/biped` reached a working
+# front stance in three sandbox tries and needed seven for this one. Two of its problems were never
+# solved there -- a sideways-drifting gait, and a front foot touching down during forward walking --
+# so expect this to need a round of its own rather than to fall out of the mirror. See the config
+# module's docstring for what is known before starting.
+#
+#   python scripts/rsl_rl/train_and_aggregate.py --task Go2-Multitask-Biped-Hind
+#
+# Starting from scratch is the default. Resuming from the front stance is worth trying instead --
+# same network, same observation, and the `stance` column already means something to it -- but it
+# has not been tested, and a policy that has learned "nose down" may fight "nose up" harder than a
+# fresh one learns it.
+# =================================================================================================
+
+gym.register(
+    id="Go2-Multitask-Biped-Hind",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.biped_hind_env_cfg_multitask:RobotEnvCfgBipedHind",
+        "play_env_cfg_entry_point": f"{__name__}.biped_hind_env_cfg_multitask:RobotPlayEnvCfgBipedHind",
         "rsl_rl_cfg_entry_point": "unitree_rl_lab.tasks.dynamic.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
     },
 )

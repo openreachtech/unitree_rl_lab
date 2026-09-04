@@ -100,7 +100,11 @@ def main():
     robot = inner.scene["robot"]
     device = inner.device
 
-    stance_hip_ids, stance_hip_names = robot.find_bodies(["FR_hip", "FL_hip"])
+    # Derived from the command, not hardcoded. Pinned to the front pair, this measured the hind
+    # stance's *raised* end and reported 0.625 m as its "stance hip height" -- the opposite end of
+    # the robot from the one carrying it.
+    stance_side = "F" if float(command.cfg.stance) > 0 else "R"
+    stance_hip_ids, stance_hip_names = robot.find_bodies([f"{stance_side}R_hip", f"{stance_side}L_hip"])
     # The lowest point of the trunk in this stance, and the one an operator actually watches: the
     # body pitches nose-down, so the head leads everything else toward the floor. `front_hip_height`
     # regulates the shoulders, which sit behind it and higher.
@@ -109,6 +113,11 @@ def main():
     # reward compositions all settled at a minimum head height of 0.045 m to the millimetre, which
     # is not what a reward-shaped quantity looks like -- it is what a floor looks like.
     head_sensor_ids, _ = env.unwrapped.scene.sensors["contact_forces"].find_bodies(["Head_.*", "base"])
+    # Per-link contact, because `undesired_contacts` is a bounded count over eight links at once and
+    # cannot say which of them is on the floor. The front stance spent four training runs on a
+    # symptom that turned out to be an unmeasured contact; this is the cheap way not to repeat it.
+    sensor = env.unwrapped.scene.sensors["contact_forces"]
+    watch_ids, watch_names = sensor.find_bodies([".*_thigh", ".*_calf", ".*_hip", ".*_foot", "base", "Head_.*"])
     # The joints carrying the robot's weight in this stance, by group. The thigh joint is the one
     # `feat/biped`'s hardware trace found pinned at the actuator ceiling.
     joint_groups = {
@@ -130,6 +139,7 @@ def main():
     hip_z = torch.zeros(steps, num_envs, device=device)
     head_z = torch.zeros(steps, num_envs, device=device)
     head_force = torch.zeros(steps, num_envs, device=device)
+    link_force = torch.zeros(steps, num_envs, len(watch_ids), device=device)
     # Velocity tracking, measured rather than read off the reward. Both tracking terms are wrapped
     # in the upright ramp, so their logged values mix "how well it follows the command" with "how
     # far into the stance it is" -- two runs can differ on the second and look different on the
@@ -168,6 +178,7 @@ def main():
         base_z[step] = robot.data.root_pos_w[:, 2]
         hip_z[step] = robot.data.body_pos_w[:, stance_hip_ids, 2].mean(dim=-1)
         head_z[step] = robot.data.body_pos_w[:, head_ids, 2].amin(dim=-1)
+        link_force[step] = torch.linalg.norm(sensor.data.net_forces_w[:, watch_ids, :], dim=-1)
         head_force[step] = torch.linalg.norm(
             env.unwrapped.scene.sensors["contact_forces"].data.net_forces_w[:, head_sensor_ids, :], dim=-1
         ).amax(dim=-1)
@@ -230,6 +241,23 @@ def main():
     print(f"  head/trunk contact, peak    (N)  {quantiles(peak(head_force))}")
     touching = ((head_force > 1.0) & alive).float().sum(dim=0) / counts.clamp(min=1).float()
     print(f"  head/trunk touching, fraction   {quantiles(touching[live])}")
+    print()
+    print("  per-link ground contact -- fraction of live steps above 1 N, and peak force")
+    duty = ((link_force > 1.0) & alive.unsqueeze(-1)).float().sum(dim=0) / counts.clamp(min=1).float().unsqueeze(-1)
+    peak_link = torch.where(alive.unsqueeze(-1), link_force, torch.zeros_like(link_force)).amax(dim=0)
+    order = duty[live].mean(dim=0).argsort(descending=True)
+    for index in order.tolist():
+        share = duty[live][:, index].mean().item()
+        if share < 0.0005:
+            continue
+        touching_link = (link_force[:, :, index] > 1.0) & alive
+        # Contacts per second and mean length of one: 0.6% of steps is a light periodic scrape if it
+        # arrives twice a second in 3 ms touches, and a rare knock if it is one long press.
+        edges = (touching_link[1:] & ~touching_link[:-1]).float().sum(dim=0)[live]
+        rate = (edges / (counts[live].float() * step_dt)).mean().item()
+        length = (touching_link.float().sum(dim=0)[live] / edges.clamp(min=1)).mean().item() * step_dt
+        print(f"    {watch_names[index]:<12} duty {share:6.1%}   peak {peak_link[live][:, index].max():8.1f} N"
+              f"   {rate:5.2f}/s   {length * 1000:5.0f} ms each")
     # Averaged over the steps where a move was actually asked for. Including the standing
     # environments would reward a policy for holding still in the 10% that are commanded to.
     moving = alive & (commanded > 0.1)
