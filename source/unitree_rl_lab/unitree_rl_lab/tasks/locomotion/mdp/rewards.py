@@ -933,6 +933,91 @@ def goal_arrival_reward(
     return torch.where(is_last_step, reward, torch.zeros_like(reward))
 
 
+def wall_body_height_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str = "base_velocity",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    wall_height_range: tuple[float, float] = (0.10, 0.60),
+    wall_distance: float = 1.25,
+    gate_width: float = 0.6,
+    gate_width_far: float | None = None,
+    nominal_clearance: float = 0.15,
+    std: float = 0.15,
+) -> torch.Tensor:
+    """Reward the base for reaching wall-top-plus-clearance height while near the wall
+    and before arriving, on the theory that the policy is failing to climb specifically
+    because nothing tells it to lift its body until a foot is already on top of the
+    wall to push off from (Try26 -> Try34's checkpoint stalls right at the wall face;
+    see sandbox/SUMMARY.md).
+
+    Unlike ``base_height_climb_reward`` (this module, used by the Go2 jump lineage),
+    which senses the terrain height under/around the robot via the nearest
+    ``height_scanner`` ray, this uses the wall's *known* geometry directly -- the exact
+    thing this project's ``MixedGoalVelocityCommand``/terrain generator already have,
+    rather than reconstructing it noisily from a sensor built for continuous terrain
+    (stairs), not a single discrete obstacle. Concretely:
+
+    * "near the wall, not yet crossed" -- gated on distance from the env's own spawn
+      origin landing within ``gate_width`` *before* ``wall_distance`` (the wall ring's
+      own distance from spawn, a fixed property of the terrain layout the caller must
+      pass in to match whichever ``MeshThinWallTerrainCfg``/
+      ``MeshSlopedThinWallTerrainCfg`` is in use -- see that terrain's own
+      ``size``/``border_width``/``wall_spacing`` to derive it, e.g.
+      ``(size - 2*border_width)/2 - 0.5*wall_spacing``) and within ``gate_width_far``
+      *past* it (``gate_width_far`` defaults to ``gate_width``, i.e. a symmetric window,
+      when left unset -- Try36's original behaviour). Distance from spawn is a coarse,
+      direction-agnostic proxy (thin_wall's ring has four sides, and the goal only ever
+      directs a robot toward one of them), not an exact "have you crossed this specific
+      wall" test, but is simple, robust to which terrain variant is active, and doesn't
+      depend on a query point/lookahead direction like a height-scan approach would.
+    * wall height -- not read from a sensor, but recomputed from this env's own
+      ``terrain_levels`` through the *same* ``wall_height_range`` lerp the terrain
+      generator itself used at mesh-generation time (``difficulty = terrain_levels /
+      (max_terrain_level - 1)``), so it always matches whichever row the env is
+      currently on, not a single global constant.
+
+    ``target_z = wall_height + nominal_clearance`` -- deliberately a bit *above* the
+    wall top, not level with it, so the term keeps pulling the body up past the
+    minimum needed to clear the edge, rather than rewarding a base that's merely level
+    with (and likely still catching on) the top surface.
+
+    Zeroed on "rough" columns (if the command term has that concept) and once arrived,
+    same as the other goal-directed rewards in this module -- this term's job is done
+    once the robot is past the wall, and it should not fight ``goal_dont_wait_penalty``
+    /``goal_arrival_reward``'s "stop and hold at ordinary standing height" objective
+    after that point.
+    """
+    command_term = env.command_manager.get_term(command_name)
+    asset = env.scene[asset_cfg.name]
+
+    pos_xy = asset.data.root_pos_w[:, :2]
+    origin_xy = env.scene.env_origins[:, :2]
+    signed_distance = torch.norm(pos_xy - origin_xy, dim=-1) - wall_distance
+    far_gate = gate_width if gate_width_far is None else gate_width_far
+    near_wall = (signed_distance > -gate_width) & (signed_distance < far_gate)
+
+    goal_vec_w = command_term.goal_pos_w - pos_xy
+    goal_distance = torch.norm(goal_vec_w, dim=-1)
+    arrived = goal_distance < command_term.cfg.arrival_radius
+
+    terrain = env.scene.terrain
+    if terrain.terrain_origins is None or terrain.cfg.terrain_generator is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    difficulty = terrain.terrain_levels.float() / max(terrain.max_terrain_level - 1, 1)
+    wall_height = wall_height_range[0] + difficulty * (wall_height_range[1] - wall_height_range[0])
+    target_z = wall_height + nominal_clearance
+
+    base_z = asset.data.root_pos_w[:, 2]
+    reward = torch.exp(-torch.square(base_z - target_z) / std**2)
+
+    active = near_wall & ~arrived
+    rough_env_mask = _rough_env_mask(command_term)
+    if rough_env_mask is not None:
+        active = active & ~rough_env_mask
+
+    return torch.where(active, reward, torch.zeros_like(reward))
+
+
 def undesired_contacts_column_aware(
     env: ManagerBasedRLEnv,
     threshold: float,

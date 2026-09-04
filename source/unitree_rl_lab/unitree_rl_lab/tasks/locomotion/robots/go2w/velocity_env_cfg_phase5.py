@@ -306,6 +306,44 @@ class RewardsCfgPhase5(RewardsCfgPhase3):
     this default's own latest checkpoint whenever "trembles/creeps under a zero
     command" needs addressing, rather than baked into this class. See sandbox/
     SUMMARY.md for the full ablation record.
+
+    wall_body_height added 2026-09-04 (folded from Go2w-v1-Phase5-Try39):
+    ``mdp.wall_body_height_reward``, rewarding the base for reaching wall-top-plus-
+    clearance height while near the wall and before arriving. Nothing else in this
+    reward set ever sees base *height* -- ``goal_position_tracking``/
+    ``track_lin_vel_xy_exp`` both only measure horizontal progress -- so a robot with
+    its front feet on the wall and its torso still low had no local gradient toward
+    "lift the torso", only "keep going forward" ones that can't tell climbing from
+    being stuck. See that function's own docstring in mdp/rewards.py for why it reads
+    the wall's known geometry (terrain_levels -> wall_height_range lerp) instead of a
+    height-scan sensor.
+
+    Three variants of this term were trained from this default's own checkpoint
+    (Try36 unconditional / Try37 one-time bonus / Try38 progress-gated / Try39
+    extended far-side gate). Try36's own MuJoCo check was the first real progress on
+    this problem in the whole campaign -- the robot began rearing up and propping its
+    front legs on the wall's top edge -- but it held that leaning pose indefinitely,
+    since a continuous per-step height reward pays as well for holding it forever as
+    for passing through it. Try39's ``gate_width_far=1.5`` (vs. the original symmetric
+    0.6 m) keeps the pull active up to 1.5 m *past* the wall, so it does not taper off
+    right where the hindquarters still need to come over; that is the version folded
+    here. Play-checked at pinned 0.60 m: still mostly unable to cross at this point,
+    but this is the reward baseline Try40/41/42's termination fixes build on, and with
+    Try41's relaxed base_contact on top roughly 30 % of individuals clear 0.60 m in
+    Play -- so the reward is load-bearing for that result even though it does not get
+    there alone.
+
+    Caution when reading terrain_levels around this fold: Try39 measures *higher*
+    terrain_levels than Try41/42 (6.77 vs ~6.35 at matched iterations) while being
+    *worse* at actually crossing 0.60 m in Play. The curriculum promotes on net
+    displacement from spawn (> tile_size*0.35 = 1.925 m) and demotes on base_contact/
+    bad_orientation, so relaxing base_contact removes a demotion trigger but also
+    enables a "leaning on the wall at ~1.25 m until time_out" state that neither
+    promotes nor demotes -- the ratchet stalls (visible as Try41's plateau at ~6.2-6.3,
+    alongside its higher mean goal_distance, 1.93 vs 1.60, and longer episodes,
+    904 vs 703). The whole 6.77-vs-6.35 gap is ~2 cm of wall height either way. This
+    is the same "inflated plateau" pattern already recorded for the pre-Try26 default
+    (terrain_levels 5.01 at 74 % base_contact) -- see sandbox/SUMMARY.md.
     """
 
     undesired_contacts = RewardsCfgPhase3().undesired_contacts.replace(
@@ -346,6 +384,19 @@ class RewardsCfgPhase5(RewardsCfgPhase3):
         func=mdp.goal_arrival_reward,
         weight=0.15,
         params={"command_name": "base_velocity"},
+    )
+    wall_body_height = RewTerm(
+        func=mdp.wall_body_height_reward,
+        weight=1.0,
+        params={
+            "command_name": "base_velocity",
+            "wall_height_range": (0.10, 0.60),
+            "wall_distance": 1.25,
+            "gate_width": 0.6,
+            "gate_width_far": 1.5,
+            "nominal_clearance": 0.15,
+            "std": 0.15,
+        },
     )
 
 

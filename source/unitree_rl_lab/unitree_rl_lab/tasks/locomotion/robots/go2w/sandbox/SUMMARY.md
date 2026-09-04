@@ -689,3 +689,89 @@ stillness is wanted (e.g. a slightly larger weight now that it's known not to
 destabilise training at -0.001, or addressing whichever of the earlier hypotheses --
 GRU hidden-state momentum, sparse "just arrived" training experience -- turns out to
 still apply).
+
+### 2026-09-03/04: the 0.60 m wall -- a body-height reward (Try35-39, one folded) and
+### the termination that was blocking it (Try40-42)
+
+Starting point: the default's best confirmed result was a 0.50 m crossing, with 0.60 m
+unreliable and MuJoCo/Play describing the failure as "gets front feet up but doesn't
+pull the body up and over".
+
+**Try35 (sloped wall terrain)** -- a new terrain
+(`mdp.sloped_thin_wall_terrain`/`MeshSlopedThinWallTerrainCfg`) whose crossing face
+ramps 30 -> 90 degrees with difficulty instead of being sheer at every row, so the
+policy meets a walkable slope before a vertical face. Needed the tile grown 5.5 -> 11.0 m
+(a 30-degree ramp at 0.6 m height runs ~1.04 m per face, and the goal still needs room
+beyond the ramp's outer edge). Trained 1500 iterations: terrain_levels 6.05,
+base_contact 25.0%, bad_orientation 13.1%. MuJoCo-checked: **did not solve the
+crossing.** Still registered; the terrain itself is reusable if a slope-based approach
+is revisited.
+
+**Try36 (wall_body_height_reward)** -- `mdp.wall_body_height_reward`, rewarding the
+base for reaching wall-top-plus-clearance height while near the wall and before
+arriving, reading the wall's *known* geometry (terrain_levels -> `wall_height_range`
+lerp, distance-from-spawn gate) rather than a height-scan sensor built for continuous
+terrain. Trained 1500 iterations: terrain_levels 6.74 (highest at the time),
+base_contact 35.1%, bad_orientation 4.0%. MuJoCo-checked: **the first real behavioural
+progress of the whole campaign** -- the robot began rearing up and propping its front
+legs on the wall's top edge -- but it settled into holding that leaning pose
+indefinitely instead of continuing over. Diagnosis: a continuous per-step reward for
+height alone pays exactly as well for "hold this pose forever" as for "pass through it
+on the way over", and once at target height the reward can only go *down* by leaving.
+
+**Try37/38/39** each isolated one fix for that specific local optimum, all 1000
+iterations from the same default checkpoint:
+
+| Try | fix | terrain_levels | base_contact | bad_orientation | wall_body_height |
+|---|---|---|---|---|---|
+| Try37 | one-time bonus (`wall_body_height_boost_reward`) | 6.65 | 36.9% | 4.4% | 0.0043 |
+| Try38 | gated on progress toward goal (`min_progress_speed=0.15`) | 6.66 | 36.3% | 4.5% | 0.0387 |
+| Try39 | far-side gate extended (`gate_width_far=1.5`) | 6.76 | 36.6% | 3.9% | 0.0555 |
+
+**Try39 folded into the default `RewardsCfgPhase5` 2026-09-04** (see that class's own
+docstring) and deleted; its checkpoint promoted to be the default's own.
+
+**Try40/41/42 -- the termination was ending the crossing attempt itself.** Try39's Play
+check found individuals dying *at the moment the torso touched the wall*. Reading
+`mdp.illegal_contact_excluding_top` explained it: its exemption only ever spares
+*upward*-dominant reaction force (resting on a wall's flat top), so the
+horizontal-dominant reaction from a torso pressed against a vertical face is
+indistinguishable, to that function, from slamming into it at speed -- and with
+threshold 400 N against ~191.5 N body weight, plus the magnitude test using the contact
+history's *maximum*, the impact spike as the torso first meets the wall clears the bar
+easily. **The exemption written to protect climbing technique was blocking the specific
+technique a 0.60 m wall needs.** Three fixes, 800 iterations each:
+
+| Try | fix | terrain_levels | base_contact | bad_orientation | time_out | wall_body_height |
+|---|---|---|---|---|---|---|
+| (Try39 baseline) | none | 6.76 | 36.6% | 3.9% | 59.4% | 0.0555 |
+| Try42 | horizontal contact <= 200 N exempt (`illegal_contact_excluding_supported`) | 6.35 | 10.1% | 7.7% | 82.1% | 0.0704 |
+| Try41 | threshold 400 -> 900 N | 6.37 | 11.9% | 7.5% | 80.6% | 0.0742 |
+| Try40 | speed gate 0.8 m/s (`illegal_contact_speed_gated`) | 6.03 | 0.44% | 9.6% | 90.0% | 0.0811 |
+
+Monotone in how much each relaxes base_contact: base_contact rate falls, the
+wall_body_height reward earned rises, terrain_levels falls. **Try41 Play-checked at
+pinned 0.60 m: roughly 30 % of individuals clear it** (vs. almost none for the
+unrelaxed baseline) -- MuJoCo still could not. Try41 and Try42 are nearly
+indistinguishable on every metric; Try42 is the better one to pursue on design grounds
+rather than numbers (it keeps the 400 N ceiling so a genuine high-speed collision still
+terminates, where Try41's blanket 900 N tolerates any impact in any direction -- exactly
+the move Lesson 3 warns about, and Try4 historically saw a policy charge into walls
+more recklessly when base_contact was removed).
+
+**terrain_levels is ranking these backwards -- do not use it to choose between them.**
+Try39 measures higher terrain_levels than Try41/42 (6.77 vs ~6.35 at *matched*
+iterations -- iteration count was checked and is not the explanation) while being
+clearly worse at crossing 0.60 m in Play. Mechanism: the curriculum promotes on net
+displacement from spawn (> tile_size*0.35 = 1.925 m) and demotes on base_contact/
+bad_orientation, so relaxing base_contact removes a demotion trigger but simultaneously
+enables a "leaning on the wall at ~1.25 m until time_out" state that neither promotes
+nor demotes -- the ratchet stalls. Supporting evidence: Try41 plateaus at ~6.2-6.3
+while Try39 keeps climbing to ~6.8; Try41's mean goal_distance is *higher* (1.93 vs
+1.60) despite surviving longer (904 vs 703 steps), i.e. the extra survival time is not
+being spent getting to the goal. Note this mechanism is inferred from those aggregates,
+not from a direct measurement of the distance-from-spawn distribution at reset -- that
+would settle it. Either way the whole gap is ~2 cm of wall height (level 6.77 -> 0.476 m
+vs 6.35 -> 0.451 m), and both train on ~45-48 cm walls, not 60 cm. Same "inflated
+plateau" pattern already recorded for the pre-Try26 default (terrain_levels 5.01 at
+74 % base_contact).
