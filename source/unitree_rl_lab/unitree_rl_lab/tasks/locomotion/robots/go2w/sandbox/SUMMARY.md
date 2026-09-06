@@ -775,3 +775,83 @@ would settle it. Either way the whole gap is ~2 cm of wall height (level 6.77 ->
 vs 6.35 -> 0.451 m), and both train on ~45-48 cm walls, not 60 cm. Same "inflated
 plateau" pattern already recorded for the pre-Try26 default (terrain_levels 5.01 at
 74 % base_contact).
+
+### 2026-09-04/06: Try43-45 -- the curriculum's promotion rule, then friction from both
+### sides. All null; sandbox cleared.
+
+Continuing from Try40-42 (the base_contact relaxation, above), three more attempts on
+the 0.60 m wall. None improved on Try42, and all were deleted 2026-09-06 along with the
+rest of the sandbox.
+
+**Try43 -- promotion distance realigned to the wall** (`promote_distance=1.6`, vs the
+inherited `tile_size * 0.35` = 1.925 m). The motivating arithmetic still stands and is
+preserved in `mdp.terrain_levels_climb_demote_on_fail`'s own docstring: the wall ring
+sits at 1.25 m and its far face at 1.45 m, so clearing the wall leaves the robot ~0.48 m
+short of promotion, and with `arrival_radius` 0.5 m wider than that whole window, a
+robot that genuinely crosses *and* arrives can still fail to promote.
+
+Result: terrain_levels **4.12** (vs Try42's 6.22) -- and the trajectory shows it never
+climbed at all, sitting at 4.1-4.6 (its initial random draw is ~4.49) for the entire
+2000 iterations, while `wall_body_height` ran 0.39 -> 0.60 (6x Try42's 0.08) and
+`goal_arrival` stayed at ~0 throughout. base_contact 0.14 %, time_out 97 %.
+
+**Two things to take from this, and one mistake to not repeat.** The mistake: this was
+not a clean test. It changed the promotion rule *and* the bootstrap point (Phase2
+instead of Try42's competent checkpoint), so `promote_distance` itself remains untested
+rather than disproved. What it did establish, more sharply than the thing it was aimed
+at: **trained from scratch, `wall_body_height` plus a relaxed `base_contact` is a trap.**
+The policy finds "walk to the wall, rear up to target height, stand there for 20 s" long
+before it could find "cross", and then nothing dislodges it -- it does not terminate
+(base_contact relaxed), it is not required to arrive (the arrival reward is sparse and
+tiny), and it does not demote (parked at ~1.25 m is neither < 0.5 m nor > the promotion
+distance). The earlier "leaning" diagnosis from Try36 was the same phenomenon seen
+through a checkpoint that already knew how to climb.
+
+**Try44 / Try45 -- friction, from both sides.** The hypothesis: climbing needs the front
+wheels to plant on the wall's top face and hold while the lower legs are pulled up, and
+they cannot because they slip. Two separable mechanisms, so two tries, both 1000
+iterations from Try42's checkpoint so they are directly comparable to it and to each
+other:
+
+| | terrain_levels | base_contact | bad_orientation | time_out | goal_distance | wall_body_height |
+|---|---|---|---|---|---|---|
+| Try42 (baseline) | 6.22 | 10.3 % | 6.5 % | 83.2 % | 1.98 | 0.080 |
+| Try44 (surface friction) | 5.88 | 2.6 % | 8.7 % | 88.5 % | 2.34 | 0.088 |
+| Try45 (wheel-joint friction) | 6.15 | 8.4 % | 9.0 % | 82.7 % | 1.90 | 0.069 |
+
+*Try44* raised surface grip: terrain material 1.0 -> 2.0 **and** the startup robot-side
+randomization 0.3-1.2 -> 1.0-1.5. Both were needed because
+`friction_combine_mode="multiply"` makes effective friction the *product* -- at the
+default values a third of envs train at 0.3-0.6, genuinely slippery. Together: effective
+2.0-3.0.
+
+*Try45* raised wheel-joint static friction 0.01 -> 2.0 N*m. Note **`ActuatorBaseCfg.friction`
+is an effort (N*m) on Isaac Sim 5.x, not the unitless coefficient it was on 4.5** -- so
+the stock 0.01 is 0.1 N of tangential resistance at the 0.086 m wheel radius against a
+~191.5 N body weight, i.e. nothing. 2.0 N*m gives 23 N (12 % of body weight) for 8.5 % of
+the wheel's torque budget. This tested what Try44 structurally could not: surface
+friction resists *sliding*, not *rolling*, and a wheel on the wall top can roll off no
+matter how grippy the surface is.
+
+Both null. Neither moved terrain_levels off the same ~6.2 plateau, and no other metric
+pointed positive. Together they rule out grip as the blocker from both directions --
+which also removes the reason to build the targeted "high friction on the wall's top
+face only" version. Worth recording how that would have to be done if it ever comes
+back: `TerrainImporter.import_mesh` takes the whole generated terrain as **one prim with
+one physics material** (the generator has already merged every sub-terrain by then), so
+per-face friction means spawning separate high-friction cap prims over each wall top --
+~160 of them for the 4x10 grid.
+
+**Where this leaves things.** The best result of the whole campaign is still Try41's
+~30 % of individuals clearing 0.60 m in Play (never in MuJoCo), and Try42 is the
+config that survived. Everything since has been null. The single most likely remaining
+explanation is a reward-structure one rather than a physics one: **while parking at the
+wall outscores crossing it, no change to the physics will produce a crossing.**
+`wall_body_height` pays weight 1.0 every step; `goal_arrival` pays weight 0.15 once per
+episode. Two guards against exactly this were built and measured -- Try37's one-time
+bonus and Try38's progress gate -- but both ran while `base_contact` still killed
+leaners, so neither could show its value; they should be retried on top of the relaxed
+termination. A related calibration issue was found and never tested:
+`goal_radius_range` (1.75-2.5 m) with `arrival_radius` 0.5 m means a goal drawn at the
+low end can be "arrived at" from ~1.25 m -- the near side of the wall -- so
+`goal_arrival_reward` can pay out without a crossing at all.
