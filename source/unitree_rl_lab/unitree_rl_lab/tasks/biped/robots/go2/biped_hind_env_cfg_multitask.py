@@ -79,8 +79,6 @@ class BipedHindCommandsCfg(BipedFrontCommandsCfg):
         self.base_velocity.ranges.lin_vel_y = (-0.5, 0.5)
         self.base_velocity.limit_ranges.lin_vel_y = (-0.5, 0.5)
         self.handstand.stance = mdp.STANCE_HIND
-        self.handstand.stance_foot_names = tuple(STANCE_FEET)
-        self.handstand.lifted_foot_names = tuple(LIFTED_FEET)
 
 
 @configclass

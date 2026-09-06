@@ -63,3 +63,39 @@ gym.register(
         "rsl_rl_cfg_entry_point": "unitree_rl_lab.tasks.dynamic.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
     },
 )
+
+
+# =================================================================================================
+# Go2-Multitask-Biped -- both stances in one network.
+#
+# What the mixture of experts actually wants: one bipedal expert, not two. The stance is drawn per
+# episode and read from the observation's stance column, which has carried +-1 since the layout was
+# widened for exactly this.
+#
+# Start it from one of the single-stance policies rather than from scratch -- half the answer is
+# already in those weights, and `feat/biped`'s failed attempt at a mode-conditioned policy had
+# nothing to start from:
+#
+#   python scripts/rsl_rl/train_and_aggregate.py --task Go2-Multitask-Biped \
+#       --previous-task Go2-Multitask-Biped-Hind
+#
+# Watch `handstand/success_front` against `handstand/success_hind`. Collapsing onto one stance is
+# the way this fails, and the population mean hides it.
+# =================================================================================================
+
+gym.register(
+    id="Go2-Multitask-Biped",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.biped_env_cfg_multitask:RobotEnvCfgBiped",
+        "play_env_cfg_entry_point": f"{__name__}.biped_env_cfg_multitask:RobotPlayEnvCfgBiped",
+        # The one agent config in this family that is not the shared base: it adds the left-right
+        # mirror augmentation. Absolute, not an f-string -- `train.py` and `list_envs.py` build
+        # their task lists by filtering on this string starting with "unitree_rl_lab.", and they
+        # import this package under a shortened name, so an f-string makes the task unselectable.
+        "rsl_rl_cfg_entry_point": (
+            "unitree_rl_lab.tasks.biped.agents.rsl_rl_ppo_cfg:BipedPPORunnerCfg"
+        ),
+    },
+)

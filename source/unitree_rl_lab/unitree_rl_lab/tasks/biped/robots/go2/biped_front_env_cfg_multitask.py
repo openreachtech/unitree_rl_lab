@@ -123,8 +123,6 @@ class BipedFrontCommandsCfg:
         asset_name="robot",
         stance=mdp.STANCE_FRONT,
         pinned=True,
-        stance_foot_names=tuple(STANCE_FEET),
-        lifted_foot_names=tuple(LIFTED_FEET),
     )
 
 

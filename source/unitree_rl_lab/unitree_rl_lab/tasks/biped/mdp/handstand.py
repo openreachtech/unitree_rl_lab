@@ -67,11 +67,19 @@ class HandstandCommand(CommandTerm):
         self.scheduled_trigger_time = torch.zeros(self.num_envs, device=self.device)
         self.hold_duration = torch.zeros(self.num_envs, device=self.device)
 
-        self.feet_ids, _ = self.robot.find_bodies(cfg.stance_foot_names, preserve_order=True)
-        self.lifted_ids, _ = self.robot.find_bodies(cfg.lifted_foot_names, preserve_order=True)
+        # Both pairs, always. Which is the stance and which is lifted follows `stance` per
+        # environment -- see `lifted_contact`.
+        self.front_foot_ids, _ = self.robot.find_bodies(cfg.front_foot_names, preserve_order=True)
+        self.hind_foot_ids, _ = self.robot.find_bodies(cfg.hind_foot_names, preserve_order=True)
 
         for name in ("pitch_alignment", "roll_error", "base_height", "upright", "airborne", "success"):
             self.metrics[name] = torch.zeros(self.num_envs, device=self.device)
+        # Split by stance, because the population mean cannot distinguish "both stances work" from
+        # "one works and the other never leaves the floor" -- and collapsing onto a single stance is
+        # the specific way the unified task is expected to fail if it fails.
+        for name in ("success_front", "success_hind", "share_front"):
+            self.metrics[name] = torch.zeros(self.num_envs, device=self.device)
+
 
     # -- state ------------------------------------------------------------------------------
 
@@ -154,10 +162,28 @@ class HandstandCommand(CommandTerm):
 
     @property
     def lifted_contact(self) -> torch.Tensor:
-        """Fraction of the lifted-end feet currently touching the ground, in ``[0, 1]``."""
+        """Fraction of the *lifted* end's feet touching the ground, in ``[0, 1]``, per environment.
+
+        Which pair is lifted follows the commanded stance, so this reads correctly in the unified
+        task where neighbouring environments are standing on opposite ends of the robot.
+
+        It was a fixed list once, and the unified task set that list to all four feet on the
+        reasoning that both pairs are candidates there. That silently broke :attr:`success`, which
+        requires this to be exactly zero: with four feet in the list, "nothing lifted is touching"
+        becomes "no foot is touching at all", which a robot standing on two legs never satisfies.
+        The metric then counted the moments all four feet happened to leave the ground rather than
+        the stance being held -- so it still separated a real two-legged gait from a tripod, and the
+        comparisons drawn from it were not meaningless, but the number it reported was not the
+        success rate it was labelled as.
+        """
         sensor = self._env.scene.sensors[self.cfg.contact_sensor_name]
-        forces = sensor.data.net_forces_w[:, self.lifted_ids, :]
-        return (torch.linalg.norm(forces, dim=-1) > self.cfg.contact_threshold).float().mean(dim=-1)
+        threshold = self.cfg.contact_threshold
+
+        def touching(ids: list[int]) -> torch.Tensor:
+            forces = sensor.data.net_forces_w[:, ids, :]
+            return (torch.linalg.norm(forces, dim=-1) > threshold).float().mean(dim=-1)
+
+        return torch.where(self.stance > 0, touching(self.hind_foot_ids), touching(self.front_foot_ids))
 
     @property
     def success(self) -> torch.Tensor:
@@ -169,7 +195,18 @@ class HandstandCommand(CommandTerm):
     def _resample_command(self, env_ids: Sequence[int]):
         if len(env_ids) == 0:
             return
-        self.stance[env_ids] = self.cfg.stance
+        if self.cfg.stance_front_probability is None:
+            self.stance[env_ids] = self.cfg.stance
+        else:
+            # Drawn per episode, not per step: a stance is a mode the robot commits to and holds,
+            # and the policy has to be able to plan a rise around it. Resampling mid-episode would
+            # ask it to reverse a 90-degree pitch on no notice, which is a different skill.
+            draw = torch.rand(len(env_ids), device=self.device)
+            self.stance[env_ids] = torch.where(
+                draw < self.cfg.stance_front_probability,
+                torch.full_like(draw, STANCE_FRONT),
+                torch.full_like(draw, STANCE_HIND),
+            )
         if self.cfg.pinned:
             # On from the first step of the episode, for the whole episode. `trigger_step` is set
             # to the current step rather than 0 so `elapsed_since_trigger` is measured from the
@@ -209,6 +246,14 @@ class HandstandCommand(CommandTerm):
         self.metrics["airborne"][:] = (1.0 - self.lifted_contact) * enabled
         self.metrics["success"][:] = self.success.float()
 
+        # Conditional means, written into every slot so the manager's own average over environments
+        # reproduces them. A stance with no environments in it reports 0 rather than a stale value.
+        front = self.stance > 0
+        success = self.success.float()
+        self.metrics["share_front"][:] = front.float().mean()
+        for name, mask in (("success_front", front), ("success_hind", ~front)):
+            self.metrics[name][:] = success[mask].mean() if bool(mask.any()) else 0.0
+
     def _set_debug_vis_impl(self, debug_vis: bool):
         pass
 
@@ -226,8 +271,20 @@ class HandstandCommandCfg(CommandTermCfg):
     this term, not resampled on a timer, so it is pushed beyond any episode. Same convention the
     jump command uses."""
 
+    stance_front_probability: float | None = None
+    """Probability of drawing the front stance, resampled per episode. ``None`` pins every
+    environment to :attr:`stance` instead.
+
+    Set for the unified task, where one network serves both stances and the observation's stance
+    column is what tells it which. ``feat/biped`` spent a whole round failing to make one policy
+    respond to a mode observation, so this is not free -- but its modes were quadruped against
+    biped, where one is far easier and collects most of the reward whatever the command says.
+    Front against hind are siblings of comparable difficulty with no easy option to collapse onto,
+    and unlike that round this one starts from two policies that already work.
+    """
+
     stance: float = STANCE_FRONT
-    """Which end stands. The front stance is the one to train first: ``feat/biped`` got both
+    """Which end stands, when ``stance_front_probability`` is None. The front stance is the one to train first: ``feat/biped`` got both
     working, and the hind-leg one needed seven sandbox rounds to stop shuffling on a tripod while
     the front stance did not."""
 
@@ -253,8 +310,11 @@ class HandstandCommandCfg(CommandTermCfg):
     low so the terms that describe bipedal walking begin to apply while the robot is still on its
     way up, rather than switching on all at once at the top."""
 
-    stance_foot_names: tuple[str, ...] = ("FR_foot", "FL_foot")
-    lifted_foot_names: tuple[str, ...] = ("RR_foot", "RL_foot")
+    front_foot_names: tuple[str, ...] = ("FR_foot", "FL_foot")
+    hind_foot_names: tuple[str, ...] = ("RR_foot", "RL_foot")
+    """The two pairs, named by where they are on the robot rather than by their role. The role is
+    decided per environment by :attr:`stance`, which is what lets one command term serve a task
+    where both stances are running at once."""
 
     contact_sensor_name: str = "contact_forces"
     contact_threshold: float = 1.0

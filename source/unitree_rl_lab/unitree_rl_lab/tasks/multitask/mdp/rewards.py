@@ -17,7 +17,9 @@ wrapper that forwards arbitrary arguments cannot be expressed that way::
 So the wrapped term's own arguments live in a nested ``term_params`` dict. The cost is that Isaac
 Lab resolves ``SceneEntityCfg`` entries only at the top level of ``params``
 (``manager_base.py:_process_term_cfg_at_play``), which would leave a nested one without its
-``joint_ids``/``body_ids``. :func:`resolve_gated_term_params` does that resolution once at startup.
+``joint_ids``/``body_ids``. :func:`resolve_gated_term_params` does that resolution once at startup,
+recursively -- ``..biped.mdp.stance_aware`` nests a second dict inside ``term_params``, and an
+unresolved entity does not fail, it silently selects every body.
 """
 
 from __future__ import annotations
@@ -102,9 +104,22 @@ def resolve_gated_term_params(env: ManagerBasedRLEnv, env_ids=None) -> None:
             params = manager.get_term_cfg(name).params.get("term_params")
             if not isinstance(params, dict):
                 continue
-            for key, value in params.items():
-                if isinstance(value, SceneEntityCfg):
-                    try:
-                        value.resolve(env.scene)
-                    except ValueError as error:
-                        raise ValueError(f"Error while parsing '{name}:term_params:{key}'. {error}")
+            _resolve_nested(env, params, f"{name}:term_params")
+
+
+def _resolve_nested(env: ManagerBasedRLEnv, params: dict, where: str) -> None:
+    """Resolve every ``SceneEntityCfg`` in ``params``, however deeply nested.
+
+    Recursive because ``stance_aware`` puts a second dict between the term and its scene entities
+    (``term_params`` -> ``front_params`` -> ``asset_cfg``). A one-level resolver leaves those with
+    ``body_ids`` at its ``slice(None)`` default, which does not fail -- it silently selects *every*
+    body, which is how ``feet_slide`` came to be evaluated over all seventeen links.
+    """
+    for key, value in params.items():
+        if isinstance(value, SceneEntityCfg):
+            try:
+                value.resolve(env.scene)
+            except ValueError as error:
+                raise ValueError(f"Error while parsing '{where}:{key}'. {error}")
+        elif isinstance(value, dict):
+            _resolve_nested(env, value, f"{where}:{key}")

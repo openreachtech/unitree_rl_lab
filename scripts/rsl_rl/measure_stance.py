@@ -32,6 +32,11 @@ parser.add_argument("--delay", type=int, default=None,
                     help="Pin the actuation delay to this many physics steps (5 ms each) instead of\n"
                          "drawing it per environment. The stance's hardware failure was reproduced in\n"
                          "simulation by delay alone, so a sweep over it is the acceptance test.")
+parser.add_argument("--stance", type=str, default=None, choices=["front", "hind"],
+                    help="Restrict the report to environments commanded into this stance. Only the\n"
+                         "unified task draws both, and there its population figures average a stance\n"
+                         "that works with one that does not -- which is the same dilution that made\n"
+                         "the acrobatics metrics unreadable.")
 parser.add_argument("--settle-fraction", type=float, default=0.25,
                     help="Trailing fraction of each environment's run used for the 'settled' figures.")
 AppLauncher.add_app_launcher_args(parser)
@@ -208,6 +213,10 @@ def main():
 
     counts = alive.sum(dim=0)
     live = counts > 0
+    if args_cli.stance is not None:
+        wanted = 1.0 if args_cli.stance == "front" else -1.0
+        live = live & (command.stance == wanted)
+        print(f"[INFO] restricted to the {args_cli.stance} stance: {int(live.sum())} of {num_envs} envs")
     settle_from = (counts.float() * (1.0 - args_cli.settle_fraction)).long()
     index = torch.arange(steps, device=device).unsqueeze(-1)
     settled_mask = alive & (index >= settle_from.unsqueeze(0))
