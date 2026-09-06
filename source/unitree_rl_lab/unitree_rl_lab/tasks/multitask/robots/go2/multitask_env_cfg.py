@@ -47,6 +47,30 @@ from unitree_rl_lab.tasks.multitask.obs_spec import HISTORY_LENGTH
 # before it can initialise the mixture, exactly as the acrobatics expert does.
 ROBOT_CFG = UNITREE_GO2_CORRECTED_CFG
 
+# Actuation delay, in physics steps (``sim.dt`` = 5 ms, so one policy step is four of these), drawn
+# per environment on reset so the population spans the range.
+#
+# Carried from ``feat/biped``, where it was the difference between a stance that worked in two
+# simulators and one that worked on the robot. That policy's rise holds the stance shoulders at the
+# torque ceiling and lets the load set the speed -- pinned at exactly Y1 = 20.2 N*m at 3-7 rad/s,
+# which has almost no phase margin. With the command arriving 8-10 ms late (measured by
+# cross-correlating the published position command against the motor's torque response in a 1 kHz
+# hardware trace) that became a 4-6 Hz saturated limit cycle, and because the two shoulders
+# oscillated incoherently it produced a roll moment instead of a pitch-up: 43 degrees of lean on
+# hardware against 72 in simulation. A play sweep reproduced the failure with delay alone -- 0/8
+# falls at 0 ms, 8/8 at 40 ms -- and ruled out the actuator envelope and the initial condition.
+#
+# Applied to every multi-task environment rather than to the tasks that have been shown to need it.
+# A torque-saturated manoeuvre with no phase margin is not unique to the bipedal rise -- a flip's
+# take-off has the same shape, and has never been tested for it -- and, more practically, the
+# merged policy has to run under the same actuator its experts were trained under. Setting this per
+# task is how the merged environment ends up being the one that misses it.
+#
+# Keeping 0 in the range matters twice: part of the population keeps training the nominal case, and
+# a checkpoint trained without delay has somewhere to resume from.
+ACTUATOR_MIN_DELAY_STEPS = 0
+ACTUATOR_MAX_DELAY_STEPS = 6
+
 
 @configclass
 class MultitaskSceneCfg(RobotSceneCfgPhase1):
@@ -189,6 +213,10 @@ def apply_multitask_post_init(cfg) -> None:
     and the same action scale, which is what makes a weighted sum of their actions meaningful --
     this keeps that fixed in one place rather than in each config.
     """
+    actuator = cfg.scene.robot.actuators["GO2HV"]
+    actuator.min_delay = ACTUATOR_MIN_DELAY_STEPS
+    actuator.max_delay = ACTUATOR_MAX_DELAY_STEPS
+
     cfg.decimation = 4
     cfg.sim.dt = 0.005
     cfg.sim.render_interval = cfg.decimation

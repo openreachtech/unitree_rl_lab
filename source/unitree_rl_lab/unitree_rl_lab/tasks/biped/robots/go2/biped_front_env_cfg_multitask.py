@@ -79,10 +79,6 @@ FRONT_HIP_HEIGHT_TARGET = 0.30
 physically reach much past 0.426 m -- and without this term the trunk hunches until the nose
 scrapes while the root height reward reports nothing wrong."""
 
-ACTUATOR_MIN_DELAY_STEPS = 0
-ACTUATOR_MAX_DELAY_STEPS = 6
-"""0-30 ms at the 5 ms physics step, drawn per environment on reset. See the module docstring."""
-
 SPAWN_HEIGHT_DROP = 0.078
 """How far above its own standing height the robot spawns (0.400 m nominal against 0.322 m
 measured). Sampled over rather than removed, so the drop the old stances learned to use and the
@@ -502,13 +498,10 @@ class RobotEnvCfgBipedFront(ManagerBasedRLEnvCfg):
 
     def __post_init__(self):
         self.episode_length_s = 20.0
+        # The actuation delay this stance needs is applied by `apply_multitask_post_init`, which
+        # every multi-task environment goes through -- see the constants there for why it is not
+        # scoped to this task any more.
         apply_multitask_post_init(self)
-        # Modelling the deploy-time actuation lag is what makes this stance transfer; see the
-        # module docstring. Scoped to this task rather than to the shared robot config, which every
-        # other Go2 task also reads.
-        actuator = self.scene.robot.actuators["GO2HV"]
-        actuator.min_delay = ACTUATOR_MIN_DELAY_STEPS
-        actuator.max_delay = ACTUATOR_MAX_DELAY_STEPS
 
 
 @configclass
