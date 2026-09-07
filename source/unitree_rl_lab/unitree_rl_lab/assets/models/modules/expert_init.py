@@ -18,7 +18,7 @@ from __future__ import annotations
 import torch
 from rsl_rl.networks import MLP
 
-from ..moe_actor import EXPERT_ACROBATICS, EXPERT_LOCOMOTION, MoEActorCritic
+from ..moe_actor import EXPERT_ACROBATICS, EXPERT_BIPED, EXPERT_LOCOMOTION, MoEActorCritic
 from .weight_surgery import ColumnMap, _first_linear_key, expand_state_dict
 
 
@@ -67,6 +67,7 @@ def initialize_experts(
     policy: MoEActorCritic,
     locomotion_checkpoint: str | None = None,
     acrobatics_checkpoint: str | None = None,
+    biped_checkpoint: str | None = None,
     noise_std_mode: str = "min",
     policy_sources: dict[int, ColumnMap] | None = None,
     critic_sources: dict[int, ColumnMap] | None = None,
@@ -79,6 +80,10 @@ def initialize_experts(
             randomly initialised.
         acrobatics_checkpoint: ``model_*.pt`` from the acrobatics run, or None to leave expert 1
             randomly initialised.
+        biped_checkpoint: ``model_*.pt`` from the bipedal run, or None to leave expert 2 randomly
+            initialised. Slot 2 held a transition expert that was left random on purpose and never
+            earned any routing weight -- 0.000 while running, 0.001 in the hand-back bin -- so it
+            now holds a trained policy like the other two.
         policy_sources: Maps a narrower actor width to the column mapping that widens it, for
             checkpoints predating the unified observation. Supplied by the caller because the
             layout belongs to the task, not to the network. Omit to require an exact width.
@@ -99,7 +104,11 @@ def initialize_experts(
     for label, path, index in (
         ("locomotion", locomotion_checkpoint, EXPERT_LOCOMOTION),
         ("acrobatics", acrobatics_checkpoint, EXPERT_ACROBATICS),
+        ("biped", biped_checkpoint, EXPERT_BIPED),
     ):
+        if index >= len(policy.actor.experts):
+            report[label] = f"skipped (mixture has {len(policy.actor.experts)} experts)"
+            continue
         if path is None:
             report[label] = "random init (no checkpoint given)"
             continue

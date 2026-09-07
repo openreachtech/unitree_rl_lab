@@ -79,6 +79,16 @@ class HandstandCommand(CommandTerm):
         # the specific way the unified task is expected to fail if it fails.
         for name in ("success_front", "success_hind", "share_front"):
             self.metrics[name] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["takeoff_speed_limit"] = torch.zeros(self.num_envs, device=self.device)
+
+        # Whether the stance was reached at any point in its window, latched, plus the running
+        # tallies the take-off curriculum decides on. Latched rather than sampled at the end
+        # because a window that ends counts as a success if the robot ever got up in it -- reading
+        # `success` at the closing step would only ever catch the ones still holding it.
+        self._achieved = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.attempts = 0
+        self.successes = 0
+        self.takeoff_speed_limit = float(cfg.initial_takeoff_speed_limit)
 
 
     # -- state ------------------------------------------------------------------------------
@@ -87,6 +97,12 @@ class HandstandCommand(CommandTerm):
     def command(self) -> torch.Tensor:
         enabled = self.enabled.float()
         return torch.stack((enabled, self.stance * enabled), dim=-1)
+
+    @property
+    def commanded_speed(self) -> torch.Tensor:
+        """Magnitude of the commanded planar velocity, which the take-off gate reads."""
+        command = self._env.command_manager.get_command(self.cfg.velocity_command_name)
+        return torch.linalg.norm(command[:, :2], dim=-1)
 
     @property
     def elapsed_since_trigger(self) -> torch.Tensor:
@@ -195,7 +211,34 @@ class HandstandCommand(CommandTerm):
     def _resample_command(self, env_ids: Sequence[int]):
         if len(env_ids) == 0:
             return
-        if self.cfg.stance_front_probability is None:
+        if self.cfg.direction_matched:
+            # The commanded heading picks the stance that goes with it: moving forward, planting the
+            # front feet lets the robot's own momentum carry it over them into a nose-down rise;
+            # moving backward does the same about the hind feet. The same principle the acrobatics
+            # command uses to match a flip to the direction it is travelling in.
+            #
+            # Below `direction_conflict_speed` there is no direction to match, so the stance is
+            # drawn. That covers the standstill, which is the case the expert knows best -- every
+            # one of its training episodes begins at rest and rises from there.
+            velocity = self._env.command_manager.get_command(self.cfg.velocity_command_name)
+            forward, lateral = velocity[env_ids, 0], velocity[env_ids, 1]
+            limit = self.cfg.direction_conflict_speed
+            directed = torch.where(
+                forward > limit,
+                torch.full_like(forward, STANCE_FRONT),
+                torch.full_like(forward, STANCE_HIND),
+            )
+            drawn = torch.where(
+                torch.rand(len(env_ids), device=self.device) < 0.5,
+                torch.full_like(forward, STANCE_FRONT),
+                torch.full_like(forward, STANCE_HIND),
+            )
+            # A lateral command matches neither stance -- sideways momentum is symmetric and helps
+            # neither rotation -- so those environments fall back to the draw and are then filtered
+            # out by the take-off gate below.
+            fore_aft = forward.abs() > lateral.abs()
+            self.stance[env_ids] = torch.where(fore_aft & (forward.abs() > limit), directed, drawn)
+        elif self.cfg.stance_front_probability is None:
             self.stance[env_ids] = self.cfg.stance
         else:
             # Drawn per episode, not per step: a stance is a mode the robot commits to and holds,
@@ -224,18 +267,45 @@ class HandstandCommand(CommandTerm):
         self.hold_duration[env_ids] = torch.empty(len(env_ids), device=self.device).uniform_(
             *self.cfg.hold_duration_range
         )
+        # Only a share of episodes carry a stance at all. Holding one for ten seconds of a twenty
+        # second episode halves what is left for the acrobatic moves, which interleave at 1.5-3 s
+        # and were already the weaker half of the merged policy. Splitting per episode keeps the
+        # stance long enough to include a rise, a hold and a descent, while leaving the other half
+        # of the episodes at the acrobatics' original exposure.
+        if self.cfg.episode_probability < 1.0:
+            skipped = torch.rand(len(env_ids), device=self.device) >= self.cfg.episode_probability
+            self.scheduled_trigger_time[env_ids] = torch.where(
+                skipped, torch.full_like(self.scheduled_trigger_time[env_ids], 1.0e9),
+                self.scheduled_trigger_time[env_ids],
+            )
+        self._achieved[env_ids] = False
 
     def _update_command(self):
         if self.cfg.pinned:
+            self._achieved |= self.success
             return
         episode_time = self._env.episode_length_buf.float() * self._env.step_dt
-        starting = (~self.enabled) & (self.trigger_step < 0) & (episode_time >= self.scheduled_trigger_time)
+        due = (~self.enabled) & (self.trigger_step < 0) & (episode_time >= self.scheduled_trigger_time)
+        # Deferred rather than cancelled while the commanded speed is above the curriculum's limit,
+        # so the environment stays eligible: as soon as the velocity command resamples to something
+        # slower, or the limit rises, the stance happens. Same mechanism as the acrobatics
+        # take-off gate, and the reason a lateral command never produces a stance -- its planar
+        # speed is above the limit whenever it is worth calling lateral.
+        too_fast = due & (self.commanded_speed > self.takeoff_speed_limit)
+        if torch.any(too_fast):
+            self.scheduled_trigger_time[too_fast] = (
+                episode_time[too_fast] + self.cfg.takeoff_retry_interval_s
+            )
+        starting = due & ~too_fast
+        self._achieved |= self.success
         if torch.any(starting):
             self.enabled[starting] = True
             self.trigger_step[starting] = self._env.episode_length_buf[starting]
         ending = self.enabled & (self.elapsed_since_trigger >= self.hold_duration)
         if torch.any(ending):
             self.enabled[ending] = False
+            self.attempts += int(ending.sum().item())
+            self.successes += int((self._achieved & ending).sum().item())
 
     def _update_metrics(self):
         enabled = self.enabled.float()
@@ -245,6 +315,7 @@ class HandstandCommand(CommandTerm):
         self.metrics["upright"][:] = self.is_upright.float()
         self.metrics["airborne"][:] = (1.0 - self.lifted_contact) * enabled
         self.metrics["success"][:] = self.success.float()
+        self.metrics["takeoff_speed_limit"][:] = self.takeoff_speed_limit
 
         # Conditional means, written into every slot so the manager's own average over environments
         # reproduces them. A stance with no environments in it reports 0 rather than a stale value.
@@ -270,6 +341,27 @@ class HandstandCommandCfg(CommandTermCfg):
     """Required by ``CommandTermCfg`` and meaningless here: the stance is scheduled per episode by
     this term, not resampled on a timer, so it is pushed beyond any episode. Same convention the
     jump command uses."""
+
+    direction_matched: bool = False
+    """Choose the stance from the commanded heading rather than by drawing it. Forward takes the
+    front stance and backward the hind one, because the robot's own momentum carries it over the
+    planted feet in exactly that direction. Off for the single-stance and unified biped tasks,
+    which pin or draw instead."""
+
+    episode_probability: float = 1.0
+    """Share of episodes that carry a stance at all. Below 1.0 the rest of the episode is ordinary
+    locomotion and whatever else the environment schedules."""
+
+    velocity_command_name: str = "base_velocity"
+
+    direction_conflict_speed: float = 0.3
+    """Commanded speed below which no heading is worth matching, and the stance is drawn."""
+
+    initial_takeoff_speed_limit: float = 0.3
+    takeoff_retry_interval_s: float = 0.5
+    """The rise from a moving start is unlearned -- the expert's episodes all begin at rest -- so
+    the stance is only offered below a commanded speed a curriculum raises as rises keep landing.
+    Mirrors the acrobatics take-off gate, including deferring rather than cancelling."""
 
     stance_front_probability: float | None = None
     """Probability of drawing the front stance, resampled per episode. ``None`` pins every

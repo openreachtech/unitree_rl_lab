@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from isaaclab.utils import configclass
 
+from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_run import CurriculumCfgGo2Gallop
+
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_run import (
     CommandsCfgGo2GallopPhase1,
     CommandsCfgGo2GallopPhase2,
@@ -42,6 +44,21 @@ from unitree_rl_lab.tasks.multitask.robots.go2.multitask_env_cfg import (
 
 
 @configclass
+class MultitaskCurriculumCfgGallopPhase1(CurriculumCfgGo2Gallop):
+    """The gallop curriculum with this task's own velocity-ratchet state file.
+
+    Per task on purpose: how far the commanded range has climbed is a property of a particular
+    run, and sharing a path would have two tasks overwriting each other's progress.
+    """
+
+    def __post_init__(self):
+        if hasattr(super(), "__post_init__"):
+            super().__post_init__()
+        root = "logs/rsl_rl/go2_multitask_gallop_phase1"
+        self.lin_vel_cmd_levels.params["state_file"] = f"{root}/lin_vel_cmd_state.json"
+
+
+@configclass
 class MultitaskCommandsCfgGallopPhase1(CommandsCfgGo2GallopPhase1):
     jump = IDLE_JUMP_COMMAND
     handstand = IDLE_HANDSTAND_COMMAND
@@ -55,6 +72,8 @@ class MultitaskCommandsCfgGallopPhase1(CommandsCfgGo2GallopPhase1):
 
 @configclass
 class RobotEnvCfgMultitaskGallopPhase1(RobotEnvCfgGo2GallopPhase1):
+    curriculum: MultitaskCurriculumCfgGallopPhase1 = MultitaskCurriculumCfgGallopPhase1()
+
     scene: MultitaskSceneCfg = MultitaskSceneCfg(num_envs=4096, env_spacing=2.5)
     observations: UnifiedObservationsCfg = UnifiedObservationsCfg()
     commands: MultitaskCommandsCfgGallopPhase1 = MultitaskCommandsCfgGallopPhase1()
@@ -75,12 +94,31 @@ class RobotPlayEnvCfgMultitaskGallopPhase1(RobotEnvCfgMultitaskGallopPhase1):
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
         self.commands.tow_assist.state_file = None
         self.commands.tow_assist.initial_assist_scale = 0.0
+        # And the velocity ratchet's state file, for the reason spelled out on
+        # RobotPlayEnvCfgGo2Run: the curriculum manager still runs at play time, and the line
+        # above has just set the command range to limit_ranges.
+        self.curriculum.lin_vel_cmd_levels.params["state_file"] = None
         self.observations.policy.enable_corruption = False
 
 
 # =================================================================================================
 # Phase 2 -- omnidirectional commands on the unified observation
 # =================================================================================================
+
+
+@configclass
+class MultitaskCurriculumCfgGallopPhase2(CurriculumCfgGo2Gallop):
+    """The gallop curriculum with this task's own velocity-ratchet state file.
+
+    Per task on purpose: how far the commanded range has climbed is a property of a particular
+    run, and sharing a path would have two tasks overwriting each other's progress.
+    """
+
+    def __post_init__(self):
+        if hasattr(super(), "__post_init__"):
+            super().__post_init__()
+        root = "logs/rsl_rl/go2_multitask_gallop_phase2"
+        self.lin_vel_cmd_levels.params["state_file"] = f"{root}/lin_vel_cmd_state.json"
 
 
 @configclass
@@ -95,6 +133,8 @@ class MultitaskCommandsCfgGallopPhase2(CommandsCfgGo2GallopPhase2):
 
 @configclass
 class RobotEnvCfgMultitaskGallopPhase2(RobotEnvCfgGo2GallopPhase2):
+    curriculum: MultitaskCurriculumCfgGallopPhase2 = MultitaskCurriculumCfgGallopPhase2()
+
     scene: MultitaskSceneCfg = MultitaskSceneCfg(num_envs=4096, env_spacing=2.5)
     observations: UnifiedObservationsCfg = UnifiedObservationsCfg()
     commands: MultitaskCommandsCfgGallopPhase2 = MultitaskCommandsCfgGallopPhase2()
@@ -115,4 +155,8 @@ class RobotPlayEnvCfgMultitaskGallopPhase2(RobotEnvCfgMultitaskGallopPhase2):
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
         self.commands.tow_assist.state_file = None
         self.commands.tow_assist.initial_assist_scale = 0.0
+        # And the velocity ratchet's state file, for the reason spelled out on
+        # RobotPlayEnvCfgGo2Run: the curriculum manager still runs at play time, and the line
+        # above has just set the command range to limit_ranges.
+        self.curriculum.lin_vel_cmd_levels.params["state_file"] = None
         self.observations.policy.enable_corruption = False

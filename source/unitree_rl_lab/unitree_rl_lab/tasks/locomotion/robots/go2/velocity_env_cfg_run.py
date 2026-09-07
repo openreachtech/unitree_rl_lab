@@ -29,6 +29,50 @@ _GAIT_FEET = ["FL_foot", "FR_foot", "RL_foot", "RR_foot"]
 
 @configclass
 class CurriculumCfgGo2Gallop(CurriculumCfg):
+    """Tow-assist decay, plus a two-way velocity ratchet every task on this branch needs.
+
+    The two-way ratchet lived on ``CurriculumCfgGo2Run`` alone until a Go2-Multitask-Gallop-Phase2
+    run walked into the failure it exists to prevent. The incident it was written for is recorded
+    in ``lin_vel_cmd_levels`` itself: the commanded range climbs past what the robot can do, the
+    exponential tracking reward goes numerically flat over most of the command distribution, and
+    with no tracking gradient left but every penalty still live, standing still becomes the
+    reward-maximising policy. Sandbox Try 9 lost 3.72 m/s down to 1.94 that way and could not
+    recover in 2600 iterations, because a one-way ratchet has no way back down.
+
+    Phase 2 reproduced it: ``error_vel_xy`` 0.40 -> 1.97 against the previous run, the commanded
+    range pinned at its 3.5 m/s ceiling, and the robot standing still under fast commands in play
+    mode. Phase 1 did not, and the difference is the instructive part -- forward-only commands
+    stayed inside what the robot could do, so the same one-way ratchet never got the chance to
+    overshoot. A setting that only breaks once the command space widens does not belong on a
+    subclass of the branch that widens it.
+
+    ``state_file`` is left None here and set by each task: without one, every ``--resume`` restarts
+    the range at 1.0 m/s, which cost Try 9's own resume about 1300 iterations of re-climbing.
+    """
+
+    lin_vel_cmd_levels = CurrTerm(
+        func=mdp.lin_vel_cmd_levels,
+        params={
+            # Dead band 0.6-0.8 of the reward term's weight: above it the range widens, below it
+            # the range steps back down, never past where the task started.
+            "decrease_threshold": 0.6,
+            # Judge only the environments the tow assist never touches. Without this the ratchet
+            # reads the *towed* population and cannot tell "the robot runs this fast" from "the
+            # robot is towed this fast" -- and the difference is not academic: with the actuation
+            # delay in place, a Go2-Multitask-Gallop Phase 1 ran the commanded range up to 3.5 m/s
+            # while the tow was doing the work, and the moment the assist finished decaying its
+            # tracking error went 0.33 -> 1.39 in a hundred iterations. The resulting policy
+            # tracked 1.0 m/s and stood still at everything above it. The two-way ratchet cannot
+            # rescue that on its own: it only sees the truth once the assist is already gone, and
+            # 0.1 m/s per judgement is far too slow to walk 3.5 back down in what remains of the
+            # run. Requires ``eval_env_fraction`` > 0 on the tow assist -- with an empty held-out
+            # set the judging population is empty and the ratchet freezes at its initial range.
+            "assist_free_only": True,
+            "tow_command_name": "tow_assist",
+            "state_file": None,
+        },
+    )
+
     tow_assist = CurrTerm(
         func=mdp.tow_assist_decay,
         params={
@@ -77,6 +121,11 @@ class CommandsCfgGo2GallopPhase1(CommandsCfgPhase1):
         gain=40.0,
         max_force=150.0,
         initial_assist_scale=1.0,
+        # A quarter of the fleet is never towed, so the velocity ratchet always has an honest
+        # sample of unaided ability. Paired with ``assist_free_only`` on lin_vel_cmd_levels below;
+        # neither works without the other. Copied from the Go2-Speed lineage, which has run this
+        # way since sandbox Try 11 reached a commanded 4.8 m/s at a real top speed of 1.78.
+        eval_env_fraction=0.25,
         state_file="logs/rsl_rl/go2_gallop_phase1/tow_assist_state.json",
     )
 
@@ -106,6 +155,16 @@ class RewardsCfgGo2GallopPhase1(RewardsCfgGo2):
 
 
 @configclass
+class CurriculumCfgGo2GallopPhase1(CurriculumCfgGo2Gallop):
+    """The gallop curriculum with this task's own velocity-ratchet state file."""
+
+    def __post_init__(self):
+        if hasattr(super(), "__post_init__"):
+            super().__post_init__()
+        self.lin_vel_cmd_levels.params["state_file"] = "logs/rsl_rl/go2_gallop_phase1/lin_vel_cmd_state.json"
+
+
+@configclass
 class RobotEnvCfgGo2GallopPhase1(RobotEnvCfgPhase1):
     """Forward-only gallop-style running -- promoted from sandbox Try 6 (see
     ``CommandsCfgGo2GallopPhase1``/``RewardsCfgGo2GallopPhase1``). Observations are plain
@@ -115,7 +174,7 @@ class RobotEnvCfgGo2GallopPhase1(RobotEnvCfgPhase1):
     """
 
     commands: CommandsCfgGo2GallopPhase1 = CommandsCfgGo2GallopPhase1()
-    curriculum: CurriculumCfgGo2Gallop = CurriculumCfgGo2Gallop()
+    curriculum: CurriculumCfgGo2GallopPhase1 = CurriculumCfgGo2GallopPhase1()
     rewards: RewardsCfgGo2GallopPhase1 = RewardsCfgGo2GallopPhase1()
 
 
@@ -129,6 +188,10 @@ class RobotPlayEnvCfgGo2GallopPhase1(RobotEnvCfgGo2GallopPhase1):
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
         self.commands.tow_assist.state_file = None
         self.commands.tow_assist.initial_assist_scale = 0.0
+        # And the velocity ratchet's state file, for the reason spelled out on
+        # RobotPlayEnvCfgGo2Run: the curriculum manager still runs at play time, and the line
+        # above has just set the command range to limit_ranges.
+        self.curriculum.lin_vel_cmd_levels.params["state_file"] = None
 
 
 # Forward-speed threshold at/above which paired_gait is graded -- below it (which covers every
@@ -195,6 +258,16 @@ class RewardsCfgGo2GallopPhase2(RewardsCfgGo2):
 
 
 @configclass
+class CurriculumCfgGo2GallopPhase2(CurriculumCfgGo2Gallop):
+    """The gallop curriculum with this task's own velocity-ratchet state file."""
+
+    def __post_init__(self):
+        if hasattr(super(), "__post_init__"):
+            super().__post_init__()
+        self.lin_vel_cmd_levels.params["state_file"] = "logs/rsl_rl/go2_gallop_phase2/lin_vel_cmd_state.json"
+
+
+@configclass
 class RobotEnvCfgGo2GallopPhase2(RobotEnvCfgPhase1):
     """Adds backward/lateral commands on top of Go2-Gallop-Phase1's forward-only gallop, with
     ``paired_gait`` gated on forward speed (see
@@ -203,7 +276,7 @@ class RobotEnvCfgGo2GallopPhase2(RobotEnvCfgPhase1):
     """
 
     commands: CommandsCfgGo2GallopPhase2 = CommandsCfgGo2GallopPhase2()
-    curriculum: CurriculumCfgGo2Gallop = CurriculumCfgGo2Gallop()
+    curriculum: CurriculumCfgGo2GallopPhase2 = CurriculumCfgGo2GallopPhase2()
     rewards: RewardsCfgGo2GallopPhase2 = RewardsCfgGo2GallopPhase2()
 
 
@@ -217,6 +290,10 @@ class RobotPlayEnvCfgGo2GallopPhase2(RobotEnvCfgGo2GallopPhase2):
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
         self.commands.tow_assist.state_file = None
         self.commands.tow_assist.initial_assist_scale = 0.0
+        # And the velocity ratchet's state file, for the reason spelled out on
+        # RobotPlayEnvCfgGo2Run: the curriculum manager still runs at play time, and the line
+        # above has just set the command range to limit_ranges.
+        self.curriculum.lin_vel_cmd_levels.params["state_file"] = None
 
 
 # =============================================================================================
@@ -312,15 +389,12 @@ class CommandsCfgGo2Run(CommandsCfgGo2GallopPhase1):
 
 @configclass
 class CurriculumCfgGo2Run(CurriculumCfgGo2Gallop):
-    """Tow-assist decay (inherited) plus a two-way, persisted velocity ratchet."""
+    """Tow-assist decay and the two-way ratchet, both inherited; only the state file is this task's."""
 
-    lin_vel_cmd_levels = CurrTerm(
-        func=mdp.lin_vel_cmd_levels,
-        params={
-            "decrease_threshold": 0.6,
-            "state_file": f"{_RUN_LOG_DIR}/lin_vel_cmd_state.json",
-        },
-    )
+    def __post_init__(self):
+        if hasattr(super(), "__post_init__"):
+            super().__post_init__()
+        self.lin_vel_cmd_levels.params["state_file"] = f"{_RUN_LOG_DIR}/lin_vel_cmd_state.json"
 
 
 @configclass

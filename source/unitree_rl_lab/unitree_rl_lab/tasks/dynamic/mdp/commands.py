@@ -12,6 +12,7 @@ from isaaclab.assets import Articulation
 from isaaclab.managers import CommandTerm, CommandTermCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.math import sample_uniform
+from unitree_rl_lab.utils.curriculum_state import should_restore
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -136,7 +137,7 @@ class JumpCommand(CommandTerm):
         self.attempts_by_motion = torch.zeros(self._motion_slots, dtype=torch.long, device=self.device)
         self.successes_by_motion = torch.zeros(self._motion_slots, dtype=torch.long, device=self.device)
 
-        if cfg.state_file is not None and os.path.isfile(cfg.state_file):
+        if should_restore(cfg.state_file):
             with open(cfg.state_file) as f:
                 saved_state = json.load(f)
             saved_assist = saved_state["assist_scale"]

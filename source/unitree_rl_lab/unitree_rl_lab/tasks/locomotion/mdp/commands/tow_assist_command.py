@@ -11,6 +11,7 @@ import torch
 from isaaclab.assets import Articulation
 from isaaclab.managers import CommandTerm, CommandTermCfg
 from isaaclab.utils import configclass
+from unitree_rl_lab.utils.curriculum_state import should_restore
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -46,7 +47,7 @@ class TowAssistCommand(CommandTerm):
         self.curriculum_episode_count = 0
         self.curriculum_success_count = 0
 
-        if cfg.state_file is not None and os.path.isfile(cfg.state_file):
+        if should_restore(cfg.state_file):
             with open(cfg.state_file) as f:
                 saved_state = json.load(f)
             self.assist_scale = saved_state["assist_scale"]

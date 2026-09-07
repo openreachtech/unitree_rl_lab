@@ -33,6 +33,12 @@ from typing import Any
 
 EXPERT_LOCOMOTION = 0
 EXPERT_ACROBATICS = 1
+EXPERT_BIPED = 2
+"""Slot 2 held a transition expert that started from random weights and was meant to earn its place
+from the gate. Measured on the finished two-expert policy it never did: its routing weight read
+0.000 while running, 0.000 inside an acrobatic window, and 0.001 in the hand-back bin where it had
+the most to contribute. The bipedal policy takes the slot instead."""
+
 NUM_EXPERTS = 3
 
 
@@ -44,7 +50,9 @@ class Gating(nn.Module):
         num_experts: Number of experts to weight.
         hidden_dims: Hidden layer sizes of the gate's MLP.
         activation: Activation of the gate's MLP.
-        prior_index: Column of the 0/1 "a motion is commanded" flag in the observation.
+        prior_index: Column of the 0/1 "an acrobatic move is commanded" flag.
+        biped_prior_index: Column of the 0/1 "a bipedal stance is commanded" flag. ``None`` leaves
+            the bipedal expert unfavoured, which is the two-flag gate reduced to the one-flag one.
         prior_scale: Logit offset applied by the prior. With three experts, 5.0 puts 98.7% of
             the weight on the prior's expert at initialisation (``e^5 / (e^5 + 2)``); the 1.3%
             leaking to the others perturbs the action by well under a milliradian, since a freshly
@@ -59,6 +67,7 @@ class Gating(nn.Module):
         activation: str,
         prior_index: int,
         prior_scale: float,
+        biped_prior_index: int | None = None,
     ) -> None:
         super().__init__()
         self.mlp = MLP(obs_dim, num_experts, hidden_dims, activation)
@@ -68,22 +77,36 @@ class Gating(nn.Module):
         nn.init.zeros_(self.mlp[-1].bias)
 
         self.prior_index = int(prior_index)
+        self.biped_prior_index = -1 if biped_prior_index is None else int(biped_prior_index)
         self.prior_scale = float(prior_scale)
 
-        # Logit rows selected by the command flag: no motion commanded -> locomotion expert,
-        # motion commanded -> acrobatics expert. The transition expert is never favoured by the
-        # prior; it has to earn its weight from the gate MLP.
+        # One logit row per commanded regime. Nothing commanded routes to locomotion, an acrobatic
+        # move to the acrobatics expert, a bipedal stance to the bipedal one. The environment keeps
+        # the two flags mutually exclusive, so no row ever has to describe both at once.
+        #
+        # The prior exists because the mixture cannot bootstrap without it: at a uniform 1/3 each,
+        # the blend of a walking action and an acrobatic one leaves the ground in neither, so no
+        # attempt succeeds, so nothing ever rewards the gate for routing correctly. A 2000-iteration
+        # run with the prior off measured a jump height of exactly zero throughout.
         prior_off = torch.zeros(1, num_experts)
-        prior_on = torch.zeros(1, num_experts)
+        prior_acro = torch.zeros(1, num_experts)
+        prior_biped = torch.zeros(1, num_experts)
         prior_off[0, EXPERT_LOCOMOTION] = 1.0
-        prior_on[0, EXPERT_ACROBATICS] = 1.0
+        prior_acro[0, EXPERT_ACROBATICS] = 1.0
+        prior_biped[0, EXPERT_BIPED if num_experts > EXPERT_BIPED else EXPERT_LOCOMOTION] = 1.0
         self.register_buffer("prior_off", prior_off)
-        self.register_buffer("prior_on", prior_on)
+        self.register_buffer("prior_on", prior_acro)
+        self.register_buffer("prior_biped", prior_biped)
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
         """Return per-expert weights of shape ``(batch, num_experts)`` summing to one."""
-        enabled = obs[:, self.prior_index : self.prior_index + 1]
-        prior = (1.0 - enabled) * self.prior_off + enabled * self.prior_on
+        acro = obs[:, self.prior_index : self.prior_index + 1]
+        if self.biped_prior_index >= 0:
+            biped = obs[:, self.biped_prior_index : self.biped_prior_index + 1]
+        else:
+            biped = torch.zeros_like(acro)
+        idle = (1.0 - acro).clamp(min=0.0) * (1.0 - biped).clamp(min=0.0)
+        prior = idle * self.prior_off + acro * self.prior_on + biped * self.prior_biped
         return torch.softmax(self.mlp(obs) + self.prior_scale * prior, dim=-1)
 
 
@@ -148,6 +171,8 @@ class MoEActorCritic(ActorCritic):
         gating_prior_scale: float = 5.0,
         actor_prior_index: int = 0,
         critic_prior_index: int = 0,
+        actor_biped_prior_index: int | None = None,
+        critic_biped_prior_index: int | None = None,
         actor_hidden_dims: tuple[int, ...] | list[int] = (512, 256, 128),
         critic_hidden_dims: tuple[int, ...] | list[int] = (512, 256, 128),
         activation: str = "elu",
@@ -186,6 +211,7 @@ class MoEActorCritic(ActorCritic):
                 gating_activation,
                 actor_prior_index,
                 gating_prior_scale,
+                actor_biped_prior_index,
             ),
             num_experts,
         )
@@ -201,6 +227,7 @@ class MoEActorCritic(ActorCritic):
                 gating_activation,
                 critic_prior_index,
                 gating_prior_scale,
+                critic_biped_prior_index,
             ),
             num_experts,
         )
@@ -224,7 +251,9 @@ class MoEActorCritic(ActorCritic):
             "critic_gating": list(self.critic.gating.parameters()),
             "other": [],
         }
-        pretrained = (EXPERT_LOCOMOTION, EXPERT_ACROBATICS)
+        # Every expert is initialised from a trained policy now, so none of them wants the full
+        # learning rate a randomly initialised head would.
+        pretrained = (EXPERT_LOCOMOTION, EXPERT_ACROBATICS, EXPERT_BIPED)
         for index, expert in enumerate(self.actor.experts):
             groups["actor_pretrained" if index in pretrained else "actor_new"].extend(expert.parameters())
         for index, expert in enumerate(self.critic.experts):

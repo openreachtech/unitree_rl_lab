@@ -74,6 +74,19 @@ AppLauncher.add_app_launcher_args(parser)
 argcomplete.autocomplete(parser)
 args_cli, hydra_args = parser.parse_known_args()
 
+# Curricula that persist their progress may restore it only when this run continues THIS task's
+# own lineage. ``--previous-task`` implies ``--resume`` but seeds from another task's weights, so
+# for this task's curricula it is a fresh start -- each phase is meant to begin its assist at full
+# scale. See unitree_rl_lab.utils.curriculum_state for what reading a finished run's state file
+# into a fresh run cost.
+from unitree_rl_lab.utils.curriculum_state import mark_curriculum_resume  # noqa: E402
+
+mark_curriculum_resume(bool(args_cli.resume) and args_cli.previous_task is None)
+print(
+    "[INFO] Curriculum state files:"
+    f" {'restored (continuing this task)' if bool(args_cli.resume) and args_cli.previous_task is None else 'fresh start'}"
+)
+
 if args_cli.previous_task is not None:
     if not args_cli.resume:
         parser.error("--previous-task requires --resume")

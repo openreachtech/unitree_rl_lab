@@ -5,8 +5,8 @@
 
 """Assemble the multi-task policy's starting checkpoint from two single-task runs.
 
-Expert 0 is loaded from the locomotion run and expert 1 from the acrobatics run; expert 2 and the
-gates stay randomly initialised. Both experts are expected to have been trained on the unified
+Expert 0 is loaded from the locomotion run, expert 1 from the acrobatics run and expert 2 from the
+bipedal run; only the gates stay randomly initialised. Both experts are expected to have been trained on the unified
 122/330-column observation (``Go2-Multitask-Gallop-Phase2`` / ``Go2-Multitask-Jump-Phase2``), in
 which case the weights load directly; a narrower checkpoint is widened on the way in, which leaves
 the network computing exactly the same function.
@@ -22,7 +22,8 @@ a plain ``--resume``::
     python scripts/rsl_rl/build_moe_checkpoint.py \\
         --locomotion-task Go2-Multitask-Gallop-Phase2 \\
         --acrobatics-task Go2-Multitask-Jump-Phase2 \\
-        --task Go2-Multitask
+        --biped-task Go2-Multitask-Biped \\
+        --task Go2-Multitask-v2
     python scripts/rsl_rl/train_and_aggregate.py --task Go2-Multitask --resume
 
 Runs on any interpreter with PyTorch and rsl_rl; it does not import ``unitree_rl_lab.tasks``, which
@@ -60,10 +61,13 @@ def main() -> None:
     parser.add_argument("--task", required=True, help="Multi-task task ID to write the checkpoint for.")
     parser.add_argument("--locomotion-task", default=None, help="Task ID supplying expert 0.")
     parser.add_argument("--acrobatics-task", default=None, help="Task ID supplying expert 1.")
+    parser.add_argument("--biped-task", default=None, help="Task ID supplying expert 2.")
     parser.add_argument("--locomotion-run", default=None)
     parser.add_argument("--locomotion-checkpoint", default=None)
     parser.add_argument("--acrobatics-run", default=None)
     parser.add_argument("--acrobatics-checkpoint", default=None)
+    parser.add_argument("--biped-run", default=None)
+    parser.add_argument("--biped-checkpoint", default=None)
     parser.add_argument("--num-experts", type=int, default=3)
     parser.add_argument("--gating-hidden-dims", type=int, nargs="+", default=[128])
     parser.add_argument("--hidden-dims", type=int, nargs="+", default=[512, 256, 128])
@@ -79,12 +83,18 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if not args.locomotion_task and not args.acrobatics_task:
-        raise SystemExit("[error] Give at least one of --locomotion-task / --acrobatics-task.")
+    if not (args.locomotion_task or args.acrobatics_task or args.biped_task):
+        raise SystemExit(
+            "[error] Give at least one of --locomotion-task / --acrobatics-task / --biped-task.")
 
     locomotion = (
         resolve_checkpoint(args.locomotion_task, args.locomotion_run, args.locomotion_checkpoint)
         if args.locomotion_task
+        else None
+    )
+    biped = (
+        resolve_checkpoint(args.biped_task, args.biped_run, args.biped_checkpoint)
+        if args.biped_task
         else None
     )
     acrobatics = (
@@ -115,6 +125,7 @@ def main() -> None:
         policy,
         locomotion,
         acrobatics,
+        biped,
         noise_std_mode=args.noise_std_mode,
         policy_sources={
             obs_spec.layout_dim(obs_spec.POLICY_LOCOMOTION): obs_spec.POLICY_MAP_LOCOMOTION,

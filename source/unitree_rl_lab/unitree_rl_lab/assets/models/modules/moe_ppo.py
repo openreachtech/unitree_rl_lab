@@ -27,7 +27,9 @@ DEFAULT_LR_SCALES: dict[str, float] = {
     # Pre-trained experts: keep their specialisation instead of overwriting it.
     "actor_pretrained": 0.1,
     "critic_pretrained": 0.1,
-    # Randomly initialised transition expert and the gates: nothing to preserve.
+    # Kept for a head with nothing to preserve. No expert is in this group any more -- the third
+    # slot holds the bipedal policy rather than a randomly initialised transition expert -- so
+    # leaving these at 1.0 is harmless only as long as that stays true.
     "actor_new": 1.0,
     "critic_new": 1.0,
     "actor_gating": 1.0,
@@ -157,7 +159,7 @@ class MoEPPO(PPO):
             conditions["tilted"] = gravity_z > -0.5
             conditions["inverted"] = gravity_z > 0.0
 
-        names = ["locomotion", "acrobatics", "transition"]
+        names = ["locomotion", "acrobatics", "biped"]
         stats: dict[str, float] = {"gate/commanded_fraction": enabled.float().mean().item()}
         for label, mask in conditions.items():
             stats[f"gate/fraction_{label}"] = mask.float().mean().item()

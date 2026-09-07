@@ -161,13 +161,13 @@ FSM:
     # policy_dir and command_duration_s MUST be changed together -- they are one setting
     # split across two lines, and a mismatch fails silently rather than loudly:
     #
-    #   go2_multitask (runs from 2026-09-02) -> command_duration_s: 1.0   (current policy_dir)
+    #   go2_multitask_v1 (runs from 2026-09-02) -> command_duration_s: 1.0   (current policy_dir)
     #   go2_multitask_try_3                  -> command_duration_s: 1.5
     #   go2_multitask (older runs)           -> command_duration_s: 1.5
     #   go2_multitask_try_long_command       -> command_duration_s: 1.5
     #   go2_multitask_phase1                 -> command_duration_s: 0.5
     #
-    # Note that `go2_multitask` appears twice: `parser_policy_dir` picks the newest run under the
+    # Note that `go2_multitask_v1` appears twice: `parser_policy_dir` picks the newest run under the
     # root that has an `exported` folder, so which value is right depends on when that run was
     # trained. Check the run before trusting the line below.
     #
@@ -182,7 +182,7 @@ FSM:
     # the way through every flip, handing the robot to the locomotion expert while it is
     # upside down -- measured at 59% of the action, and worth 0.55 flip success against
     # 0.79. The robot will still move, so nothing announces the error.
-    policy_dir: ../../../logs/rsl_rl/go2_multitask
+    policy_dir: ../../../logs/rsl_rl/go2_multitask_v1
     command_duration_s: 1.0
     time_scale: 1.0
     rearm_delay_s: 0.3

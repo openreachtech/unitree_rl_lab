@@ -12,10 +12,10 @@ disabled), and every reading is cross-checked against the observation the policy
 step where anything overwrote the command is dropped rather than averaged in.
 
     # gallop -- above the take-off ceiling, so no move ever fires
-    python scripts/rsl_rl/measure_gate.py --task Go2-Multitask --vx 3.0 --steps 400
+    python scripts/rsl_rl/measure_gate.py --task Go2-Multitask-v2 --vx 3.0 --steps 400
 
     # backward walk, with the backflips it triggers
-    python scripts/rsl_rl/measure_gate.py --task Go2-Multitask --vx -0.8 --steps 800
+    python scripts/rsl_rl/measure_gate.py --task Go2-Multitask-v2 --vx -0.8 --steps 800
 """
 
 import argparse
@@ -23,7 +23,7 @@ import argparse
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--task", type=str, default="Go2-Multitask")
+parser.add_argument("--task", type=str, default="Go2-Multitask-v2")
 parser.add_argument("--num_envs", type=int, default=64)
 parser.add_argument("--steps", type=int, default=600)
 parser.add_argument("--vx", type=float, default=0.0, help="Commanded forward velocity, m/s (body +x).")

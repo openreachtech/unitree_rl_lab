@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.terrains import TerrainImporter
+from unitree_rl_lab.utils.curriculum_state import should_restore
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -76,7 +77,7 @@ def lin_vel_cmd_levels(
         command_term._lin_vel_episode_count = 0
         command_term._lin_vel_judge = float("nan")
         command_term._lin_vel_start_step = env.common_step_counter
-        if state_file is not None and os.path.isfile(state_file):
+        if should_restore(state_file):
             with open(state_file) as f:
                 saved = json.load(f)
             ranges.lin_vel_x = list(saved["lin_vel_x"])

@@ -7,6 +7,7 @@ the dependency runs one way, from the merged environment toward the skills it is
 
 from isaaclab.envs.mdp import *  # noqa: F401, F403
 
+from .curriculums import handstand_takeoff_speed_levels  # noqa: F401
 from .handstand import *  # noqa: F401, F403
 from .rewards import stance_aware  # noqa: F401
 from .symmetry import mirror_left_right  # noqa: F401
