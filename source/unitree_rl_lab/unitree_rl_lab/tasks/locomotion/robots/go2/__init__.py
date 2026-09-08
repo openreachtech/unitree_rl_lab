@@ -285,3 +285,21 @@ gym.register(
         "rsl_rl_cfg_entry_point": _PERCEPTIVE_RUNNER,
     },
 )
+
+
+# ===========================================================================
+# Experimental: Go2-Blind-GRU-Phase1 plus the OmniPerception MID-360 LidarSensor
+# (4,000 rays/step = the real sensor's 200k pts/s at 50 Hz). Display-only
+# observation group; policy inputs unchanged, so Phase 1 checkpoints still load.
+# See velocity_env_cfg_mid360.py.
+# ===========================================================================
+gym.register(
+    id="Go2-Blind-GRU-Mid360-Phase1",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_mid360:RobotEnvCfgMid360Phase1",
+        "play_env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_mid360:RobotPlayEnvCfgMid360Phase1",
+        "rsl_rl_cfg_entry_point": _RUNNER,
+    },
+)

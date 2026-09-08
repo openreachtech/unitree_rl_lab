@@ -149,3 +149,12 @@ def height_scan_excluding_body(
             color=(1.0, 0.0, 0.0),  # red
         )
     return heights.index_select(1, keep_indices)
+
+
+def lidar_distances(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+    """Raw range returns of an OmniPerception ``LidarSensor``, shape (num_envs, num_rays).
+
+    Rays that miss every mesh read ``cfg.max_distance`` -- the sensor substitutes it for
+    inf before this term sees the data, so the output is always finite.
+    """
+    return env.scene.sensors[sensor_cfg.name].data.distances
