@@ -12,8 +12,10 @@ The base task is untouched: the classes here extend ``RobotEnvCfgPhase4`` /
 
 The returns are binned into a 609-cell height grid by ``mdp.LidarElevationMap``, the same
 term the fan uses in ``velocity_env_cfg_lidar.py``; a cell with no return this step holds
-what it last saw. See ``Mid360MapObsCfg`` below for the two settings that differ from the
-fan's map -- no body exclusion, no noise model.
+what it last saw. The grid keeps every cell -- no body exclusion, because this mount does
+see under the trunk. Measurement noise is ``MID360_NOISE_CFG``: range error along the ray,
+sensor tilt and outliers, drawn weak/nominal/strong at 60/30/10 per episode. Both are
+explained where they are defined below, along with the error sources still unmodelled.
 
 Nothing reads the ``mid360_map`` observation group. Like ``LidarMapObsCfg``, it exists so
 the observation manager runs the term, which is what makes the sensor raycast and the held
@@ -89,6 +91,7 @@ from isaaclab.utils import configclass
 
 from unitree_rl_lab.sensors import LivoxPatternCfg, RollingLivoxSensorCfg
 from unitree_rl_lab.tasks.locomotion import mdp
+from unitree_rl_lab.tasks.locomotion.mdp.lidar_elevation_map import LidarNoiseCfg
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_blind_phase4 import (
     RobotEnvCfgPhase4,
     RobotPlayEnvCfgPhase4,
@@ -167,7 +170,7 @@ def _mid360_scanner_cfg(debug_vis: bool) -> RollingLivoxSensorCfg:
 # returns into the body-centered grid, take the highest per cell, and let a cell
 # with no return this step hold what it last saw. Only the sensor differs.
 #
-# Two things are set differently from velocity_env_cfg_lidar.py's fan map:
+# One thing is set differently from velocity_env_cfg_lidar.py's fan map:
 #
 #   * **No body exclusion.** The fan sits on top of the trunk and cannot see under
 #     itself, so its map cuts out a 0.80 x 0.60 m rectangle. The L1 is at the nose
@@ -175,9 +178,6 @@ def _mid360_scanner_cfg(debug_vis: bool) -> RollingLivoxSensorCfg:
 #     from the mount, inside the footprint -- so every cell stays. That also makes
 #     the output line up cell-for-cell with the critic's top-down ``height_scan``:
 #     both are the full 29 x 21, which is what a reconstruction loss would want.
-#   * **No noise model.** ``LidarNoiseCfg`` was tuned against the fan; the MID-360's
-#     error behaviour is its own. Clean returns for now -- pass a ``noise=`` to
-#     ``_mid360_map_term`` when there is a model worth using.
 #
 # Grid, resolution, centre and offset are the project's existing ones, so this map
 # is directly comparable with every other height grid in the repo.
@@ -186,6 +186,42 @@ MID360_MAP_CELLS = (round(HEIGHT_SCAN_SIZE[0] / HEIGHT_SCAN_RESOLUTION) + 1) * (
     round(HEIGHT_SCAN_SIZE[1] / HEIGHT_SCAN_RESOLUTION) + 1
 )
 """609: the full 29 x 21 grid, nothing excluded."""
+
+MID360_NOISE_CFG = LidarNoiseCfg()
+"""Measurement noise. Same magnitudes and the same weak/nominal/strong 60/30/10 draw as
+the fan's ``GO2_LIDAR_NOISE_CFG``, but a separate instance so tuning one does not move the
+other. The ramp fields are inert at their defaults (``start_iteration == full_iteration``
+means full magnitude from step 0), matching every other task in the repo; set them to fade
+the noise in over training. ``scale=0.0`` gives a clean reference run.
+
+The nominal ``range_std`` of 2 cm happens to sit right on the MID-360's own range
+precision, so the Position term is roughly calibrated for this sensor -- confirm against
+the datasheet before leaning on it.
+
+Three of the six augmentations in the reference paper (see ``mdp/lidar_elevation_map.py``)
+stay off because this sensor produces them from geometry rather than from a model:
+*Pruning* -- the 1,000-ray budget over 609 cells, plus the 10 Hz elevation sweep, already
+leaves whole annuli unmeasured for several steps at a time, which is a more realistic
+temporally-correlated dropout than random patch removal; *Height* and *Robot Pose* -- the
+held cells carry no motion compensation, so stale readings drift out of register as the
+robot advances.
+
+Deliberately **not** modelled, and worth knowing before trusting a sim-to-real number:
+
+  * *Incidence-angle dropout.* The mount is 0.273 m up and rays meet the ground at
+    11..62 deg; a real return weakens and vanishes at grazing incidence, while the
+    raycast always hits. This is the largest remaining gap, and it correlates with
+    range -- the sim is most optimistic exactly where the map is thinnest.
+  * *Blind zone.* ``min_range`` is a dead field on the ported sensor (only read inside
+    ``_apply_noise``, which is off), and the steepest rays land 0.15 m from the mount --
+    possibly inside the hardware's near cutoff.
+  * *Reflectivity dropout.* Dark, wet and specular surfaces return nothing; there is no
+    material information in the raycast to key off.
+  * *Motion distortion.* A frame's points are acquired over 20 ms while the body moves,
+    but every ray here is cast from one pose.
+  * *Self-occlusion.* RayCaster sees only the ground mesh, so the front legs never cross
+    a nose-mounted downward field of view the way they would on hardware.
+"""
 
 
 def _mid360_map_term(debug_vis: bool, debug_vis_env_index: int | None = None) -> ObsTerm:
@@ -206,7 +242,7 @@ def _mid360_map_term(debug_vis: bool, debug_vis_env_index: int | None = None) ->
             # A full turn, so no cell is written off as out of field of view.
             "horizontal_fov": (-180.0, 180.0),
             "flat_fill": GO2_FLAT_SCAN_VALUE,
-            "noise": None,
+            "noise": MID360_NOISE_CFG,
             "debug_vis": debug_vis,
             "debug_vis_env_index": debug_vis_env_index,
         },
