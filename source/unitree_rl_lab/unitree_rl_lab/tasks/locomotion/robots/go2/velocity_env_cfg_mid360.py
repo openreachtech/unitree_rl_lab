@@ -2,9 +2,10 @@
 
 The sensor is ``RollingLivoxSensor``: the OmniPerception ``LidarSensor``
 (https://github.com/aCodeDog/OmniPerception, ported as-is into ``unitree_rl_lab.sensors``)
-with the one fix described below. Each step it casts a 4,000-ray window of the real
-MID-360 non-repetitive sequence (``sensors/scan_patterns/mid360.npy``): at the 0.02 s env
-step that is 200k points/s, exactly the real sensor's data rate.
+with the one fix described below. Each step it advances 4,000 rows through the real
+MID-360 non-repetitive sequence (``sensors/scan_patterns/mid360.npy``) -- at the 0.02 s env
+step that is the sensor's own 200k points/s -- and casts every 4th of them, so 1,000 rays
+per step. See ``MID360_SAMPLES_PER_STEP`` / ``MID360_RAY_DOWNSAMPLE``.
 
 The base task is untouched: the classes here extend ``RobotEnvCfgPhase4`` /
 ``RobotPlayEnvCfgPhase4`` and register separately as ``Go2-Blind-GRU-Mid360-Phase4``.
@@ -31,8 +32,8 @@ cycling the whole band with a period of about 20,000 rows (0.1 s).
 
 Pinned at row 0, the sim sits forever on the steepest quarter of the band (sensor phi
 23.8..52.2 of its -7.2..52.2). Through the 164.9 deg mount that becomes a base-frame
-elevation of -61.5..-11.1 deg -- *every* ray below horizontal, and on flat ground all
-4,000 landing in an annulus of 0.15..1.39 m, median 0.38 m.
+elevation of -61.5..-11.1 deg -- *every* ray below horizontal, and on flat ground the
+whole frame landing in an annulus of 0.15..1.39 m, median 0.38 m.
 
 The damage is not the short reach; a metre is all this task needs. It is that there are no
 near-horizontal rays, and an obstacle's height is only readable when some ray clears its
@@ -42,11 +43,11 @@ first clears at ``(0.273 - h) / tan(11.1 deg)``:
     5 cm -> 1.14 m    10 cm -> 0.88 m    15 cm -> 0.63 m    20 cm -> 0.37 m    25 cm -> 0.12 m
 
 Taller walls are seen *later*, which is backwards, and Phase 4's walls run to 25 cm. Worse,
-only 29 of the 4,000 rays are shallower than -12 deg (median -35.5), so at a usable ray
+only 29 in 4,000 of the window's rays are shallower than -12 deg (median -35.5), so at a usable ray
 density the 25 cm figure is nearer 0.09 m. The wall is detected -- its lower face is hit
 from 1.39 m -- but nothing says how high it is until the robot is on top of it.
 
-``RollingLivoxSensor`` consumes the next 4,000 points each step instead, so the band sweeps
+``RollingLivoxSensor`` consumes the next 4,000 rows each step instead, so the band sweeps
 its full -62.3..+19.7 deg every 0.1 s: five steps running all-down, horizon, all-down.
 Note the near-horizontal rays then arrive in 10 Hz bursts rather than continuously -- fine
 for a map that holds previous values, something to design around for a consumer of single
@@ -90,8 +91,18 @@ from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_go2 import (
 )
 
 MID360_SAMPLES_PER_STEP = 4000
-"""Rays per env step. 4,000 x 50 Hz = 200k points/s, the real MID-360's rate. It is also
-the window stride, so the 800,000-point file is walked in 200 steps and repeats every 4 s."""
+"""Sequence rows consumed per env step -- the window stride, not the ray count. 4,000 x
+50 Hz = 200k points/s, the real MID-360's rate, which is what fixes this number: it walks
+the 800,000-point file in 200 steps and repeats every 4 s. Change it and the elevation
+sweep changes period with it."""
+
+MID360_RAY_DOWNSAMPLE = 4
+"""Cast every n-th point of the window: 4,000 / 4 = 1,000 rays per step, 50k points/s.
+
+Thinning here rather than by shrinking ``samples`` keeps the window advancing at the
+hardware's rate, so the 0.1 s elevation sweep is untouched -- measured against the full
+4,000, each step's elevation band and median ground reach are the same to within a few
+tenths of a degree and a few cm. Set to 1 for the sensor's full point rate."""
 
 # ---------------------------------------------------------------------------
 # Mount: the real L1 (utlidar) pose from go2_description.urdf's ``radar_joint``,
@@ -118,7 +129,11 @@ def _mid360_scanner_cfg(debug_vis: bool) -> RollingLivoxSensorCfg:
         # Bolted to the nose like the real L1: pitch and roll swing the pattern
         # with the body.
         ray_alignment="base",
-        pattern_cfg=LivoxPatternCfg(sensor_type="mid360", samples=MID360_SAMPLES_PER_STEP),
+        pattern_cfg=LivoxPatternCfg(
+            sensor_type="mid360",
+            samples=MID360_SAMPLES_PER_STEP,
+            downsample=MID360_RAY_DOWNSAMPLE,
+        ),
         mesh_prim_paths=["/World/ground"],
         max_distance=20.0,
         min_range=0.2,

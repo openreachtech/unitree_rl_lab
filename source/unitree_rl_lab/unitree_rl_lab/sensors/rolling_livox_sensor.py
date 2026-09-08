@@ -22,14 +22,22 @@ sensor then moves on, and the frozen window never does. Pinned at row 0 the MID-
 forever on sensor-frame phi 23.8..52.2 deg of its -7.2..52.2 band.
 
 **What this class does.** It consumes the recorded sequence the way the hardware does:
-each sensor update takes the next ``num_rays`` points, wrapping at the end. At the Go2's
-0.02 s env step and the MID-360's 4,000 points per step that walks the 800,000-point
-(4 s) file in 200 windows, reproducing the 0.1 s elevation sweep. ``_update_dynamic_rays``
-is overridden to do the advance, which also removes the spin -- the real sequence already
-moves the pattern, in the right way and along the right axis.
+each sensor update takes the next ``pattern_cfg.samples`` points, wrapping at the end. At
+the Go2's 0.02 s env step and the MID-360's 4,000 points per step that walks the
+800,000-point (4 s) file in 200 windows, reproducing the 0.1 s elevation sweep.
+``_update_dynamic_rays`` is overridden to do the advance, which also removes the spin --
+the real sequence already moves the pattern, in the right way and along the right axis.
+
+``pattern_cfg.downsample`` thins each window without slowing the advance: ``samples`` is
+how much of the sequence a frame consumes (fixed by the sensor's point rate), while
+``samples // downsample`` is how many rays are actually cast. Taking every n-th point of
+the window rather than its first ``samples // downsample`` matters -- the rows are ordered
+along the rosette, so truncating a window narrows its elevation band, while decimating it
+keeps the band and just samples it more sparsely.
 
 The whole sequence is converted to unit direction vectors once at init and kept on the
-device (9.6 MB for the MID-360), so a step costs one slice and one broadcast copy.
+device (9.6 MB undecimated for the MID-360), so a step costs one indexed read and one
+broadcast copy.
 """
 
 from __future__ import annotations
@@ -61,12 +69,6 @@ class RollingLivoxSensor(LidarSensor):
             # _update_dynamic_rays for it either.
             self._scan_sequence = None
             return
-        if getattr(pattern_cfg, "downsample", 1) != 1:
-            raise NotImplementedError(
-                "RollingLivoxSensor does not support pattern downsample != 1: the window"
-                " it advances has to line up with the rays the base class allocated."
-            )
-
         path = os.path.join(SCAN_PATTERN_DIR, f"{pattern_cfg.sensor_type}.npy")
         if not os.path.exists(path):
             raise FileNotFoundError(
@@ -90,19 +92,31 @@ class RollingLivoxSensor(LidarSensor):
         offset_quat = torch.tensor(list(self.cfg.offset.rot), device=self._device)
         directions = quat_apply(offset_quat.repeat(len(directions), 1), directions)
 
-        num_windows = len(directions) // self.num_rays
+        # `stride` is what a frame consumes of the sequence; `downsample` thins what is
+        # actually cast within it. Keep them apart or a thinned pattern would also crawl
+        # through the sequence more slowly, stretching the elevation sweep.
+        stride = min(pattern_cfg.samples, len(directions))
+        downsample = max(int(getattr(pattern_cfg, "downsample", 1)), 1)
+        num_windows = len(directions) // stride
         if num_windows < 1:
             raise ValueError(
                 f"Scan sequence for '{pattern_cfg.sensor_type}' has {len(directions)} points,"
-                f" fewer than the {self.num_rays} rays per frame; nothing to roll."
+                f" fewer than the {stride} a frame consumes; nothing to roll."
             )
-        self._scan_sequence = directions[: num_windows * self.num_rays].view(
-            num_windows, self.num_rays, 3
-        )
+        windows = directions[: num_windows * stride].view(num_windows, stride, 3)
+        # Every downsample-th point of the window, matching patterns.livox_pattern's own
+        # `torch.arange(0, len(theta), cfg.downsample)`, so window 0 reproduces exactly
+        # what the base class built at init.
+        self._scan_sequence = windows[:, ::downsample, :].contiguous()
+        if self._scan_sequence.shape[1] != self.num_rays:
+            raise ValueError(
+                f"Rolled window has {self._scan_sequence.shape[1]} rays but the base class"
+                f" allocated {self.num_rays}; samples/downsample must agree with the pattern."
+            )
         self._num_windows = num_windows
-        # Start where the frozen port would have started, so window 0 of a run matches
+        # Start where the port's frozen window would have, so window 0 of a run matches
         # the pattern LidarSensor would have used for the whole of it.
-        self._window_index = (getattr(pattern_cfg, "rolling_window_start", 0) // self.num_rays) - 1
+        self._window_index = (getattr(pattern_cfg, "rolling_window_start", 0) // stride) - 1
 
     def _update_dynamic_rays(self):
         """Advance to the next window instead of spinning the frozen one.
