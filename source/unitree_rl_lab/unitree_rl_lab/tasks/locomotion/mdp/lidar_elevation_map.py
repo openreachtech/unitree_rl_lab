@@ -19,7 +19,12 @@ one value per kept grid cell -- so it drops into the policy observation group in
 of that term while the critic keeps the clean top-down scan as privileged input. The
 cell count follows whatever exclusion rectangle the caller passes, and the LiDAR tasks
 widen theirs, so the two are not interchangeable at a fixed width; see
-``velocity_env_cfg_lidar.py``.
+``velocity_env_cfg_lidar.py``. Pass a non-positive extent to keep the whole grid, which
+is what a mount low enough to see under the trunk wants -- then the output lines up
+cell-for-cell with the critic's top-down ``height_scan``.
+
+Nothing here is specific to the fan: the term reads ``sensor.data.ray_hits_w``, so any
+RayCaster works. ``velocity_env_cfg_mid360.py`` feeds it a Livox MID-360.
 
 Measurement noise is applied per ray, before the returns are binned -- see
 ``LidarNoiseCfg``. That placement is what makes it faithful: perturbing distance along
@@ -166,16 +171,22 @@ class LidarElevationMap(ManagerTermBase):
         self._y0 = -self._size[1] / 2 + p["scanner_offset_xy"][1]
 
         # ordering="yx" (idx = ix * num_y + iy), matching _height_scan_indices.
-        self._keep_indices, _ = _height_scan_indices(
-            self._resolution,
-            self._size[0],
-            self._size[1],
-            p["scanner_offset_xy"][0],
-            p["scanner_offset_xy"][1],
-            p["exclude_half_extent_x"],
-            p["exclude_half_extent_y"],
-            self.device,
-        )
+        # Non-positive extents mean keep every cell: a sensor mounted low enough to see
+        # under the trunk has no blind rectangle to cut out, and passing 0.0 would still
+        # drop the single cell sitting exactly on the body origin.
+        if p["exclude_half_extent_x"] <= 0.0 and p["exclude_half_extent_y"] <= 0.0:
+            self._keep_indices = torch.arange(self._num_cells, device=self.device)
+        else:
+            self._keep_indices, _ = _height_scan_indices(
+                self._resolution,
+                self._size[0],
+                self._size[1],
+                p["scanner_offset_xy"][0],
+                p["scanner_offset_xy"][1],
+                p["exclude_half_extent_x"],
+                p["exclude_half_extent_y"],
+                self.device,
+            )
 
         # Cell centers in the yaw-aligned base frame, for the diagnostics and markers.
         cx = torch.linspace(self._x0, self._x0 + self._size[0], self._num_x, device=self.device)

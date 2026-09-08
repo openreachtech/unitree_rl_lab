@@ -1,4 +1,4 @@
-"""Go2-Blind-GRU-Phase4 with an experimental Livox MID-360 sensor in the scene.
+"""Go2-Blind-GRU-Phase4 with a Livox MID-360, and the height map built from it.
 
 The sensor is ``RollingLivoxSensor``: the OmniPerception ``LidarSensor``
 (https://github.com/aCodeDog/OmniPerception, ported as-is into ``unitree_rl_lab.sensors``)
@@ -10,17 +10,29 @@ per step. See ``MID360_SAMPLES_PER_STEP`` / ``MID360_RAY_DOWNSAMPLE``.
 The base task is untouched: the classes here extend ``RobotEnvCfgPhase4`` /
 ``RobotPlayEnvCfgPhase4`` and register separately as ``Go2-Blind-GRU-Mid360-Phase4``.
 
-Nothing reads the ``mid360`` observation group: like ``LidarMapObsCfg`` in
-``velocity_env_cfg_lidar.py``, it exists so the observation manager touches the sensor
-each step, which is what makes it raycast at all. The policy and critic inputs are
-unchanged, so Go2-Blind-GRU-Phase4 checkpoints still load -- there is no mid360 experiment
-folder, so pass the base phase's checkpoint explicitly::
+The returns are binned into a 609-cell height grid by ``mdp.LidarElevationMap``, the same
+term the fan uses in ``velocity_env_cfg_lidar.py``; a cell with no return this step holds
+what it last saw. See ``Mid360MapObsCfg`` below for the two settings that differ from the
+fan's map -- no body exclusion, no noise model.
+
+Nothing reads the ``mid360_map`` observation group. Like ``LidarMapObsCfg``, it exists so
+the observation manager runs the term, which is what makes the sensor raycast and the held
+grid advance. The policy and critic inputs are unchanged, so Go2-Blind-GRU-Phase4
+checkpoints still load -- there is no mid360 experiment folder, so pass the base phase's
+checkpoint explicitly::
 
     python scripts/rsl_rl/play.py --task Go2-Blind-GRU-Mid360-Phase4 --num_envs 4
         --checkpoint logs/rsl_rl/go2_blind_gru_phase4/<run>/model_7300.pt
 
 The sensor sits at the real L1's pose -- nose tip, pitched nearly upside down; see
 ``GO2_L1_MOUNT`` / ``GO2_L1_ROT`` below.
+
+Play draws the map and nothing else: 609 cell markers, **green measured this step, red
+held from an earlier one**. Red is exactly where the real robot would have no current
+data, so a wall's shadow should read as a solid red patch. The scanner's own RayCaster
+markers -- the 1,000 raw returns, the ring that breathes at 10 Hz -- are off, because they
+land on the same ground as the cell markers and make both unreadable; turn them back on
+with ``_attach_mid360(..., show_raw_points=True)`` to watch the scan pattern itself.
 
 Why the window has to roll
 --------------------------
@@ -82,12 +94,17 @@ from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_blind_phase4 im
     RobotPlayEnvCfgPhase4,
 )
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_lidar import (
-    LIDAR_HEIGHT_SCAN_CFG,
+    GO2_FLAT_SCAN_VALUE,
 )
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_go2 import (
+    GO2_HEIGHT_SCAN_CENTER_X,
+    GO2_HEIGHT_SCAN_CENTER_Y,
+    GO2_HEIGHT_SCAN_OFFSET,
     GO2_LIDAR_OFFSET_X,
     GO2_LIDAR_OFFSET_Y,
     GO2_LIDAR_OFFSET_Z,
+    HEIGHT_SCAN_RESOLUTION,
+    HEIGHT_SCAN_SIZE,
 )
 
 MID360_SAMPLES_PER_STEP = 4000
@@ -145,37 +162,109 @@ def _mid360_scanner_cfg(debug_vis: bool) -> RollingLivoxSensorCfg:
     )
 
 
-@configclass
-class Mid360ObsCfg(ObsGroup):
-    """Display-only group: nothing reads it, it exists so the sensor updates each step."""
+# ---------------------------------------------------------------------------
+# Height map. Same machinery as the fan's (``mdp.LidarElevationMap``): bin the
+# returns into the body-centered grid, take the highest per cell, and let a cell
+# with no return this step hold what it last saw. Only the sensor differs.
+#
+# Two things are set differently from velocity_env_cfg_lidar.py's fan map:
+#
+#   * **No body exclusion.** The fan sits on top of the trunk and cannot see under
+#     itself, so its map cuts out a 0.80 x 0.60 m rectangle. The L1 is at the nose
+#     pointing down and does reach under the body -- its steepest rays land 0.15 m
+#     from the mount, inside the footprint -- so every cell stays. That also makes
+#     the output line up cell-for-cell with the critic's top-down ``height_scan``:
+#     both are the full 29 x 21, which is what a reconstruction loss would want.
+#   * **No noise model.** ``LidarNoiseCfg`` was tuned against the fan; the MID-360's
+#     error behaviour is its own. Clean returns for now -- pass a ``noise=`` to
+#     ``_mid360_map_term`` when there is a model worth using.
+#
+# Grid, resolution, centre and offset are the project's existing ones, so this map
+# is directly comparable with every other height grid in the repo.
+# ---------------------------------------------------------------------------
+MID360_MAP_CELLS = (round(HEIGHT_SCAN_SIZE[0] / HEIGHT_SCAN_RESOLUTION) + 1) * (
+    round(HEIGHT_SCAN_SIZE[1] / HEIGHT_SCAN_RESOLUTION) + 1
+)
+"""609: the full 29 x 21 grid, nothing excluded."""
 
-    distances = ObsTerm(
-        func=mdp.lidar_distances,
-        params={"sensor_cfg": SceneEntityCfg("mid360_scanner")},
+
+def _mid360_map_term(debug_vis: bool, debug_vis_env_index: int | None = None) -> ObsTerm:
+    return ObsTerm(
+        func=mdp.LidarElevationMap,
+        params={
+            "sensor_cfg": SceneEntityCfg("mid360_scanner"),
+            "asset_cfg": SceneEntityCfg("robot"),
+            "offset": GO2_HEIGHT_SCAN_OFFSET,
+            "resolution": HEIGHT_SCAN_RESOLUTION,
+            "size": HEIGHT_SCAN_SIZE,
+            "scanner_offset_xy": (GO2_HEIGHT_SCAN_CENTER_X, GO2_HEIGHT_SCAN_CENTER_Y),
+            # Negative rather than 0.0: an extent of exactly zero would still drop the
+            # one cell sitting on the body origin.
+            "exclude_half_extent_x": -1.0,
+            "exclude_half_extent_y": -1.0,
+            "lidar_offset": GO2_L1_MOUNT,
+            # A full turn, so no cell is written off as out of field of view.
+            "horizontal_fov": (-180.0, 180.0),
+            "flat_fill": GO2_FLAT_SCAN_VALUE,
+            "noise": None,
+            "debug_vis": debug_vis,
+            "debug_vis_env_index": debug_vis_env_index,
+        },
+        clip=(-1.0, 5.0),
+        history_length=0,
     )
+
+
+@configclass
+class Mid360MapObsCfg(ObsGroup):
+    """Display-only group: nothing reads it, it exists so the map term runs each step.
+
+    Running is what makes the sensor raycast and the held grid advance, and in play it is
+    also what draws the markers -- green measured this step, red held from an earlier one.
+    The policy and critic are untouched, so Go2-Blind-GRU-Phase4 checkpoints still load.
+    """
+
+    height_scan = _mid360_map_term(debug_vis=False)
 
     def __post_init__(self):
         self.enable_corruption = False
         self.concatenate_terms = True
 
 
-def _attach_mid360(cfg: RobotEnvCfgPhase4, debug_vis: bool, show_lidar_map: bool = False) -> None:
-    """Bolt the MID-360 onto a blind-phase cfg.
+def _attach_mid360(
+    cfg: RobotEnvCfgPhase4,
+    debug_vis: bool,
+    show_raw_points: bool = False,
+    keep_lidar_map: bool = False,
+) -> None:
+    """Bolt the MID-360 and its height map onto a blind-phase cfg.
 
-    ``show_lidar_map`` is what keeps the view readable. The play configs of this lineage
-    draw the fan-built height grid through ``apply_lidar_view`` -- 388 green/red spheres
-    per robot -- which buries 4,000 MID-360 returns completely. Off by default, since
-    looking at the MID-360 is the whole point of this task; pass True to get the grid back
-    alongside it. Training configs have no ``lidar_map`` group at all, so it is a no-op
-    there.
+    ``debug_vis`` draws the map: green measured this step, red held from an earlier one.
+
+    ``show_raw_points`` turns on the scanner's own RayCaster markers -- the 1,000 raw
+    returns of this step, the ring that breathes at 10 Hz. Off by default: they land on
+    the same ground as the map's cell markers and make both hard to read. Worth turning on
+    to watch the scan pattern itself rather than the map it builds.
+
+    ``keep_lidar_map`` decides what happens to the fan-built map the play configs of this
+    lineage add through ``apply_lidar_view``. Dropped by default, for two reasons: its 388
+    green/red spheres per robot sit on top of this map's 609 and neither is then readable,
+    and both terms publish their unobserved rates to the same ``env.lidar_map_unobserved_*``
+    attributes, so whichever runs second wins. Set True to keep it and read the mid360
+    map's diagnostics with care. Training configs have no ``lidar_map`` group to begin
+    with, so it is a no-op there.
     """
-    cfg.scene.mid360_scanner = _mid360_scanner_cfg(debug_vis)
+    cfg.scene.mid360_scanner = _mid360_scanner_cfg(debug_vis=show_raw_points)
     cfg.scene.mid360_scanner.update_period = cfg.decimation * cfg.sim.dt
-    cfg.observations.mid360 = Mid360ObsCfg()
-    if not show_lidar_map and hasattr(cfg.observations, "lidar_map"):
-        # Same term and same noise model, just the non-drawing variant, so the group
-        # still runs and the unobserved-rate diagnostics still publish.
-        cfg.observations.lidar_map.height_scan = LIDAR_HEIGHT_SCAN_CFG
+    cfg.observations.mid360_map = Mid360MapObsCfg()
+    if debug_vis:
+        # env_index=None draws every environment; only affordable at play sizes.
+        cfg.observations.mid360_map.height_scan = _mid360_map_term(
+            debug_vis=True, debug_vis_env_index=None
+        )
+    if not keep_lidar_map and getattr(cfg.observations, "lidar_map", None) is not None:
+        # ObservationManager skips a group set to None.
+        cfg.observations.lidar_map = None
 
 
 @configclass
