@@ -145,7 +145,9 @@ FSM:
   # (acrobatics from a standstill), this state feeds the network both task selectors
   # at once, so a flip can be fired *while the robot is running*.
   #
-  #   [F/B/L/R/Y/U] drive        [3] jump   [4] backflip   [5] sideflip
+  #   [F/B/L/R/Y/U] drive
+  #   [3] backflip  [4] handspring  [5] sideflip L  [6] sideflip R
+  #   [7] front stance   [8] hind stance   (press again to come down early)
   #   [1]/LT+A FixStand          [0]/LT+B Passive
   #
   # Enter from FixStand. Motions re-arm after rearm_delay_s, so they can be chained,
@@ -161,7 +163,8 @@ FSM:
     # policy_dir and command_duration_s MUST be changed together -- they are one setting
     # split across two lines, and a mismatch fails silently rather than loudly:
     #
-    #   go2_multitask_v1 (runs from 2026-09-02) -> command_duration_s: 1.0   (current policy_dir)
+    #   go2_multitask_v2 (runs from 2026-09-09) -> command_duration_s: 1.0   (current policy_dir)
+    #   go2_multitask_v1 (runs from 2026-09-02) -> command_duration_s: 1.0
     #   go2_multitask_try_3                  -> command_duration_s: 1.5
     #   go2_multitask (older runs)           -> command_duration_s: 1.5
     #   go2_multitask_try_long_command       -> command_duration_s: 1.5
@@ -182,18 +185,17 @@ FSM:
     # the way through every flip, handing the robot to the locomotion expert while it is
     # upside down -- measured at 59% of the action, and worth 0.55 flip success against
     # 0.79. The robot will still move, so nothing announces the error.
-    policy_dir: ../../../logs/rsl_rl/go2_multitask_v1
+    policy_dir: ../../../logs/rsl_rl/go2_multitask_v2
     command_duration_s: 1.0
     time_scale: 1.0
     rearm_delay_s: 0.3
 
-    # Keyboard driving. The exported lin_vel_x range is [-1.0, 3.5], so scale 1.0 makes F
-    # ask for 3.5 m/s from a standstill -- the top of the training range, which this policy
-    # tracks at ~1.0 in the merged task. Commanding what it cannot hold just leaves it
-    # marking time. Velocity uses 1.0 deliberately because that state exists to measure a
-    # top speed; this one is for driving, so ask for something followable and raise it once
-    # the robot is moving.
-    keyboard_vel_scale: 0.35
+    # Keyboard driving. v2's exported lin_vel_x range is [-1.0, 2.5] -- the ceiling was lowered
+    # from 3.5 because chasing a speed the mixture cannot reach cost it the other two skills
+    # outright (see LIN_VEL_X_CEILING in multitask_env_cfg_moe_v2.py). Measured top speed is
+    # 2.45 m/s, so at 0.8 the F key asks for 2.0 m/s, which this policy tracks to within 0.05.
+    # Raise toward 1.0 once the robot is moving if you want the top of the range.
+    keyboard_vel_scale: 0.8
     # keyboard_alpha: 0.15      # low-pass on the command; higher = quicker to build up
 
     # Four rotations, one per heading -- the set the merged policy is trained on. Each is
@@ -201,7 +203,7 @@ FSM:
     # momentum: run forward and hand-spring forward, back up and back-flip, strafe left or
     # right and side-flip that way.
     #
-    # There is no jump entry. The merged environment sets enable_jump = False: a vertical
+    # There is no vertical-jump entry. The merged environment sets enable_jump = False: a vertical
     # jump existed only as the substitute fired when the sampled move fought the commanded
     # direction, and with all four rotations trained there is nothing left for it to
     # stand in for. Commanding one here would ask for a motion this policy never saw.
@@ -223,6 +225,31 @@ FSM:
       - key: "6"
         motion: sideflip_right
         target_roll_turns: 1.0
+
+    # --- bipedal stances (v2) ------------------------------------------------
+    # The third expert. Unlike a motion these are a mode: the flag goes high, the robot rises, and
+    # it stays up until the hold expires or the operator presses the key again.
+    #
+    # `stance` is the sign of the policy's second handstand column -- front = +1, hind = -1 -- and
+    # that sign is the entire difference between the two behaviours, so it is spelled by name here
+    # rather than left as a number to mistype.
+    stances:
+      - key: "7"
+        stance: front
+      - key: "8"
+        stance: hind
+
+    # Must match BIPED_HOLD_S in multitask_env_cfg_moe_v2.py. The policy has only ever seen the
+    # flag held for 10 s and then released, and it learned the descent as the tail of that window;
+    # holding it longer asks for a state it has never been in.
+    handstand_hold_s: 10.0
+    handstand_rearm_s: 0.5
+
+    # Extra seconds the fall guard stays suppressed after a stance releases, on top of the hold.
+    # The robot comes down through the same tilt range the guard watches for. Measured in training:
+    # 69 of 69 commanded stances succeeded, so a guard that fires here is a false positive, and it
+    # would drop the robot to Passive while it is still on two legs.
+    stance_settle_s: 1.0
 
     # Fall -> Passive guard. Values carried over from Dynamic, where they were tuned on
     # hardware: at 0.3 s the guard armed while the front feet were still slamming down and

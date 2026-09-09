@@ -42,6 +42,36 @@ void apply_targets(YAML::Node node, const std::string & motion, float & h, float
 }
 }  // namespace
 
+std::shared_ptr<State_Multitask::HandstandCommand> State_Multitask::handstand = nullptr;
+
+namespace isaaclab
+{
+namespace mdp
+{
+
+// handstand_command : [enabled, stance * enabled]
+// Mirrors HandstandCommand.command (handstand.py). `stance` is +1 for the front-leg stance and -1
+// for the hind-leg one, and is zeroed while disabled -- exactly as the training term does, so the
+// idle observation is the all-zero vector every other Go2 policy also produces here.
+REGISTER_OBSERVATION(handstand_command)
+{
+    (void)env;
+    (void)params;
+    auto & cmd = State_Multitask::handstand;
+
+    std::vector<float> obs(2, 0.0f);
+    if (cmd)
+    {
+        const float enabled = cmd->enabled ? 1.0f : 0.0f;
+        obs[0] = enabled;
+        obs[1] = cmd->stance * enabled;
+    }
+    return obs;
+}
+
+}  // namespace mdp
+}  // namespace isaaclab
+
 State_Multitask::State_Multitask(int state_mode, std::string state_string)
 : FSMState(state_mode, state_string)
 {
@@ -66,6 +96,10 @@ State_Multitask::State_Multitask(int state_mode, std::string state_string)
     if (cfg["time_scale"])            command_->time_scale = cfg["time_scale"].as<float>();
     if (cfg["command_duration_s"])    command_->command_duration_s = cfg["command_duration_s"].as<float>();
     if (cfg["rearm_delay_s"])         command_->rearm_delay_s = cfg["rearm_delay_s"].as<float>();
+    handstand_ = std::make_shared<HandstandCommand>();
+    if (cfg["handstand_hold_s"])      handstand_->hold_duration_s = cfg["handstand_hold_s"].as<float>();
+    if (cfg["handstand_rearm_s"])     handstand_->rearm_delay_s = cfg["handstand_rearm_s"].as<float>();
+    if (cfg["stance_settle_s"])       stance_settle_s_ = cfg["stance_settle_s"].as<float>();
     if (cfg["fall_check_delay_s"])    fall_check_delay_s_ = cfg["fall_check_delay_s"].as<float>();
     if (cfg["fall_check_hold_s"])     fall_check_hold_s_ = cfg["fall_check_hold_s"].as<float>();
     if (cfg["bad_orientation_limit"]) bad_orientation_limit_ = cfg["bad_orientation_limit"].as<float>();
@@ -94,6 +128,34 @@ State_Multitask::State_Multitask(int state_mode, std::string state_string)
             "can be fired.", state_string);
     }
 
+    if (cfg["stances"] && cfg["stances"].IsSequence())
+    {
+        for (const auto & entry : cfg["stances"])
+        {
+            StancePreset preset;
+            preset.key = entry["key"].as<std::string>();
+            preset.name = to_lower(entry["stance"].as<std::string>());
+            if (preset.name == "front")     preset.stance = 1.0f;
+            else if (preset.name == "hind") preset.stance = -1.0f;
+            else
+            {
+                spdlog::error(
+                    "State_{}: stance '{}' is neither 'front' nor 'hind'; skipping key '{}'.",
+                    state_string, preset.name, preset.key);
+                continue;
+            }
+            stances_.push_back(preset);
+            spdlog::info("State_{}: stance key '{}' -> {} (stance {:+.0f})",
+                         state_string, preset.key, preset.name, preset.stance);
+        }
+    }
+    else
+    {
+        spdlog::warn(
+            "State_{}: no `stances:` list configured -- the bipedal stances cannot be commanded. "
+            "The policy still runs; handstand_command simply stays zero.", state_string);
+    }
+
     spdlog::info(
         "State_{}: drive + on-demand motions (duration {:.2f}s, re-arm {:.2f}s, fall guard arms "
         "{:.2f}s after a trigger)",
@@ -117,6 +179,23 @@ State_Multitask::State_Multitask(int state_mode, std::string state_string)
             {
                 const float since_trigger = command_->elapsed();
                 if (since_trigger < command_->command_duration_s + fall_check_delay_s_)
+                {
+                    bad_orientation_latched_ = false;
+                    return false;
+                }
+            }
+
+            // A bipedal stance puts the trunk through exactly the tilt this guard watches for --
+            // that is what the stance *is*. Suppressed while the flag is high and through the
+            // settle back onto four legs, which the policy learned as part of the episode rather
+            // than as a fall. Without this the guard drops every successful handstand to Passive,
+            // and it does so with the robot up on two legs, which is the worst moment to go limp.
+            if (handstand_)
+            {
+                const float since_stance = handstand_->elapsed();
+                if (handstand_->enabled
+                    || (since_stance >= 0.0f
+                        && since_stance < handstand_->hold_duration_s + stance_settle_s_))
                 {
                     bad_orientation_latched_ = false;
                     return false;
@@ -170,6 +249,9 @@ void State_Multitask::enter()
     command_->step_dt = env->step_dt;
     command_->reset();
     State_Flip::command = command_;  // hand the jump_command / jump_time terms their source
+    handstand_->reset();
+    handstand_->step_dt = env->step_dt;
+    State_Multitask::handstand = handstand_;  // and the handstand_command term its own
     bad_orientation_latched_ = false;
 
     env->robot->update();
@@ -189,6 +271,7 @@ void State_Multitask::enter()
             // Before env->step(), so the jump_command / jump_time terms describe this step rather
             // than the previous one.
             command_->step();
+            handstand_->step();
             env->step();
 
             std::this_thread::sleep_until(sleepTill);
@@ -202,13 +285,53 @@ void State_Multitask::run()
     if (keyboard && keyboard->on_pressed)
     {
         const std::string key = keyboard->key();
+        bool handled = false;
         for (const auto & m : motions_)
         {
             if (m.key == key)
             {
-                // Queued, not applied: the command clock advances on the policy thread, and a
-                // motion must start on a step boundary for jump_time to match training.
-                command_->request(m.target_height, m.target_pitch_turns, m.target_roll_turns);
+                // Refused rather than queued while a stance is up. The training environment keeps
+                // the two commands mutually exclusive, so a flip fired from two legs is a state
+                // the policy has never been in -- and it is a long way to fall from.
+                if (handstand_->enabled)
+                {
+                    spdlog::warn(
+                        "State_Multitask: '{}' ({}) ignored -- a bipedal stance is active. Release "
+                        "it first (press its key again).", key, m.name);
+                }
+                else
+                {
+                    // Queued, not applied: the command clock advances on the policy thread, and a
+                    // motion must start on a step boundary for jump_time to match training.
+                    command_->request(m.target_height, m.target_pitch_turns, m.target_roll_turns);
+                }
+                handled = true;
+                break;
+            }
+        }
+        if (!handled)
+        {
+            for (const auto & st : stances_)
+            {
+                if (st.key != key) continue;
+                if (handstand_->enabled)
+                {
+                    // Same key (or the other stance key) while up = come down now. The auto-release
+                    // at hold_duration_s still applies; this only lets the operator end it early.
+                    handstand_->cancel();
+                    spdlog::info("State_Multitask: releasing the {} stance", st.name);
+                }
+                else if (command_->enabled)
+                {
+                    spdlog::warn(
+                        "State_Multitask: '{}' ({} stance) ignored -- an acrobatic move is running.",
+                        key, st.name);
+                }
+                else
+                {
+                    handstand_->request(st.stance);
+                    spdlog::info("State_Multitask: {} stance requested", st.name);
+                }
                 break;
             }
         }
@@ -228,6 +351,10 @@ void State_Multitask::exit()
     {
         policy_thread.join();
     }
+    handstand_->reset();
+    // Nulled, unlike State_Flip::command below: no other state publishes a handstand command, so
+    // leaving ours in place would have the term reading a stale struct nothing steps any more.
+    State_Multitask::handstand = nullptr;
     // Leave State_Flip::command pointing at our (now idle) command rather than nulling it: the
     // observation terms already treat a disabled command as all-zero, and State_Flip overwrites the
     // pointer on its own enter().
