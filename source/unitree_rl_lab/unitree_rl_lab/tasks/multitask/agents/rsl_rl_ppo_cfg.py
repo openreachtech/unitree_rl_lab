@@ -151,3 +151,32 @@ class MoEPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
     )
+
+
+@configclass
+class RslRlMoeV2ActorCriticCfg(RslRlMoeActorCriticCfg):
+    """The mixture with a bipedal expert in slot 2 and a gate prior that can route to it."""
+
+    actor_biped_prior_index: int = block_offsets(POLICY_UNIFIED)["handstand_command"]
+    critic_biped_prior_index: int = block_offsets(CRITIC_UNIFIED)["handstand_command"]
+    """Column of the bipedal command's ``enabled`` flag, derived from the layout so it cannot drift
+    out of step with it. The environment keeps this flag and the jump command's mutually exclusive,
+    so the prior never has to describe both at once."""
+
+
+@configclass
+class MoEV2PPORunnerCfg(MoEPPORunnerCfg):
+    policy: RslRlMoeV2ActorCriticCfg = RslRlMoeV2ActorCriticCfg(
+        init_noise_std=1.0,
+        actor_hidden_dims=[512, 256, 128],
+        critic_hidden_dims=[512, 256, 128],
+        activation="elu",
+    )
+
+    def __post_init__(self):
+        if hasattr(super(), "__post_init__"):
+            super().__post_init__()
+        # Every expert is initialised from a trained policy now, so none of them wants the rate a
+        # randomly initialised head would. Left at 1.0 these groups are empty; setting them keeps
+        # the configuration honest about what the mixture contains.
+        self.algorithm.lr_scales = {**self.algorithm.lr_scales, "actor_new": 0.1, "critic_new": 0.1}

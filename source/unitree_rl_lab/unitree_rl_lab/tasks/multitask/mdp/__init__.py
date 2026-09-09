@@ -19,6 +19,7 @@ from unitree_rl_lab.tasks.locomotion.mdp import *  # noqa: F401, F403
 
 from .commands import MultiTriggerJumpCommand, MultiTriggerJumpCommandCfg  # noqa: F401
 from .curriculums import takeoff_speed_levels  # noqa: F401
+# `handstand_takeoff_speed_levels` and `stance_aware` arrive with the biped star-import above.
 from .events import assert_observation_layout  # noqa: F401
 from .gating import (  # noqa: F401
     GATE_ACROBATICS,

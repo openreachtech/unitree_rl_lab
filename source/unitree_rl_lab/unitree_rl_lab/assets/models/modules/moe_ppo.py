@@ -27,6 +27,10 @@ DEFAULT_LR_SCALES: dict[str, float] = {
     # Pre-trained experts: keep their specialisation instead of overwriting it.
     "actor_pretrained": 0.1,
     "critic_pretrained": 0.1,
+    # Its own group so it can be protected independently; same value, so nothing changes until a
+    # config overrides it. See MoEActorCritic.parameter_groups for why this one is separable.
+    "actor_acrobatics": 0.1,
+    "critic_acrobatics": 0.1,
     # Kept for a head with nothing to preserve. No expert is in this group any more -- the third
     # slot holds the bipedal policy rather than a randomly initialised transition expert -- so
     # leaving these at 1.0 is harmless only as long as that stays true.

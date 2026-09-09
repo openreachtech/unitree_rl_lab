@@ -34,6 +34,9 @@ from typing import Any
 EXPERT_LOCOMOTION = 0
 EXPERT_ACROBATICS = 1
 EXPERT_BIPED = 2
+
+_PRETRAINED = (EXPERT_LOCOMOTION, EXPERT_ACROBATICS, EXPERT_BIPED)
+"""Expert slots initialised from a trained policy, and so fine-tuned rather than learned."""
 """Slot 2 held a transition expert that started from random weights and was meant to earn its place
 from the gate. Measured on the finished two-expert policy it never did: its routing weight read
 0.000 while running, 0.000 inside an acrobatic window, and 0.001 in the hand-back bin where it had
@@ -244,20 +247,30 @@ class MoEActorCritic(ActorCritic):
         """
         groups: dict[str, list[nn.Parameter]] = {
             "actor_pretrained": [],
+            "actor_acrobatics": [],
             "actor_new": [],
             "actor_gating": list(self.actor.gating.parameters()),
             "critic_pretrained": [],
+            "critic_acrobatics": [],
             "critic_new": [],
             "critic_gating": list(self.critic.gating.parameters()),
             "other": [],
         }
         # Every expert is initialised from a trained policy now, so none of them wants the full
         # learning rate a randomly initialised head would.
-        pretrained = (EXPERT_LOCOMOTION, EXPERT_ACROBATICS, EXPERT_BIPED)
+        #
+        # The acrobatics expert gets its own group so it can be protected separately. It is the one
+        # that measurably erodes: probed at a fixed condition, the merged policy's per-attempt flip
+        # success ran 0.30 at merge, 0.45 at iteration 1500, and 0.08 by 3000, with the backflip
+        # specifically going 0.485 -> 0.000 -- while the locomotion top speed stopped improving at
+        # iteration 1000 and the bipedal stance held its success rate throughout. Splitting the
+        # group changes nothing on its own: the default below matches ``actor_pretrained``.
         for index, expert in enumerate(self.actor.experts):
-            groups["actor_pretrained" if index in pretrained else "actor_new"].extend(expert.parameters())
+            name = "actor_acrobatics" if index == EXPERT_ACROBATICS else "actor_pretrained"
+            groups[name if index in _PRETRAINED else "actor_new"].extend(expert.parameters())
         for index, expert in enumerate(self.critic.experts):
-            groups["critic_pretrained" if index in pretrained else "critic_new"].extend(expert.parameters())
+            name = "critic_acrobatics" if index == EXPERT_ACROBATICS else "critic_pretrained"
+            groups[name if index in _PRETRAINED else "critic_new"].extend(expert.parameters())
 
         assigned = {id(p) for params in groups.values() for p in params}
         groups["other"] = [p for p in self.parameters() if id(p) not in assigned]

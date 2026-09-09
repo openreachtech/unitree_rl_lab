@@ -55,6 +55,23 @@ would collect full marks for both. Gating them on the rise having happened is wh
 the only way to reach them.
 """
 
+GATE_LOCOMOTION_OR_BIPED_UPRIGHT = "locomotion_or_biped_upright"
+"""Outside both special windows, *or* commanded onto two legs and actually up there.
+
+For the velocity-tracking rewards specifically. Under :data:`GATE_LOCOMOTION` alone they pay
+nothing while a stance is commanded, which leaves the robot with no velocity command to follow for
+the length of the stance -- and the bipedal expert was trained to follow one (``lin_vel_x`` +-1.0,
+``lin_vel_y`` +-0.5, ``ang_vel_z`` +-1.0). This keeps one term doing both jobs rather than adding a
+second, parallel tracking reward.
+
+The ``upright`` half is not a detail. Velocity tracking is fully satisfiable from a quadruped
+stance: a robot that never attempts the rise tracks its command beautifully and would collect full
+marks. Paying it only once the rise has happened is what makes the rise the way to reach it -- the
+same reason :data:`GATE_HANDSTAND_UPRIGHT` exists, and the mistake whose absence cost the first v2
+run its bipedal skill (0.134 success at iteration 400, decaying to 0.000 by 3000 as the policy
+learned the stance was pure cost).
+"""
+
 GATE_STANDING = "standing"
 """Barely moving, regardless of the window.
 
@@ -70,6 +87,38 @@ in a default pose.
 """
 
 
+def _biped_window(env: ManagerBasedRLEnv, command_name: str, crossfade_s: float) -> torch.Tensor:
+    """Weight in ``[0, 1]`` for the bipedal stance; zeros if the environment has no such command.
+
+    Separated out because :data:`GATE_LOCOMOTION` needs it too. The locomotion reward set has to be
+    off while the robot is deliberately on two legs, for the same reason the acrobatics window was
+    lengthened to 1.5 s: ``flat_orientation_l2``, ``feet_slide`` and ``joint_pos`` all describe a
+    quadruped, and firing them at a robot holding a stance it was commanded into is a large penalty
+    for correct behaviour.
+
+    It is also what makes coming back down learnable at all. The bipedal expert has never
+    descended -- its episodes end with it still up -- so the only pressure to come down is the
+    locomotion rewards returning when the window closes, faded in rather than switched.
+
+    Faded rather than stepped for the reason the acrobatics hand-back measured: 0.986 acrobatics
+    weight in the bin before ``command_duration_s`` and 0.008 in the bin after, which drops a robot
+    that is still recovering. A stance has further to come down than a flip does.
+    """
+    try:
+        command = env.command_manager.get_term(command_name)
+    except (KeyError, ValueError):
+        return torch.zeros(env.num_envs, device=env.device)
+    if not hasattr(command, "stance"):
+        return torch.zeros(env.num_envs, device=env.device)
+
+    stance = command.enabled.float()
+    if crossfade_s > 0.0:
+        since_end = command.elapsed_since_trigger - command.hold_duration
+        settling = ((crossfade_s - since_end) / crossfade_s).clamp(0.0, 1.0)
+        stance = torch.maximum(stance, settling * (command.trigger_step >= 0).float())
+    return stance
+
+
 def gate_mask(
     env: ManagerBasedRLEnv,
     gate: str,
@@ -77,6 +126,7 @@ def gate_mask(
     window_s: float = 1.5,
     crossfade_s: float = 0.25,
     standing_speed: float = 0.1,
+    biped_command_name: str = "handstand",
 ) -> torch.Tensor:
     """Per-environment weight in ``[0, 1]`` for the requested gate.
 
@@ -95,21 +145,12 @@ def gate_mask(
     command = env.command_manager.get_term(command_name)
 
     if gate in (GATE_HANDSTAND, GATE_HANDSTAND_UPRIGHT):
-        stance = command.enabled.float()
-        if crossfade_s > 0.0:
-            # Fade out after the stance ends rather than stepping to zero with the flag. Measured
-            # on the merged policy, the acrobatics gate hands back as a step function exactly at
-            # command_duration_s -- 0.986 acrobatics in the bin before, 0.008 in the bin after --
-            # which drops a robot that is still recovering. A stance has a longer way down than a
-            # flip does, so the same edge is worth softening here from the start.
-            since_end = command.elapsed_since_trigger - command.hold_duration
-            settling = ((crossfade_s - since_end) / crossfade_s).clamp(0.0, 1.0)
-            stance = torch.maximum(stance, settling * (command.trigger_step >= 0).float())
+        stance = _biped_window(env, command_name, crossfade_s)
         if gate == GATE_HANDSTAND:
             return stance
-        # The ramp, not the boolean: a step at the success threshold would put a cliff in the middle
-        # of the rise, with everything the robot is working toward arriving at once and nothing
-        # grading the approach. See HandstandCommand.upright_ramp.
+        # The ramp, not the boolean: a step at the success threshold would put a cliff in the
+        # middle of the rise, with everything the robot is working toward arriving at once and
+        # nothing grading the approach. See HandstandCommand.upright_ramp.
         return stance * command.upright_ramp
 
     elapsed = command.elapsed_since_trigger
@@ -124,8 +165,18 @@ def gate_mask(
 
     if gate == GATE_ACROBATICS:
         return acrobatics
+    if gate == GATE_LOCOMOTION_OR_BIPED_UPRIGHT:
+        biped = _biped_window(env, biped_command_name, crossfade_s)
+        locomotion = (1.0 - torch.maximum(acrobatics, biped)).clamp(min=0.0)
+        upright = biped * env.command_manager.get_term(biped_command_name).upright_ramp
+        # Still zero inside the acrobatics window: a flip cannot follow a ground velocity command.
+        return torch.maximum(locomotion, upright) * (1.0 - acrobatics).clamp(min=0.0)
     if gate == GATE_LOCOMOTION:
-        return 1.0 - acrobatics
+        # Off inside *either* special window. Before the bipedal skill existed this was simply
+        # the complement of the acrobatics window; leaving it that way fires the quadruped
+        # reward set at a robot standing on two legs because it was told to.
+        biped = _biped_window(env, biped_command_name, crossfade_s)
+        return (1.0 - torch.maximum(acrobatics, biped)).clamp(min=0.0)
     if gate in (GATE_ACROBATICS_STANDING, GATE_STANDING):
         speed = torch.linalg.norm(
             env.command_manager.get_command(command.cfg.velocity_command_name)[:, :2], dim=-1
@@ -135,5 +186,5 @@ def gate_mask(
     raise ValueError(
         f"Unknown gate {gate!r}; expected one of {GATE_LOCOMOTION!r}, {GATE_ACROBATICS!r},"
         f" {GATE_ACROBATICS_STANDING!r}, {GATE_STANDING!r}, {GATE_HANDSTAND!r},"
-        f" {GATE_HANDSTAND_UPRIGHT!r}."
+        f" {GATE_HANDSTAND_UPRIGHT!r}, {GATE_LOCOMOTION_OR_BIPED_UPRIGHT!r}."
     )

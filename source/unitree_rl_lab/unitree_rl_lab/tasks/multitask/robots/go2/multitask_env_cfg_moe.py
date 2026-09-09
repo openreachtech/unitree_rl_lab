@@ -411,7 +411,7 @@ class MoeCurriculumCfg:
             "command_name": "jump",
             "maximum_speed": ACRO_SPEED_CEILING,
             "max_velocity_error": MAX_LOCOMOTION_ERROR,
-            "state_file": "logs/rsl_rl/go2_multitask/takeoff_speed_state.json",
+            "state_file": "logs/rsl_rl/go2_multitask_v1/takeoff_speed_state.json",
         },
     )
 

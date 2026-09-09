@@ -147,12 +147,29 @@ class MultiTriggerJumpCommand(JumpCommand):
     def episode_time(self) -> torch.Tensor:
         return self._env.episode_length_buf.float() * self._env.step_dt
 
+    @property
+    def _biped_active(self) -> torch.Tensor:
+        """Whether a bipedal stance is commanded, or all-false if this environment has no such term.
+
+        Read here because ``locomotion_error`` has to exclude those steps for the same reason it
+        already excludes mid-flip ones: a robot standing on two legs cannot follow a ground
+        velocity command, and charging the take-off gate for that would make every curriculum in
+        this environment pull its own limit down as soon as the other one fires.
+        """
+        try:
+            command = self._env.command_manager.get_term(self.cfg.biped_command_name)
+        except (KeyError, ValueError):
+            return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        if not hasattr(command, "stance"):
+            return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        return command.enabled
+
     def _accumulate_locomotion_error(self) -> None:
         """Add this step's tracking error, but only for environments that are not mid-move."""
         command = self._env.command_manager.get_command(self.cfg.velocity_command_name)
         actual = self.robot.data.root_lin_vel_b[:, :2]
         error = torch.linalg.norm(command[:, :2] - actual, dim=-1)
-        outside = (~self.in_motion).float()
+        outside = (~(self.in_motion | self._biped_active)).float()
         self._loco_error_sum += error * outside
         self._loco_error_steps += outside
 
@@ -383,7 +400,10 @@ class MultiTriggerJumpCommand(JumpCommand):
         resamples to something slow enough, or the curriculum raises the limit, the move happens.
         """
         due = (~self.command_issued) & (self.episode_time >= self.scheduled_trigger_time)
-        defer = due & (self.commanded_speed > self.takeoff_speed_limit)
+        # A bipedal stance defers a flip rather than the other way round. The two must never both
+        # be commanded, and the asymmetry decides itself: a flip re-arms every 1.5-3 s and loses
+        # little by waiting, while a stance fires once per episode and holds for ten seconds.
+        defer = due & ((self.commanded_speed > self.takeoff_speed_limit) | self._biped_active)
         if torch.any(defer):
             self.scheduled_trigger_time[defer] = (
                 self.episode_time[defer] + self.cfg.takeoff_retry_interval_s
@@ -455,6 +475,10 @@ class MultiTriggerJumpCommandCfg(JumpCommandCfg):
     """Cooldown sampled after each motion, so the robot spends time running in between. With a
     1.5 s window and a 20 s episode this yields roughly three to four moves per episode, about a
     quarter of the time acrobatic."""
+
+    biped_command_name: str = "handstand"
+    """Name of the bipedal-stance command this one yields to and excludes from its locomotion
+    error. Harmless in an environment that has no such term -- both uses fall back to all-false."""
 
     initial_takeoff_speed_limit: float = 0.3
     """Commanded speed below which a flip may be triggered, before the curriculum raises it."""

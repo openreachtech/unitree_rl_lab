@@ -7,6 +7,7 @@ import os
 import torch
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
+from unitree_rl_lab.utils.curriculum_state import should_restore
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -90,7 +91,7 @@ def takeoff_speed_levels(
         command._takeoff_floor = float(command.takeoff_speed_limit)
         command._takeoff_error_sum = 0.0
         command._takeoff_error_count = 0
-        if state_file is not None and os.path.isfile(state_file):
+        if should_restore(state_file):
             with open(state_file) as f:
                 command.takeoff_speed_limit = float(json.load(f)["takeoff_speed_limit"])
 
