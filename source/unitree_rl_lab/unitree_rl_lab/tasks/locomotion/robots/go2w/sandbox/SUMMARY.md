@@ -855,3 +855,274 @@ termination. A related calibration issue was found and never tested:
 `goal_radius_range` (1.75-2.5 m) with `arrival_radius` 0.5 m means a goal drawn at the
 low end can be "arrived at" from ~1.25 m -- the near side of the wall -- so
 `goal_arrival_reward` can pay out without a crossing at all.
+
+### 2026-09-06/07: Try46/47 -- perception, and the parking trap finally isolated
+
+**Try46 -- give the *actor* the height scan.** Phase5's reward design is a port of ANYmal
+Parkour, whose Locomotion module is perceptive; this codebase took the reward tables and
+left the actor proprioception-only, so the policy learns a wall exists only by touching
+it. Try46 adds the critic's own privileged `mdp.height_scan` (17x11=187 rays, clip
+(-2.0, 5.0), `history_length=1`, no noise) to `PolicyCfg`. Actor obs 141 -> 328, so
+checkpoints are incompatible and the whole Phase1 -> Phase2 -> Phase5 lineage was
+retrained. Explicitly a **diagnostic upper bound**, not a deployable policy.
+
+Result: Phase5 came out at terrain_levels **3.89** with `wall_body_height` at 0.52-0.67
+(~7x what the same term earns from a competent checkpoint) and `goal_arrival` pinned at
+~0 for the whole run. Same signature as Try43. **Try46 measured the parking trap, not
+perception.**
+
+**The trap, stated properly.** Two from-scratch Phase5 runs have now collapsed into it
+(Try43 from Phase2, Try46 from Phase1) while all six competent-checkpoint runs
+(Try39-42, 44, 45) avoided it. **The bootstrap point was hiding the trap, not preventing
+it** -- a policy that already climbs never explores "stand at the wall forever", but one
+learning from scratch finds it long before it finds crossing, and then nothing dislodges
+it: it does not terminate, is not required to arrive, and does not demote (parked at
+~1.25 m is neither < 0.5 m nor past the promotion distance).
+
+**Try47 -- Try46 minus `wall_body_height`.** One-variable difference, so Try46 is the
+baseline. Reused Try46's Phase1/Phase2 checkpoints unchanged (`wall_body_height` lives
+only in `RewardsCfgPhase5`), Phase5 only, 2000 iterations.
+
+| | Try46 (trap) | Try47 (term removed) |
+|---|---|---|
+| terrain_levels | 3.89 (frozen 3.9-4.4) | **5.54** (peak 6.43) |
+| `goal_arrival` | -0.0002 | **0.0027** |
+| base_contact | 1.3 % | **41.9 %** |
+| time_out | 94.2 % | 55.4 % |
+| mean episode length | (long, parked) | 666 |
+
+All four flipped from "standing around" to "actually engaging the wall". **Cause
+confirmed: `wall_body_height` pays weight 1.0 every step against `goal_arrival`'s 0.15
+once per episode, so parking simply outscores crossing.** Play-checked: the robot now
+lifts its body *in front of* the wall rather than colliding and then lifting -- a
+qualitatively better motion than anything earlier in the campaign.
+
+**But perception did not help.** The right blind baseline is **Try34** (from Phase2,
+2000 iterations, blind actor, no `wall_body_height` -- it did not exist yet, same Try26
+curriculum and Try30 contact split as the default). Try34 vs Try47 differ *only* in the
+actor's height scan:
+
+| | terrain_levels | base_contact | bad_orientation | time_out |
+|---|---|---|---|---|
+| Try34 (blind) | **6.53** | 37.8 % | 4.7 % | 57.5 % |
+| Try47 (perceptive) | 5.54 (peak 6.43) | 41.9 % | 2.7 % | 55.4 % |
+
+Roughly equal, with the blind run ahead on terrain_levels. **A perfect privileged height
+map did not improve climbing** -- which, on the upper-bound logic this try was built
+for, argues against funding the two-stage LiDAR elevation-map project *for this problem*
+(it may still be worth it for others). Caveat: terrain_levels has ranked things
+backwards here before, and Try47 also shows the familiar peak-then-decline (6.43 ->
+5.54).
+
+**Standing conclusion for anyone starting a from-scratch Phase5 run:** check
+`wall_body_height` and `goal_arrival` in the first few hundred iterations. If the former
+is running several times its usual value while the latter sits at zero, the run is in
+the trap and is measuring nothing else.
+
+### 2026-09-07/08: Try48 -- a jointly-trained state estimator; and the height-scan
+### transpose that made the whole perceptive lineage unverifiable in MuJoCo
+
+**Try48 -- estimator (base_lin_vel + CoM-CoP) on the GRU's hidden output.** Try47 had
+established that the actor's *observation* was not the blocker; the remaining reading was
+that the missing behaviour needs **timing** (accelerate, commit weight forward, launch),
+and timing needs to know your own speed and whether your weight is ahead of your contact
+patch -- neither of which is in the actor's observation. So: a 6-dim auxiliary regression
+head (`base_lin_vel(3)` + `com_cop_vector(3)`) hanging off the GRU's hidden state, trained
+jointly with PPO, with the actor conditioned on the **estimate** rather than the ground
+truth (so deployment is unchanged). Origin: TumblerNet (Xiao et al. 2025) via
+`origin/feat/biped`, adapted -- feat/biped's estimator eats a separate stacked-history
+block because that policy is feedforward, whereas this lineage's GRU already *is* that
+history encoder, so the estimator reads `out_mem` instead.
+
+One-variable difference from Try47, so Try47 is the baseline. Both are 2000 Phase5
+iterations on top of their own Phase2 (numbers below re-aggregated at interval 200, which
+is why Try47's differ slightly from the interval-100 figures in the table above):
+
+| | terrain_levels (final / peak) | base_contact | time_out | goal_arrival | Loss/estimator |
+|---|---|---|---|---|---|
+| Try47 (no estimator) | 5.48 / 6.45 | 37.7 % | 59.5 % | 0.003 | -- |
+| Try48 (estimator) | **6.84 / 6.90** | 37.4 % | 59.5 % | 0.002 | 0.017 -> 0.013 |
+
+Two things worth separating:
+
+* **The estimator learned.** `Loss/estimator` fell 0.017 -> 0.013 and stayed flat-low,
+  i.e. the auxiliary task is being solved, not ignored. That is the check the try was
+  built to make; a flat loss would have meant "no signal", not "no effect".
+* **The peak-then-decline is much milder.** Try47 peaked at 6.45 and gave back a full
+  level (-> 5.48); Try48 peaked at 6.90 and held 6.84. Given how often this campaign has
+  seen a run climb and then collapse, "held its peak" is the more interesting half of the
+  result than the absolute number.
+
+`goal_arrival` stayed at ~0.002 in both, so **neither run crosses in bulk** -- the
+difference is in how much wall they get up, not in completions. And per the standing rule,
+`terrain_levels` has ranked tries backwards before, so this needed MuJoCo.
+
+**Which is where it fell over: the observation the whole perceptive lineage trained on is
+not the one the deploy stack produces.** Trying to MuJoCo-check Try48, the deploy binary
+aborted with `Observation term 'height_scan' is not registered.` Porting the height-scan
+pipeline into `deploy/robots/go2w` surfaced the real problem: Try46's actor height scan
+was chosen to *match the critic's*, and nobody had checked it against the height map this
+project already publishes (`unitree_mujoco`'s `HeightMapSimulator` -> `rt/height_scan` ->
+the deploy parser). Two of the three defining properties disagreed:
+
+1. **The grid was transposed.** `GridPatternCfg.ordering` defaults to `"xy"`, which is
+   torch `meshgrid(indexing="xy")`: **x** is the fastest-varying axis, so ray `k` is
+   `k = iy*Nx + ix`. Both deploy-side implementations walk **y** fastest
+   (`height_map_simulator.cpp`: `idx = ix*kGridNy + iy`). Same 187 numbers, transposed --
+   a policy trained on `"xy"` reads a 1.6 m *forward* elevation profile as a 1.0 m
+   *lateral* one. Any MuJoCo run of Try46/47/48 would have been measuring a scrambled
+   observation, not the policy.
+2. **The height offset was wrong.** `mdp.height_scan` returns `sensor_z - hit_z - offset`
+   with `offset=0.5` by default; the deploy stack's shared `height_scan::kOffset` is
+   `0.273175`. A constant 0.226825 m bias -- absorbable by the network, but only if it was
+   *trained* with it.
+
+Size, resolution and yaw-alignment already agreed (17x11 at 0.1 m over 1.6x1.0 m, rays
+world-vertical, grid following heading), so the mismatch was exactly these two.
+
+**Honest note on how this happened:** this is a design error in Try46, not a discovery
+about the environment. "Match what the critic sees" was a convenient default, chosen
+without asking whether the project already had a *deployable* height-scan spec. It did --
+the publisher and the C++ parser had been deliberately aligned with each other all along.
+Three tries (46, 47, 48) then ran on an observation that could not be checked outside
+Isaac Lab. The cost is not the compute; it is that Try47's "perception did not help"
+conclusion above rests on an Isaac-only comparison that was never externally validated.
+
+**Fixed on the training side (Try49), deliberately.** The deploy spec has to hold across
+the publisher, the C++ parser and the real robot's utlidar; the training config is the
+free variable. Try49 = Try48 with `ordering="yx"`, `offset=0.273175`, and the actor's
+`clip` set to the publisher's own `(-1.0, 5.0)` -- Try46 had widened that to
+`(-2.0, 5.0)` precisely because `offset=0.5` made a crouched robot saturate the floor,
+which was a symptom of the wrong offset rather than a real need. Paired with moving
+`unitree_mujoco`'s Go2W `utlidar` site back to the **base_link origin** (it had been
+placed at `pos="0 0 -0.226825"` to fake Isaac's 0.5 without touching the shared
+`kOffset`), so both sides now compute `base_z - hit_z - 0.273175` from one constant.
+**The two changes only work as a pair -- do not reintroduce the site fudge.**
+
+The observation *shape* is unchanged at 328, so a Try48 checkpoint loads without complaint
+and is silently wrong (every input permuted and shifted) -- hence a full
+Phase1 -> Phase2 -> Phase5 retrain rather than a resume.
+
+**Standing rule this adds:** an observation term destined for deploy must be specified
+against the deploy side's definition, not against the critic's, and the grid *ordering* is
+part of that definition.
+
+**Try49 -- the realignment, measured.** Phase1 500 / Phase2 2000 / Phase5 **900** (Phase5
+deliberately shorter than Try48's 2000: nothing here was meant to change behaviour, and
+the deliverable was a *checkable* policy rather than a longer one).
+
+| | terrain_levels (final / peak) | base_contact | time_out | bad_orientation | goal_arrival | Loss/estimator |
+|---|---|---|---|---|---|---|
+| Try48 (2000 iter, misaligned) | 6.84 / 6.90 | 37.4 % | 59.5 % | 3.1 % | 0.002 | 0.017 -> 0.013 |
+| Try49 (900 iter, aligned) | 6.65 / 6.75 | 46.2 % | 49.3 % | 4.4 % | 0.002 | 0.026 -> 0.014 |
+
+**The realignment cost nothing measurable** -- Try49 is within ~0.2 of a level of Try48
+on less than half the Phase5 budget, and the estimator loss converges to the same 0.014.
+That is the expected outcome and worth stating as such: a fixed permutation plus a
+constant offset is exactly the kind of structure a network relearns from scratch without
+difficulty, so the transpose was never going to show up as an Isaac-side *training*
+problem. It only ever mattered at the boundary. Nothing about the wall itself improved
+(`goal_arrival` still ~0.002); what Try49 buys is a policy whose observation the deploy
+binary can reproduce.
+
+`deploy/robots/go2w/config/config.yaml`'s `policy_dir` now points at
+`go2w_v1_phase5_try49`. Exported graph verified: ONNX `obs [1, 328]` + `h_in [1, 1, 256]`,
+and `deploy.yaml` carries both `keyboard_velocity_commands` (so MuJoCo keyboard input
+works) and `height_scan`.
+
+**Try49 Play-checked: still cannot climb 0.60 m. The perceptive/estimator line is closed
+and was not promoted.** Isaac-side numbers looked respectable (terrain_levels 6.65 on 900
+Phase5 iterations), which is exactly the trap this file has warned about twice already --
+`terrain_levels` measures how far up the curriculum a run got, and level 6.65 corresponds
+to ~0.47 m walls. Play showed no 0.60 m crossing. Sandbox cleared 2026-09-09.
+
+### What the whole 0.60 m campaign (Try35-49) settled
+
+Four distinct classes of hypothesis were tested and all came back null:
+
+| class | tries | outcome |
+|---|---|---|
+| terrain shape (sloped approach, tile size) | 35, 36 | null; Try36 produced elbow-propping, no crossing |
+| a reward that pays for lifting the body | 37, 38, 39 | folded `wall_body_height`, later shown to be a **trap** from scratch |
+| the termination that killed leaners | 40, 41, 42 | Try41 was the campaign best (~30 % in Play) and never reproduced in MuJoCo |
+| curriculum promotion rule | 43 | null, and confounded by a bootstrap change (my error) |
+| friction, from both sides | 44, 45 | null (surface 0.3-1.2 -> 2.0-3.0; wheel joint 0.01 -> 2.0 N*m, ~200x) |
+| perception (privileged height scan in the actor) | 46, 47, 49 | null against the blind Try34 baseline |
+| state estimation (lin_vel + CoM-CoP, TumblerNet) | 48 | estimator learned (loss 0.017 -> 0.013), held its peak better, still no crossing |
+
+**Where that leaves the problem.** 0.50 m is solved and reproduces in MuJoCo; 0.60 m
+never did, under any of the above. The two things never actually tested are worth writing
+down so nobody re-derives them:
+
+  * **The goal geometry lets "arrival" happen on the near side of the wall.**
+    `goal_radius_range=(1.75, 2.5)` with `arrival_radius=0.5` means a goal at 1.75 m is
+    satisfied from 1.25 m -- which is exactly where the wall ring sits. Found by reading
+    the config, never tested. If true, `goal_arrival` has been partly payable without
+    crossing for the whole campaign, which would undercut every reward-shaping result
+    here.
+  * **The curriculum's promotion window is narrower than its arrival radius.** Promotion
+    needs net displacement > `tile_size * 0.35` = 1.925 m; the wall's far face is at
+    1.45 m. So a robot that crosses cleanly and stops is not promoted, and the 0.60 m
+    wall only exists at the top curriculum row -- see
+    `terrain_levels_climb_demote_on_fail`'s docstring, which records this as untested
+    rather than disproved.
+
+Both are geometry bugs in the *measurement*, not in the policy. A next campaign should
+fix those before shaping anything else, because every reward result above was read through
+them.
+
+### What was deleted, and what was kept
+
+Deleted (2026-09-09): `velocity_env_cfg_perceptive.py` (Try46), `velocity_env_cfg_phase5_try47.py`,
+`velocity_env_cfg_estimator.py` (Try48), `velocity_env_cfg_try49.py`, all their gym
+registrations, `assets/models/actor_critic_recurrent_estimator.py`,
+`assets/models/modules/estimator_ppo.py`, `GruEstimatorPPORunnerCfg`,
+`mdp.observations.com_cop_vector`, and ~2.9 GB of Try46-49 checkpoints.
+
+Kept deliberately:
+
+  * **The default Phase5 and the `-Adjust` polish task**, unchanged throughout -- Try49
+    was never promoted. `deploy/robots/go2w/config/config.yaml`'s `policy_dir` is back on
+    `go2w_v1_phase5_adjust`.
+  * **`unitree_mujoco`'s Go2W support** on `feat/height-map`: foot friction 0.8 -> 1.0 and
+    wheel `ctrlrange` 15 -> 23.7 N*m (matching the Isaac actuator), the `utlidar` site at
+    the base_link origin, and the wall staircase in `scene_terrain.xml` (tops at 0.08 to
+    0.92 m, the 0.62 m step being the target). Independently useful for any future wall
+    work, and the friction/ctrlrange values are corrections rather than experiment
+    scaffolding.
+
+Also deleted (2026-09-09): the **deploy-side height-scan pipeline** --
+`HeightScanUpdater.{h,cpp}`, `REGISTER_OBSERVATION(height_scan)`, `apply_height_scan_noise`,
+`resolve_bool_option`, the `FSM.Velocity.height_scan` config block, and the
+`main.cpp`/`CMakeLists.txt` hooks. `deploy/robots/go2w/` is now byte-identical to its
+committed state. It was built and verified end to end against `unitree_mujoco`'s publisher,
+so if a future perceptive policy needs it, the specification is worth recovering rather than
+re-deriving:
+
+  * one float32 `"z"` field, `point_step = 4`, `height = Nx = 17`, `width = Ny = 11`,
+    `row_step = 44`, cell `(ix, iy)` at flat index **`ix * Ny + iy`** (y fastest);
+  * values are `base_z - hit_z - kOffset` with `kOffset = 0.273175`, already clipped to
+    `(-1.0, 5.0)` by the publisher, so the deploy side passes them through untouched;
+  * the training side must therefore set `ordering="yx"` and `offset=0.273175` on
+    `mdp.height_scan` (Isaac's `"xy"` default is the transpose);
+  * the under-body exclusion (`mdp.height_scan_excluding_body`, 35 masked cells -> 152
+    values at this resolution, **not** the Go2 implementation's literal 117, which was
+    sized for a 29x21 grid at 0.05 m) belongs behind a config option defaulting to the
+    Go2 behaviour, not hard-coded;
+  * the missing-topic fallback must be the **trained flat-ground reading**, never the
+    `kEmpty` sentinel -- see the defect note below.
+
+One deploy-side defect found while debugging this, worth remembering even though the code
+it lived in is gone: `HeightScanUpdater::get()` filled 187 cells with `kEmpty = -1.0` when
+the topic was missing or stale. In this convention -1.0 means "terrain 0.73 m above the base, on every
+side" -- an input no policy has ever seen. The robot thrashes and falls the instant it
+enters the policy state, which reads as a bad policy and says nothing about the missing
+topic. Measured on Try49's own weights: max|action| 7.13 vs 2.80 on a correct flat scan,
+with the estimator hallucinating 0.70 m/s of forward velocity while standing still. **The
+signal that an input is missing belongs in the log, not in the robot's behaviour** -- the
+fallback is now the trained flat-ground reading (`nominal_base_z - kOffset` = 0.176825)
+with a warning every 2 s. `config.yaml`'s `flat_value: 0.0` was wrong for the same reason
+(0.0 means "ground 0.273 m below the base" -- a step down, not flat; the correct value is
+`nominal_base_z - kOffset` = 0.176825). **Rule: a missing input must degrade to something
+the policy was trained on, and announce itself in the log -- never encode "missing" as an
+extreme value the network has never seen.**
