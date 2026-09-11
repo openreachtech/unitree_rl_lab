@@ -53,7 +53,7 @@ int main(int argc, char** argv)
     std::cout << "          [F/B/L/R/Y/U] velocity forward/back/left/right/yaw (latched, diagonal OK)\n";
     std::cout << "          [Space] zero velocity cmd; [0] Passive FSM\n";
 
-    while (true)
+    while (rclcpp::ok())
     {
         sleep(1);
     }

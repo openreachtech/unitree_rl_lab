@@ -133,7 +133,7 @@ REGISTER_OBSERVATION(height_scan)
                 flat_value);
             logged = true;
         }
-        return go2::make_flat_height_scan(flat_value);
+        return go2::HeightScanUpdater::instance().make_flat(flat_value);
     }
 
     return go2::HeightScanUpdater::instance().get();
