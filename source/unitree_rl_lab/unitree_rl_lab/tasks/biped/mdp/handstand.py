@@ -206,6 +206,39 @@ class HandstandCommand(CommandTerm):
         """In the commanded stance with the lifted end fully off the ground."""
         return self.is_upright & (self.lifted_contact == 0.0)
 
+    # -- external control -------------------------------------------------------------------
+
+    def set_command(
+        self,
+        env_ids: Sequence[int] | torch.Tensor,
+        enabled: bool,
+        stance: float | None = None,
+        hold_duration: float | None = None,
+    ) -> None:
+        """Command a stance from outside, the counterpart of ``JumpCommand.set_command``.
+
+        Enabling does not flip ``enabled`` directly. It clears the per-episode latch and makes the
+        term's own schedule due at the next update, so the stance starts exactly the way a scheduled
+        one does -- ``trigger_step`` stamped inside the update, the speed gate honoured, the hold
+        ended by ``hold_duration`` and the attempt tallied. Disabling collapses the hold so the same
+        ending path runs at the next update. Requires ``pinned=False``: a pinned term never updates.
+
+        ``hold_duration`` of ``None`` holds until released.
+        """
+        if self.cfg.pinned:
+            raise RuntimeError("HandstandCommand.set_command needs pinned=False")
+        if enabled:
+            if stance is not None:
+                self.stance[env_ids] = stance
+            self.hold_duration[env_ids] = float("inf") if hold_duration is None else hold_duration
+            self.enabled[env_ids] = False
+            self.trigger_step[env_ids] = -1
+            self.scheduled_trigger_time[env_ids] = 0.0
+            self._achieved[env_ids] = False
+        else:
+            self.hold_duration[env_ids] = 0.0
+            self.scheduled_trigger_time[env_ids] = 1.0e9
+
     # -- schedule ---------------------------------------------------------------------------
 
     def _resample_command(self, env_ids: Sequence[int]):

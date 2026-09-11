@@ -74,3 +74,9 @@ datasets
 # Mimic
 *.npz
 .local
+
+# LLM instruction dataset: generated programs, validation results and the dataset are rebuilt
+# by scripts/llm. Only data/llm/capability.json is committed (it needs a simulator run).
+data/llm/*.jsonl
+data/llm/rates.json
+data/llm/system_prompt.txt
