@@ -76,7 +76,7 @@ datasets
 .local
 
 # LLM instruction dataset: generated programs, validation results and the dataset are rebuilt
-# by scripts/llm. Only data/llm/capability.json is committed (it needs a simulator run).
+# by scripts/llm. Committed: capability.json and rates.json (they need a simulator run) and
+# system_prompt.txt (the prompt the model is trained and served under -- a change to it invalidates
+# a fine-tuned adapter, so it should show up in a diff).
 data/llm/*.jsonl
-data/llm/rates.json
-data/llm/system_prompt.txt

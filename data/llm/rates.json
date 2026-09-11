@@ -1,0 +1,9 @@
+{
+  "backflip": 0.944,
+  "frontflip": 0.764,
+  "handstand": 0.40575396825396826,
+  "hindstand": 0.8274390243902439,
+  "jump": 0.001,
+  "sideflip_left": 0.975,
+  "sideflip_right": 0.932
+}
