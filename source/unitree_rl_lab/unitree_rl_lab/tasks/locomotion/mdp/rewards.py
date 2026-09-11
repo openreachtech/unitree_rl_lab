@@ -1095,3 +1095,98 @@ def wheel_vel_without_cmd_penalty(
 
 
 
+
+
+"""
+Wall-band gated terms (Go2W Phase5, folded from sandbox Try50 on 2026-09-11).
+
+Unitree's own Go2-W footage climbs a wall taller than the robot by rolling the wheels up
+the vertical face while the body pitches to 60-80 deg and the thighs swing 1.5-3 rad from
+the default stance. The default reward set charged roughly -6 per episode for that pose
+(joint_pos ~-3.4, goal_dont_wait -2.0, flat_orientation -0.7) against a +0.12 arrival
+bonus. These variants zero the two pose taxes on wall columns inside a band around the
+wall ring, and make the don't-wait test 3-D so that rising counts as moving. Measured
+with scripts/rsl_rl/eval_wall.py at 0.60 m: crossing 9 % -> 67 % (deterministic), 2 % ->
+72 % (stochastic). See sandbox/SUMMARY.md, 2026-09-09..11.
+"""
+
+
+def _wall_band_mask(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    asset_cfg: SceneEntityCfg,
+    wall_distance: float,
+    gate_width: float,
+    gate_width_far: float,
+) -> torch.Tensor:
+    """True for envs on a wall column whose base is within (-gate_width, +gate_width_far)
+    of the wall ring, measured as distance from the env's spawn origin -- the same coarse,
+    direction-agnostic proxy ``wall_body_height_reward`` uses."""
+    asset = env.scene[asset_cfg.name]
+    signed = torch.norm(asset.data.root_pos_w[:, :2] - env.scene.env_origins[:, :2], dim=-1) - wall_distance
+    in_band = (signed > -gate_width) & (signed < gate_width_far)
+    rough = _rough_env_mask(env.command_manager.get_term(command_name))
+    if rough is not None:
+        in_band = in_band & ~rough
+    return in_band
+
+
+def flat_orientation_l2_wall_gated(
+    env: ManagerBasedRLEnv,
+    command_name: str = "base_velocity",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    wall_distance: float = 1.25,
+    gate_width: float = 0.6,
+    gate_width_far: float = 0.6,
+) -> torch.Tensor:
+    """``flat_orientation_l2`` (sum of squared planar projected gravity), zeroed on wall
+    columns inside the wall band. Off the band, and on "rough" columns, it is the stock
+    term unchanged -- level running is still expected everywhere else."""
+    asset = env.scene[asset_cfg.name]
+    value = torch.sum(torch.square(asset.data.projected_gravity_b[:, :2]), dim=1)
+    gate = _wall_band_mask(env, command_name, asset_cfg, wall_distance, gate_width, gate_width_far)
+    return torch.where(gate, torch.zeros_like(value), value)
+
+
+def joint_position_penalty_wall_gated(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    stand_still_scale: float,
+    velocity_threshold: float,
+    command_name: str = "base_velocity",
+    wall_distance: float = 1.25,
+    gate_width: float = 0.6,
+    gate_width_far: float = 0.6,
+) -> torch.Tensor:
+    """``joint_position_penalty`` (L2 norm of leg-joint deviation from the default stance,
+    x``stand_still_scale`` when idle), zeroed on wall columns inside the wall band -- the
+    climbing poses put the thighs 1.5-3 rad from default, the largest single tax on the
+    manoeuvre. ``joint_vel``/``joint_acc``/``joint_torques``/``dof_pos_limits``/
+    ``action_rate`` still regularise the legs there."""
+    value = joint_position_penalty(env, asset_cfg, stand_still_scale, velocity_threshold)
+    gate = _wall_band_mask(env, command_name, asset_cfg, wall_distance, gate_width, gate_width_far)
+    return torch.where(gate, torch.zeros_like(value), value)
+
+
+def goal_dont_wait_penalty_3d(
+    env: ManagerBasedRLEnv,
+    command_name: str = "base_velocity",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    speed_threshold: float = 0.2,
+) -> torch.Tensor:
+    """``goal_dont_wait_penalty`` with the speed test on the full 3-D body-frame velocity
+    rather than its planar part; same arrived/rough gating. A body rising 0.7 m in ~2 s
+    has ~0.35 m/s of vertical speed, so climbing counts as moving while a robot parked at
+    the wall, at any pitch, still counts as waiting. Chosen over a spatial gate because
+    switching the penalty off near the wall would turn parking reared-up inside
+    ``wall_body_height_reward``'s window into a pure income (the Try43 trap)."""
+    command_term = env.command_manager.get_term(command_name)
+    asset = env.scene[asset_cfg.name]
+    distance = torch.norm(command_term.goal_pos_w - asset.data.root_pos_w[:, :2], dim=-1)
+    arrived = distance < command_term.cfg.arrival_radius
+    rough = _rough_env_mask(command_term)
+    if rough is not None:
+        arrived = arrived | rough
+    speed = torch.norm(asset.data.root_lin_vel_b, dim=-1)
+    too_slow = (speed < speed_threshold).float()
+    return torch.where(arrived, torch.zeros_like(too_slow), too_slow)

@@ -1126,3 +1126,575 @@ with a warning every 2 s. `config.yaml`'s `flat_value: 0.0` was wrong for the sa
 `nominal_base_z - kOffset` = 0.176825). **Rule: a missing input must degrade to something
 the policy was trained on, and announce itself in the log -- never encode "missing" as an
 extreme value the network has never seen.**
+
+### 2026-09-09: Try50/51 -- the technique in Unitree's own footage, and what the reward
+### set charges for it
+
+**Where this came from.** After the perceptive line was closed, the user extracted eight
+keyframes from Unitree's official Go2-W video of a 70 cm wall climb
+(`go2w_70cm_climb_keyframes.png`, committed) and wrote a plan (Try50). The footage
+settles a question this campaign had only ever guessed at -- *how* a Go2-W gets over a
+wall taller than its standing height. It is not a jump and not a Go2-style "hook the
+front feet over the edge and haul". The wheels are never locked:
+
+| t | what happens |
+|---|---|
+| 0.5 s | crouched, slow approach; stops with its nose at the wall. No run-up |
+| 2.1 s | front wheels lift off the ground and are placed on the *vertical face* |
+| 2.4 s | **front wheels roll up the face** while the rear legs extend, pitching the body up and pressing the front wheels into the face |
+| 2.8 s | body ~80 deg; chest resting on the top edge; rear wheels still on the ground, rear legs nearly straight |
+| 3.3 s | front wheels planted on the top surface (= where the current policies get to and stop) |
+| 3.4-3.9 s | front wheels drive forward on the top; rear legs extend and **the rear wheels roll up the face** |
+| 4.2 s | rear wheels reach the top edge. ~2.1 s from first lift |
+
+Two caveats the plan itself records: the obstacle in the footage is a leather sofa
+(rounded top edge, soft high-friction surface, back ~20-25 cm thick), not a rigid 40 cm
+slab with a 90-degree edge; and the joint-angle keyframes in the plan are eyeballed.
+
+**Checking the plan against the code (all confirmed except as noted).**
+`flat_orientation_l2` is -0.5 (Phase5); `illegal_contact_excluding_top` exempts only
+`F_up > F_horizontal + 20` so a chest pressed against the face at 80 deg terminates at
+400 N; friction is randomised (0.3, 1.2) on the robot at **`mode="startup"`** against a
+mu=1.0 terrain with `multiply` -- so a third of the envs run at effective mu <= 0.6 for
+the *entire* run, not just some episodes; `goal_dont_wait` is gated only on
+arrived/rough; `bad_orientation` at 2.0 rad leaves 80 deg (1.40 rad) safe;
+`wall_distance` 1.25 = (5.5 - 2.0)/2 - 0.5, faces at 1.05/1.45. Three things the plan
+got wrong or missed: (1) `promote_distance` was not a parameter -- `tile_size * 0.35`
+was hard-coded in `terrain_levels_climb_demote_on_fail`; Try43's parameter had never
+been committed. Now a default-`None` keyword. (2) The two measurement fixes are
+coupled: promotion needs displacement > `promote_distance`, but arrival can happen as
+close as `min(goal_radius) - arrival_radius`, so **`1.45 < promote_distance <=
+min(goal_radius) - 0.5`** or a robot that legitimately arrives is still never
+promoted. With the plan's (2.0, 2.5) the only window is (1.45, 1.5]; (2.2, 2.5) gives
+(1.45, 1.7] and 1.6 sits inside. The try file asserts this at import. (3) No change
+was needed for wheel-vs-wall-face contact: Go2W never had `feet_slide`/`air_time`, and
+`.*_foot` appears only in `foot_impact` (2500 N) and the positive `feet_contact_without_cmd`.
+
+**Putting numbers on the plan's premise** (policy dt 0.02 s; Isaac Lab scales every
+reward by it; 1000 steps per 20 s episode):
+
+| term | rate | over the footage's technique |
+|---|---|---|
+| `goal_arrival`, success | 0.15 x (40 - 0.3) x 0.02, **once** | **+0.12** |
+| `flat_orientation_l2` at 80 deg | -0.5 x 0.97 x 0.02 = -0.0097/step | 1.5 s: **-0.73** (a whole episode spent rearing: -9.7) |
+| `goal_dont_wait` during the climb | -0.02/step | 2 s: **-2.0** |
+| `wall_body_height`, reared at target | +0.02/step | 10 s parked: +0.20 |
+| `joint_pos` (`joint_position_penalty`, -0.7, L2 *norm* of leg deviation from default) | 2.8 s pose: -0.067/step; 3.3 s: -0.028; 3.9 s: -0.016 | **~-3.4** beyond ordinary running |
+
+The `joint_pos` row was found only *after* Try50 had been launched, while solving the
+planar leg IK for Try51's keyframes on this robot's actual geometry (thigh 0.213,
+calf-to-axle 0.2264, wheel r 0.086 from the MuJoCo model; joint limits thigh
+(-1.57, 3.49) front / (-0.52, 4.54) rear, calf (-2.72, -0.84)): the 2.8 s pose needs
+rear thighs near 3.7 rad and front thighs near 2.3 against a default of 0.8, a
+deviation norm of ~4.8. It is the single largest tax and neither the plan nor the
+first Try50 draft listed it. The run (at ~iteration 100, no useful checkpoint) was
+stopped, its log dir deleted, and Try50 relaunched with `joint_pos` wall-gated the
+same way as `flat_orientation_l2` -- otherwise the "taxes removed" baseline would have
+left the biggest one in place, the same confounded-test mistake Try43 made. A related
+observation for Try51: with `JointPositionAction` `scale=0.25` around the default,
+those thigh angles need actions of 6-12, well outside the +-3 the policy normally
+emits -- reachable (the Gaussian mean is unbounded, and Try36+ rearing already needed
+~4) but the RSI'd pose will collapse toward the policy's habitual output before it
+learns to hold it.
+
+Executing the move costs ~-6 to earn +0.12, and is terminated mid-way by
+`base_contact` in a good fraction of attempts. That is the campaign's "parking trap"
+seen from the other side: it is not only that parking pays, it is that *crossing is
+charged for*. One more thing falls out of the table: with `wall_body_height` +0.02/step
+and `goal_dont_wait` -0.02/step, a motionless reared robot nets exactly 0, but one that
+**creeps at just over 0.2 m/s while reared** dodges the penalty and keeps the income --
+the reward-optimal degenerate strategy, and mechanically the same thing as the
+"trembles and creeps" behaviour on record since Try26. Also: at level 6.65 (wall 0.47,
+target_z 0.62) a robot simply standing at 0.45 m near the wall already collects
+exp(-(0.17/0.15)^2) = 0.28 of the height reward.
+
+**Try50 -- remove the taxes, nothing else** (`velocity_env_cfg_phase5_try50.py`,
+registered `Go2w-v1-Phase5-Try50`, bootstrapped from the default Phase5's latest
+checkpoint, 2000 iterations). The user agreed to split the plan's single Try into
+Try50 (taxes) and Try51 (Try50 + RSI) so that RSI's effect can be attributed, and to
+skip the plan's MuJoCo scripted-PD feasibility test (too costly to script).
+
+1. `flat_orientation_l2` -> `flat_orientation_l2_wall_gated`: same value, zero on wall
+   columns within +-0.6 m of the ring.
+2. `goal_dont_wait` -> `goal_dont_wait_penalty_3d`: the paper's `||v_b|| < 0.2` over all
+   three axes instead of two. **Deviation from the plan**, which wanted the penalty
+   spatially gated off near the wall: that would make parking reared in the height
+   reward's window a pure +0.02/step income (the Try43 trap made strictly worse). A
+   body rising 0.7 m in ~2 s has ~0.35 m/s of vertical speed, so the climb itself
+   stops counting as "waiting" while a motionless robot at the wall still does. No
+   spatial gate, no loophole.
+3. `base_contact` -> `illegal_contact_excluding_supported` (Try42 re-implemented from
+   its description; the code had been deleted): latest horizontal reaction <= 200 N
+   is "leaning", exempt; the 400 N history-max still terminates a real collision.
+4. `joint_pos` -> `joint_position_penalty_wall_gated`: same value, zero in the same
+   band (added at relaunch, see above).
+5. Startup friction (0.3, 1.2) -> (0.8, 1.2).
+6. `goal_radius_range` (1.75, 2.5) -> (2.2, 2.5); `promote_distance` 1.925 -> 1.6.
+
+Unchanged: `wall_body_height`, `goal_arrival`, `undesired_contacts*`, `foot_impact`,
+terrain, observations, network. Play layout pinned to 0.40/0.50/0.60/0.70 (0.70 is
+outside the training range, included to see whether anything generalises upward).
+
+Expectation stated before the run: Try50 alone is **not** expected to produce the
+crossing -- the 3.3 -> 4.2 s segment is too far from current behaviour for exploration
+to find even untaxed. Its job is the baseline for Try51. Judge in Play at 0.60/0.70 and
+in MuJoCo, not by terrain_levels. Smoke-tested (3 iterations, 128 envs, all new terms
+computed, stub log dir deleted); full run launched 2026-09-09.
+
+**Try50 result** (2000 iterations from the default's `model_5996.pt`, run
+`go2w_v1_phase5_try50/2026-09-09_16-01-05`, final `model_7995.pt`):
+
+| | Try39-default baseline | Try42 (relaxed base_contact) | **Try50** |
+|---|---|---|---|
+| terrain_levels | 6.76 | 6.35 | **6.08** (peak 6.18) |
+| base_contact | 36.6 % | 10.1 % | **3.2 %** |
+| bad_orientation | 3.9 % | 7.7 % | **4.6 %** |
+| time_out | 59.4 % | 82.1 % | **92.2 %** |
+| wall_body_height | 0.056 | 0.070 | **0.085** (peak 0.137) |
+| goal_arrival | -- | -- | **0.004**, flat from iteration 6100 to 7900 |
+| goal_distance (mean) | 1.60 | -- | **1.96-2.54** |
+| mean_noise_std | -- | -- | 1.46 -> 1.51, slowly rising |
+
+Exactly the pre-registered expectation, and exactly the Try41/42 pattern one notch
+further along: every relaxation lowers the termination rate, raises the height reward
+earned, and *lowers* terrain_levels, while `goal_arrival` does not move at all. With
+the taxes gone and the chest-contact termination relaxed, 92 % of episodes now run
+to time-out -- the robot survives at the wall and does not cross. The gated terms
+themselves read as intended (`flat_orientation_l2` -0.005 and `joint_pos` -0.63 per
+episode, i.e. paid almost entirely away from the wall). `goal_distance` averaging
+~2.0-2.5 m -- *above* the new 2.2-2.5 m goal radius floor -- says the population is
+mostly on the spawn side of the wall when episodes end. So: **removing the taxes is
+necessary but not sufficient**; exploration from the foot of the wall does not find
+the move. That is the baseline Try51 is measured against. Not Play-checked yet (the
+user's step); the numbers make a crossing unlikely.
+
+The one number worth watching if this config is reused: `mean_noise_std` rose
+monotonically 1.46 -> 1.51 over 2000 iterations. Slow, but that is the Try32-type
+instability signature in its early form.
+
+**Try50 Play check (user, 2026-09-09): crosses 0.60 m.** In the pinned
+0.40/0.50/0.60/0.70 layout the second-hardest column -- 0.60 m, the campaign's target
+height and the training range's ceiling -- is cleared; 0.70 is not. Rate not
+quantified. This is the first config whose Play behaviour at 0.60 is reported as
+"crosses" rather than "~30 % of individuals" (Try41), and it does so while the Isaac
+metrics above say `goal_arrival` 0.004 and terrain_levels 6.08 -- the
+"Isaac numbers and Play disagree" pattern again, this time in the favourable
+direction. The most likely reason is worth writing down because it changes how every
+metric in this table should be read: **training statistics are collected under the
+stochastic policy, Play runs the deterministic mean.** `mean_noise_std` is 1.5 in
+action units, and `JointPositionAction` scales by 0.25, so every training step
+perturbs each leg-joint target by ~0.38 rad (1-sigma). A wheel-on-face climb is a
+balance manoeuvre; that much per-step noise plausibly kills it in rollouts while the
+mean policy executes it. The curriculum (promotion by displacement) and
+`goal_arrival` both see only the noisy rollouts, so both under-report the mean
+policy's ability -- and also why the ratchet never gets these envs onto 0.60 m rows
+(training walls at level ~6 are 0.40-0.47 m). Consequences: (a) read Play, not
+`goal_arrival`, for crossing ability (already the campaign rule, now with a
+mechanism); (b) the Try32-type rising `mean_noise_std` is doubly bad here -- it is not
+just instability, it directly suppresses the behaviour being trained; (c) an
+evaluation pass with noise disabled (or a Play at 0.60 over many episodes) is the
+metric this campaign has been missing, and cheap to add.
+
+Not yet promoted to the default: per the standing rule, MuJoCo is the arbiter. Next
+check is the 0.62 m step in `unitree_mujoco`'s `scene_terrain.xml` with
+`deploy/robots/go2w/config/config.yaml`'s `policy_dir` pointed at
+`../../../logs/rsl_rl/go2w_v1_phase5_try50` (observations are unchanged from the
+default -- proprioception only -- so the existing `go2w_ctrl` binary runs it as is).
+**One deploy-side blocker found while preparing that**: `State_RLBase.cpp` registers
+`bad_orientation(env, 1.0)` as a safety check that drops the FSM to `Passive` at 1.0 rad
+(57 deg) of tilt, while training allows 2.0 rad and the climb itself pitches to 60-80
+deg. In MuJoCo the robot would go limp mid-climb and the test would read as a policy
+failure. The guard has to be raised (to training's 2.0, or at least ~1.6) for the
+climb to be testable at all; since the same line guards the real robot, that is the
+user's call, not a silent edit. `simulate/config.yaml` is still committed as
+`robot: "go2"` / `scene.xml` and needs `go2w` / `scene_terrain.xml` for this test (noted
+before, still true).
+
+Try51 smoke-tested (3 iterations, 128 envs: RSI resets applied to 18.5 % of all
+resets, `Curriculum/rsi_arrival/{k1,k2,k3,fraction}` logged, bad_orientation 11.6 % in
+the first iterations as RSI'd robots topple, no errors; stub log dir deleted) and
+launched 2026-09-09 ~17:45 from the same `model_5996.pt`, 2000 iterations.
+
+**Try51 -- Try50 plus reference-state initialisation** (`velocity_env_cfg_phase5_try51.py`,
+registered `Go2w-v1-Phase5-Try51`; written 2026-09-09 while Try50 trains, to be run
+after it from the **same** default checkpoint with the same 2000-iteration budget, so
+Try50 vs Try51 at matched iterations isolates RSI). 30 % of wall-column resets start
+the episode inside the climb, in one of three poses taken from the footage:
+
+| | footage | body pitch | front wheels | rear wheels | applied at |
+|---|---|---|---|---|---|
+| K1 (p 0.3) | 2.8 s | 78 deg | on the face, just below the chest | ground, 0.45 m behind the face | H >= 0.45 |
+| K2 (p 0.5) | 3.3 s | 58 deg | on top, 0.12 m in | ground, 0.34 -> 0.24 m behind as H 0.35 -> 0.60 | H >= 0.40 |
+| K3 (p 0.2) | 3.9 s | 22 deg | on top, 0.30 m in | on the face, 0.13 m below the top | H >= 0.40 |
+
+How the poses were produced, since the plan's own numbers were eyeballed and its
+MuJoCo hand-fitting step was skipped: the geometry is specified by *contacts* (base
+pose plus the two wheel-axle positions in the sagittal plane, x from the wall's near
+face, z from the ground) and the leg joint angles are solved at reset by planar
+two-link IK from the robot's actual link lengths (thigh 0.213, calf-to-axle 0.2264,
+wheel radius 0.086, hip x +-0.1934, read from the MuJoCo model; joint limits from the
+same file). A CPU script (`kf_design.py`, not committed) checked every pose for H in
+0.35..0.65 against reach, joint limits, and the clearance of the base box, head, chin,
+hip and knee colliders against the wall box and the ground; K1 needed its base floor
+raised to 0.24 m (rear hips were 3.5 cm into the ground on a 0.45 wall) and K2's rear
+wheel had to slide toward the wall with height (at a fixed 0.31 m the rear calf hits
+its limit at H = 0.60 and the pose is unreachable at 0.65). The final table clears
+everything by >= 5 mm with each wheel 5 mm off its surface, and the torch IK in the
+try file reproduces the script's angles to the 5 mm gap. Because the generator jitters
+wall height within a row, the reset uses the row's *upper* bound: the robot may float
+up to ~5.6 cm above the real top and drop, never spawn inside it. Poses are placed
+perpendicular (+-0.1 rad) to a random one of the ring's four faces, up to 0.3 m
+sideways; `MixedGoalVelocityCommand._resample_command` got a default-preserving hook
+that reads `env.rsi_yaw`/`env.rsi_lateral` so the goal is straight ahead across that
+face (a randomly-placed goal would steer a robot that is balanced on the wall).
+
+Bookkeeping: `terrain_levels_climb_rsi_aware` drops RSI-started envs from the ratchet
+(they begin 1.1 m out and would promote trivially); `rsi_arrival` logs
+`Curriculum/rsi_arrival/{k1,k2,k3,fraction}` -- **k2 is the primary metric**. Play has
+RSI off (it is for watching a full approach, and its pinned multi-height layout is
+not supported by the height estimate).
+
+Two things to know before reading its result. (1) **The action parameterisation works
+against holding these poses.** `JointPositionAction` is `default + 0.25 * action`; K1's
+rear thighs at 3.5-4.1 rad need actions of 11-13 and K2's 1.5-2.3 need 3-6, against a
+habitual policy output within +-3. An RSI'd robot will be PD-pulled out of the pose
+toward its usual stance within a few hundred ms until the policy learns to emit large
+actions there -- expected for RSI with position control (Try36+ rearing already
+needed ~4), and the reason K2 carries the most weight. If k2 arrival stays at 0 and
+the logged action magnitudes never grow, widening the action scale on the thigh
+joints is the next lever, not the reward. (2) Decision table from the plan, kept as
+written: k2 ~0 after 500 iterations -> physics (friction, wheel collider, the sharp
+90-degree edge) -- chamfer the wall top 2-3 cm before more reward work; k2 rises but
+normal starts never reach K2 -> weight K1 up; Isaac numbers good but Play does not
+cross -> believe Play.
+
+**Try51 result** (2000 iterations from the same `model_5996.pt`, run
+`go2w_v1_phase5_try51/2026-09-09_17-43-58`, final `model_7995.pt`). RSI applied to
+18.3 % of all resets (30 % of wall-column resets, minus the height gate).
+
+| | iteration 6100 | 6500 | 7000 | 7500 | 7900 |
+|---|---|---|---|---|---|
+| `rsi_arrival/k1` (2.8 s start) | 0.34 | 0.50 | 0.69 | 0.71 | **0.80** |
+| `rsi_arrival/k2` (3.3 s start, primary) | 0.73 | 0.74 | 0.77 | 0.84 | **0.89** |
+| `rsi_arrival/k3` (3.9 s start) | 0.76 | 0.74 | 0.89 | 0.88 | **0.93** |
+| terrain_levels (RSI envs excluded) | 5.52 | 6.26 | 6.30 | 6.34 | 6.37 |
+| goal_arrival (all envs) | 0.003 | 0.004 | 0.004 | 0.004 | 0.005 |
+| time_out / base_contact / bad_orientation | | | | | 91.9 / 4.5 / 3.6 % |
+| mean_noise_std | 1.45 | 1.47 | 1.47 | 1.46 | 1.50 |
+
+Compared with Try50 at matched iterations: terrain_levels 6.37 vs 6.08, base_contact
+4.5 vs 3.2 %, goal_arrival 0.005 vs 0.004 -- i.e. the *non-RSI* population looks the
+same as Try50, while the RSI-started episodes end at the goal 80-93 % of the time
+under the stochastic policy. Reading it against the plan's decision table:
+
+* **From the footage's poses the robot does finish the climb** -- arriving from K2
+  means travelling ~1.3 m *through* a 0.40 m wall to a goal whose arrival ring starts
+  beyond the far face, so these are crossings, not artefacts. K2/K3 were already at
+  ~75 % after 100 iterations (the Try50-style config plus a competent checkpoint could
+  mostly finish from there); K1 -- the 78-degree chest-on-edge pose -- *learned*, 34 %
+  -> 80 %. So the physics is not the blocker (friction, wheel collider, the sharp edge
+  all permit it), and the action-scale worry recorded above did not bite: the policy
+  holds and completes the poses despite the +-3 habitual output.
+* **Ordinary starts still do not get to K1.** goal_arrival for the whole population is
+  unchanged from Try50, and the untouched terrain ratchet is no higher than Try42's.
+  This is the table's second row -- "K2 reached, normal starts don't reach K2" -- and
+  the missing piece is now narrower than the plan assumed: not 2.1 -> 3.3 s but
+  **the approach -> 2.8 s segment, i.e. lifting the front wheels onto the face and
+  starting to rear**. K1 itself is learnable once entered.
+* Caveat carried over from Try50: these are stochastic-policy statistics. Try50's mean
+  policy crossed 0.60 m in Play while its `goal_arrival` read 0.004, so the
+  non-RSI numbers here may equally understate what Try51's mean policy does from a
+  normal start. Play (RSI off in the Play cfg) is the read that matters.
+
+Next step if Play confirms the gap: a fourth keyframe **K0** at the footage's 2.1 s
+(crouched at the wall, front wheels just lifted onto the face ~0.22 m up, body ~38
+deg, rear wheels on the ground) with probability shifted toward K0/K1, so the first
+segment gets the same treatment the later ones did -- one change on top of Try51.
+`mean_noise_std` crept 1.45 -> 1.50 again, same as Try50; the noise-free evaluation
+pass noted above is still the missing metric.
+
+**Try51 in MuJoCo (user, 2026-09-11): crosses the 0.62 m step, 1 in 4.** The three
+failures were not falls -- the controller was *kicked out of the policy state*
+mid-climb. Cause, as flagged above: `State_RLBase.cpp` registers
+`isaaclab::mdp::bad_orientation(env, 1.0)` -> Passive, i.e. `acos(-g_z) > 1.0 rad`
+(57 deg), while the climb pitches to 60-80 deg and training terminates only at 2.0.
+Fixed 2026-09-11 by making the limit a per-policy option
+(`FSM.<state>.bad_orientation_limit` in `deploy/robots/go2w/config/config.yaml`,
+default 1.0 when unset so every other policy and the go2 convention are unchanged)
+and setting it to 2.0 for the Velocity state that runs the climb policy. Note the
+lambda must capture the limit *by value* -- the existing `[&]` capture of a
+constructor local would dangle.
+
+### 2026-09-11: Try52/53 -- walking the start distribution back to the ground
+
+Try51's outcome (RSI starts finish 80-93 %, ordinary starts still do not reach K1) is
+the textbook reverse-curriculum situation, and an outside reviewer independently
+recommended exactly RSI plus "shift the spawn distribution toward the ground". The
+first half was Try51; the second half is these two, run sequentially, each from the
+same default `model_5996.pt` for 2000 iterations so all of Try50-53 are matched.
+
+**Try52 -- one keyframe earlier.** Adds K0, the footage's 2.1 s frame: crouched at
+the wall, front wheels just lifted onto the face 0.22 m up, body 38 deg, rear wheels
+on the ground 0.60 m behind the face. Defined entirely relative to the ground, so it
+is one pose for every wall height; applied at H >= 0.40. Checked with the same CPU
+script as K1-K3: clears everything by >= 15 mm for H in 0.35..0.65, front leg
+1.36 / -2.11, rear leg folded 2.90 / -2.46 (thigh / calf). Mix shifted to
+K0/K1/K2/K3 = 0.35/0.35/0.20/0.10 (fixed), fraction 0.3 (fixed). The RSI code was
+rewritten as an N-keyframe table (`KEYFRAMES` in the try52 file) -- the form a fold
+into mdp/ would take -- and Try51's file is left exactly as it ran.
+
+**Try53 -- the schedule.** Try52 plus one curriculum term, `rsi_reverse_curriculum`:
+each reset step, for every keyframe whose decaying arrival rate exceeds 0.8 (with >= 20
+recent attempts), move 4e-5 of probability to the previous keyframe (K3 -> K2 -> K1 ->
+K0), and from K0 to the ordinary spawn by lowering the RSI fraction (floor 0.05). ~24
+calls per iteration -> ~0.001 per iteration, i.e. a full walk-back takes on the order
+of 1000 iterations if everything is mastered at once. One-directional by design
+(mastered stays mastered for scheduling purposes; if the policy forgets, the
+per-keyframe rates will show it). Logged as `Curriculum/rsi_schedule/{p_k0..p_k3,
+fraction}`. Ordering detail that bit once while writing it: the scheduler's first
+call happens *before* the RSI event's first call, so the event's buffer setup must not
+overwrite `env.rsi_probs` if it already exists.
+
+What to read: Try52 vs Try51 on `goal_arrival` and Play from a normal start (does K0
+close the approach gap?); Try53 vs Try52 on the same, plus whether `rsi_schedule/
+fraction` actually walks down (if it does not, the threshold is never met for K0 and
+the schedule is inert -- a finding in itself).
+
+**Try52 result** (run `go2w_v1_phase5_try52/2026-09-11_00-22-56`, final `model_7995.pt`):
+
+| | iter 6100 | 6500 | 7000 | 7500 | 7900 |
+|---|---|---|---|---|---|
+| `rsi_arrival/k0` (2.1 s, new) | **0.77** | 0.76 | 0.83 | 0.76 | 0.76 |
+| `rsi_arrival/k1` | 0.33 | 0.70 | 0.65 | 0.77 | 0.71 |
+| `rsi_arrival/k2` | 0.84 | 0.87 | 0.74 | 0.85 | 0.83 |
+| `rsi_arrival/k3` | 0.81 | 0.89 | 0.91 | 0.85 | 0.95 |
+| terrain_levels (non-RSI) | 5.50 | 6.20 | 6.31 | 6.26 | 6.33 |
+| goal_arrival (all) | 0.004 | 0.005 | 0.004 | 0.005 | 0.004 |
+| time_out / base_contact / bad_orientation | | | | | 87.9 / 5.3 / 6.8 % |
+| mean_noise_std | 1.46 | 1.48 | 1.49 | 1.54 | 1.54 |
+| mean_reward | 10.4 | 9.3 | 10.0 | 8.9 | 8.3 |
+
+Two things, one expected and one not. Expected: adding K0 changed nothing for the
+ordinary starts -- goal_arrival 0.004, terrain_levels 6.33, the same as Try51. Not
+expected: **K0 was already at 0.77 after the first 100 iterations** and did not
+improve from there. From "front wheels on the face 0.22 m up, body at 38 deg", the
+Try50-configured policy bootstrapped from the default checkpoint completes the whole
+climb three times in four *without further learning*. Together with Try51 that says
+the entire climb from lift-off onward is within the policy's competence; the only
+segment it never executes on its own is the very first one -- **stopping at the wall
+and putting the front wheels onto the vertical face** -- and that segment is
+apparently not something the K0 starts teach, because K0 starts *after* it. So the
+reverse curriculum has walked back as far as the keyframes go and the gap is now
+"approach -> K0", i.e. the decision to lift rather than push/park. Candidates for the
+next keyframe are pre-lift: stopped nose-to-wall, crouched, all four wheels on the
+ground (the footage's 0.5-1.9 s), which the policy already reaches by itself -- so a
+keyframe there would not add information. The remaining mechanisms are (a) the
+stochastic-policy reading (the mean policy may well lift; Try50's mean crossed 0.60 in
+Play while its stats said 0.004), (b) the noise itself: `mean_noise_std` rose 1.46 ->
+1.54 here, the steepest of Try50-52, and `mean_reward` fell 10.4 -> 8.3 over the run,
+which is the Try32-type instability now visible within 2000 iterations. K1 also
+regressed 0.77 -> 0.71 late. Try53's schedule (launched 2026-09-11 immediately after)
+will not fix (b); if Try53 shows the same drift, the next lever is the noise (fixed or
+lower initial std / entropy coefficient), not another keyframe.
+
+**Try53 result** (run `go2w_v1_phase5_try53/2026-09-11_02-06-50`, final `model_7995.pt`):
+
+| | iter 6100 | 6300 | 6500 | 7000 | 7500 | 7900 |
+|---|---|---|---|---|---|---|
+| `rsi_schedule/fraction` (RSI share of wall resets) | 0.28 | 0.25 | 0.16 | **0.06** | 0.06 | 0.06 |
+| `rsi_schedule/p_k0 / p_k1 / p_k2 / p_k3` | .35/.36/.19/.10 | .35/.42/.14/.09 | .37/.41/.13/.09 | .39/.38/.13/.09 | same | same |
+| `rsi_arrival/k0` | 0.71 | 0.80 | 0.83 | 0.84 | 0.91 | 0.69 |
+| `rsi_arrival/k1` | 0.48 | 0.76 | 0.73 | 0.55 | 0.70 | 0.56 |
+| `rsi_arrival/k2` | 0.82 | 0.73 | 0.82 | 0.76 | 0.93 | 0.46 |
+| terrain_levels (non-RSI) | 5.52 | 6.26 | 6.03 | 6.12 | 6.13 | 6.13 |
+| goal_arrival (all) | 0.004 | 0.004 | 0.004 | 0.004 | 0.003 | 0.004 |
+| mean_noise_std | 1.45 | 1.46 | 1.47 | 1.49 | 1.51 | 1.52 |
+| mean_reward | 10.9 | 9.4 | 10.7 | 10.6 | 8.1 | 7.9 |
+
+The schedule did what it was built to do: K2/K3 were judged mastered within ~200
+iterations and their mass flowed to K1/K0; K0 crossed the 0.8 threshold around
+iteration 6300 and the RSI share then walked from 0.30 down to the 0.05 floor by
+iteration 7000 -- the full reverse curriculum, ground reached, in ~900 iterations.
+**And the ordinary starts did not move at all**: goal_arrival 0.004 throughout,
+terrain_levels 6.13 (below Try52's 6.33 -- the RSI envs were promoted less often
+because there were fewer of them, nothing more). Once RSI dropped to ~6 % of wall
+resets its arrival rates got noisy and drifted down late (k2 0.93 -> 0.46 in the last
+400 iterations on a handful of samples per window), so the last column is not
+evidence of forgetting by itself, but `mean_reward` 10.9 -> 7.9 and `mean_noise_std`
+1.45 -> 1.52 are the same in-run decline Try52 showed.
+
+**Where Try50-53 leave the question.** Four matched 2000-iteration runs from one
+checkpoint:
+
+| | Try50 (taxes off) | Try51 (+RSI K1-3) | Try52 (+K0) | Try53 (+schedule) |
+|---|---|---|---|---|
+| RSI starts finish | -- | 80-93 % | 71-95 % | 70-93 % (until RSI thinned) |
+| ordinary starts, goal_arrival | 0.004 | 0.005 | 0.004 | 0.004 |
+| terrain_levels | 6.08 | 6.37 | 6.33 | 6.13 |
+| Play @ 0.60 | crosses (user) | -- | -- | -- |
+| MuJoCo @ 0.62 | -- | 1/4 before the tilt-guard fix | -- | -- |
+| mean_noise_std end | 1.51 | 1.50 | 1.54 | 1.52 |
+
+Under the stochastic policy, hand-placing the robot anywhere from lift-off onward
+produces a crossing most of the time, and starting on the ground produces one almost
+never -- and walking the start distribution back to the ground did not carry the
+skill with it. Two readings remain, and they call for different next steps:
+
+(a) *The mean policy already lifts and climbs from the ground; the training
+statistics cannot see it* because every rollout step adds ~0.38 rad of joint-target
+noise (std 1.5 x scale 0.25) to a balance manoeuvre. Try50's Play result is the
+evidence for this. If (a), the missing instrument is a deterministic evaluation --
+N episodes at pinned 0.60 m with the mean policy, counting arrivals -- and the
+"gap" is an artefact of the metric, not of the policy.
+
+(b) *The lift-off decision is genuinely not learned from a normal approach*, and
+the RSI starts cannot teach it because they begin after it. If (b), the lever is
+not another keyframe (the pre-lift state is one the policy already reaches by
+itself) but the exploration noise: `mean_noise_std` has risen in every one of the
+four runs, and `mean_reward` fell within Try52/53 -- the Try32 signature. Fixing or
+lowering the initial std, or an entropy penalty, would be the next single change.
+
+Either way the next measurement is the same and has been missing all campaign: a
+noise-free arrival rate from a normal start. Build that before another training run.
+
+### 2026-09-11: the missing instrument -- `scripts/rsl_rl/eval_wall.py`
+
+MuJoCo check of Try51/52/53 (user): "similar, no significant difference" -- consistent
+with the Isaac numbers (the three differ only in RSI start distribution and their
+ordinary-start behaviour never moved), and also unmeasurable at a handful of trials
+per policy. The stochastic-vs-deterministic question from Try50-53 needed a number,
+so `scripts/rsl_rl/eval_wall.py` was added: the task's Play env (wall-only, one pinned
+height per column), headless, N completed episodes per column, reporting arrival rate
+(command term's own definition), crossing rate (base ever past the ring's far face,
+r > 1.45), and the termination mix. `--stochastic` samples actions from the policy's
+distribution instead of taking the mean, so one checkpoint can be measured both ways
+under identical conditions. `rel_standing_envs` is forced to 0 and `push_robot` is
+off (``--keep-push`` restores it). Report also written next to the checkpoint as
+`eval_wall_<mode>_<model>.md`.
+
+**Try50, deterministic (mean policy), 100+ episodes per height, no pushes:**
+
+| wall | arrived | crossed | time_out | base_contact | bad_orientation |
+|---|---|---|---|---|---|
+| 0.40 m | 0.89 | 0.96 | 0.89 | 0.04 | 0.07 |
+| 0.50 m | 0.70 | 0.82 | 0.80 | 0.14 | 0.06 |
+| **0.60 m** | **0.56** | **0.67** | 0.63 | 0.26 | 0.11 |
+| 0.70 m | 0.27 | 0.31 | 0.47 | 0.11 | 0.43 |
+
+The mean policy crosses 0.60 m two times in three, and 0.70 m -- outside the training
+range -- almost one in three, while the same checkpoint's training-time `goal_arrival`
+said ~3 % of wall episodes. Reading (a) from the Try50-53 synthesis is essentially
+confirmed by this alone; the stochastic run of the same checkpoint (below, when done)
+is the direct test.
+
+**All six evaluations (100+ episodes per height, no pushes, rel_standing 0). "arrived" =
+within 0.5 m of the goal at any point; "crossed" = base past the ring's far face.**
+
+| checkpoint | mode | 0.40 m arr/cross | 0.50 m | **0.60 m** | 0.70 m | 0.60 m base_contact |
+|---|---|---|---|---|---|---|
+| default Phase5 (Try39 fold) | deterministic | 0.83 / 0.88 | 0.40 / 0.43 | **0.08 / 0.09** | -- (Play has 0.30 instead) | 0.86 |
+| default Phase5 | stochastic | 0.90 / 0.94 | 0.62 / 0.66 | **0.03 / 0.02** | -- | 0.93 |
+| Try50 | deterministic | 0.89 / 0.96 | 0.70 / 0.82 | **0.56 / 0.67** | 0.27 / 0.31 | 0.26 |
+| Try50 | **stochastic** | 0.95 / 0.97 | 0.94 / 0.97 | **0.65 / 0.72** | 0.13 / 0.13 | 0.26 |
+| Try51 | deterministic | 0.86 / 0.93 | 0.70 / 0.81 | 0.55 / 0.64 | 0.16 / 0.19 | 0.16 |
+| Try52 | deterministic | 0.88 / 0.98 | 0.78 / 0.84 | 0.50 / 0.53 | 0.01 / 0.01 | 0.27 |
+| Try53 | deterministic | 0.87 / 0.97 | 0.63 / 0.78 | 0.56 / 0.62 | 0.15 / 0.16 | 0.30 |
+
+Three conclusions, one of them overturning a reading made two sections up.
+
+1. **Try50's six changes are a large, measured improvement at the target height.** At
+   0.60 m the default crosses 9 % (deterministic) / 2 % (stochastic) and dies on
+   `base_contact` 86-93 % of the time -- the chest-contact termination is still doing
+   exactly what Try40-42 diagnosed. Try50 crosses 67 % / 72 % with base_contact 26 %.
+   At 0.50 m: default 43 % -> Try50 82 %. This is the first time in the campaign a
+   change has a crossing-rate number attached rather than a terrain_levels proxy or a
+   handful of Play/MuJoCo trials. Try50 is the candidate for promotion to the default,
+   pending MuJoCo.
+
+2. **RSI (Try51-53) adds nothing measurable from a normal start.** 0.64 / 0.53 / 0.62
+   crossed at 0.60 m vs Try50's 0.67; all within the noise of ~120-episode samples. The
+   user's MuJoCo impression ("similar, no significant difference") is right. The
+   keyframes taught the policy nothing it would use from the ground -- because, it turns
+   out, it already crossed from the ground. Try52 is if anything worse at 0.70 m (0.01,
+   bad_orientation 0.85), i.e. the extra K0 starts may have cost some robustness
+   outside the training range.
+
+3. **The "stochastic policy hides the skill" reading (a) is wrong.** Try50 sampled
+   actions the way training does and crossed 0.60 m *more* often than the mean policy
+   (0.72 vs 0.67). Whatever makes training-time `goal_arrival` read 0.004 when this same
+   checkpoint arrives 65 % of the time in an otherwise identical environment, it is
+   not the action noise. Differences left between this eval and training: the
+   `push_robot` interval event (off here), `rel_standing_envs` (0 here vs 1 %), the
+   rough columns (none here, 25 % there, and they never pay this term), and -- the
+   suspect -- the reward's own definition: `goal_arrival_reward` pays only if the base is
+   within 0.5 m of the goal **on the last step**, whereas "arrived" above means "at any
+   point". A robot that crosses, reaches the goal, gets its command zeroed and then
+   creeps away (the zero-command creep is the oldest open item in this file, the reason
+   `-Adjust` exists) is a success by any climbing standard and a zero for this reward.
+   `eval_wall.py` now also reports "held (at end)" to test exactly that; Try50 is being
+   re-run with it, with and without pushes.
+
+**Try50, stochastic, with the "held (at end)" column -- pushes off and on:**
+
+| wall | arrived (ever) | **held (at end)** | crossed | | arrived | held | crossed |
+|---|---|---|---|---|---|---|---|
+| | *pushes off* | | | | *pushes on* | | |
+| 0.40 m | 0.94 | **0.35** | 1.00 | | 0.92 | 0.33 | 0.99 |
+| 0.50 m | 0.86 | **0.29** | 0.92 | | 0.90 | 0.28 | 0.94 |
+| 0.60 m | 0.68 | **0.17** | 0.73 | | 0.69 | 0.23 | 0.74 |
+| 0.70 m | 0.10 | 0.02 | 0.11 | | 0.11 | 0.04 | 0.12 |
+
+Pushes change nothing. The held column is the answer: **even on a 0.40 m wall, where 94 %
+of episodes reach the goal, only 35 % are still within 0.5 m of it when the episode
+ends.** Two thirds of successful crossings end with the robot having wandered off the
+goal after its command dropped to zero. `goal_arrival_reward` pays for the held case
+only, so the training curve was reporting "crossed *and then stood still for the rest
+of the episode*" -- and the campaign has been reading it as "crossed" since 2026-08-24.
+Arithmetic check against the training log: with 75 % wall envs, a held env earning
+0.119 and a non-held one -0.006, the observed 0.004 implies ~9 % held in training,
+lower than this eval's 17-35 % (training mixes wall heights and levels, and the
+stochastic training rollouts add pushes *and* action noise on top of what was measured
+here), but the same order and the same mechanism.
+
+So the three stories of this campaign collapse into one: (1) the chest-contact
+termination and the pose taxes kept the default from climbing 0.60 m (fixed by Try50,
+measured 9 % -> 67-72 %); (2) RSI was solving a problem that no longer existed once
+(1) was in place; (3) the "still can't cross" reading throughout Try50-53 was the
+zero-command creep -- the oldest open item in this file, the reason `Go2w-v1-Phase5-
+Adjust` exists -- measured through a reward that conflates it with not crossing.
+
+**What follows.** (a) Try50 is the candidate default; confirm in MuJoCo with the
+tilt-guard fix (the user's Try51 run at 1/4 predates it). (b) Then run the existing
+`-Adjust` polish (`wheel_vel_without_cmd_penalty`, ~1000 iterations) on Try50's
+checkpoint and re-measure `held` with `eval_wall.py` -- that is the one number that
+should move. (c) Add a "crossed" statistic to the training logs (a curriculum-style
+logging term reading max distance from spawn) so the curve stops conflating the two;
+and stop using `goal_arrival` as the crossing metric. (d) Try51-53 can be deleted once
+(a) is decided; their record is above.
+
+### 2026-09-11: Try50 promoted to the default; Try51-53 deleted
+
+Per the user's decision after the eval_wall numbers. Folded into
+`velocity_env_cfg_phase5.py` (each marked "Try50" in place; constants
+`PHASE5_WALL_DISTANCE`/`PHASE5_GOAL_RADIUS_RANGE`/`PHASE5_PROMOTE_DISTANCE`/
+`PHASE5_WALL_GATE`/`PHASE5_FRICTION_RANGE` with the promote/goal-radius coupling asserted
+at import): wall-gated `flat_orientation_l2` and `joint_pos`, 3-D `goal_dont_wait`,
+`illegal_contact_excluding_supported` for `base_contact`, friction floor 0.8 (Phase5
+`__post_init__` only), goal radius (2.2, 2.5), promotion rim 1.6 m. Play layout now
+0.40/0.50/0.60/0.70. The four MDP functions moved into `mdp/rewards.py` /
+`mdp/terminations.py`; `terrain_levels_climb_demote_on_fail` keeps its new
+`promote_distance` keyword. The RSI hook in `MixedGoalVelocityCommand` was reverted
+(RSI is closed). `Go2w-v1-Phase5-Adjust` and the v2 line inherit all of it unchanged.
+
+Checkpoint: Try50's run moved to `logs/rsl_rl/go2w_v1_phase5/2026-09-09_16-01-05` (now the
+task's latest, so `--previous-task Go2w-v1-Phase5`, the deploy `policy_dir`, and
+`eval_wall.py --task Go2w-v1-Phase5` all resolve to it). Its three `eval_wall_*.md` reports
+travel with it. Deleted: the four try files, `logs/rsl_rl/go2w_v1_phase5_try5{0,1,2,3}/`
+(Try51-53 weights included -- null results, ~340 MB each, design and numbers recorded
+above), and the sandbox registrations. Kept: `scripts/rsl_rl/eval_wall.py` (the
+instrument), the deploy tilt-guard option (`bad_orientation_limit`, default unchanged),
+the keyframe PNG.
+
+Next on this line: `Go2w-v1-Phase5-Adjust` (~1000 iterations) on the promoted checkpoint,
+then `eval_wall.py` again -- the number that should move is **held**, not arrived; then
+MuJoCo at 0.62 m with the tilt guard at 2.0.

@@ -107,12 +107,24 @@ def terrain_levels_climb_demote_on_fail(
     env_ids: Sequence[int] | slice,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     fail_termination_names: tuple[str, ...] = ("base_contact", "bad_orientation"),
+    promote_distance: float | None = None,
 ) -> torch.Tensor:
     """Terrain-difficulty ratchet: promotes at a reachable fraction of the tile
     (35 %), demotes either on very low net displacement (< 0.5 m -- didn't even try)
     or on a genuine failure termination named in ``fail_termination_names``
     (``base_contact``/``bad_orientation`` by default), regardless of distance
     travelled.
+
+    ``promote_distance`` (m from spawn) overrides the default ``tile_size * 0.35``
+    promotion rim when set. Added 2026-09-09 for the Go2W Phase5 sandbox (Try50):
+    on the 5.5 m thin_wall tile the default rim is 1.925 m while the wall ring sits
+    at 1.25 m with its far face at 1.45 m, so a robot that cleanly crosses the wall
+    and then stops (as the goal command tells it to) can sit ~0.4 m short of
+    promotion forever. Whatever value is chosen must satisfy
+    ``far_face < promote_distance <= min(goal_radius_range) - arrival_radius`` --
+    the lower bound so that only genuine crossings promote, the upper bound so that a
+    robot which legitimately arrives at the nearest allowed goal is not left
+    unpromoted. Left at ``None`` the behaviour is byte-for-byte the previous one.
 
     The distance-only version this replaced (folded in 2026-08-25, formerly
     ``custom_terrain_levels_climb``) left a dead zone between the 0.5 m demotion
@@ -144,8 +156,9 @@ def terrain_levels_climb_demote_on_fail(
     distance = torch.norm(
         asset.data.root_pos_w[env_ids, :2] - env.scene.env_origins[env_ids, :2], dim=1
     )
-    tile_size = terrain.cfg.terrain_generator.size[0]
-    move_up = distance > tile_size * 0.35
+    if promote_distance is None:
+        promote_distance = terrain.cfg.terrain_generator.size[0] * 0.35
+    move_up = distance > promote_distance
 
     failed = torch.zeros_like(move_up)
     for name in fail_termination_names:

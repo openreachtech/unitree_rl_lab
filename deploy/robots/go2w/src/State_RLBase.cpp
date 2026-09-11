@@ -162,9 +162,20 @@ State_RLBase::State_RLBase(int state_mode, std::string state_string)
     g_pos_motor_ids = resolve_motor_ids(env->cfg["actions"]["JointPositionAction"], joint_ids_map);
     g_vel_motor_ids = resolve_motor_ids(env->cfg["actions"]["JointVelocityAction"], joint_ids_map);
 
+    // Safety exit: drop to Passive when the base tilts past this angle (rad, measured
+    // as acos(-projected_gravity_z), so pi/2 is fully on its side or stood vertical).
+    // Default 1.0 (57 deg) is the shared deploy convention (same as go2). The Phase5
+    // wall-climb policies pitch the body to 60-80 deg by design (training terminates
+    // at 2.0 rad), and with the default this check ended the climb mid-way in MuJoCo
+    // (Try51, 2026-09-11: 1 crossing in 4, the other 3 kicked to Passive). Override per
+    // policy with FSM.<state>.bad_orientation_limit in config.yaml; leave unset to keep
+    // the original behaviour.
+    const float bad_orientation_limit =
+        cfg["bad_orientation_limit"] ? cfg["bad_orientation_limit"].as<float>() : 1.0f;
+    spdlog::info("bad_orientation exit limit: {:.2f} rad", bad_orientation_limit);
     this->registered_checks.emplace_back(
         std::make_pair(
-            [&]()->bool{ return isaaclab::mdp::bad_orientation(env.get(), 1.0); },
+            [&, bad_orientation_limit]()->bool{ return isaaclab::mdp::bad_orientation(env.get(), bad_orientation_limit); },
             FSMStringMap.right.at("Passive")
         )
     );

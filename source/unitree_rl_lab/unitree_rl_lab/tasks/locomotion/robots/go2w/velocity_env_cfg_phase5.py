@@ -21,6 +21,37 @@ from unitree_rl_lab.tasks.locomotion.robots.go2w.velocity_env_cfg_phase4 import 
 # =============================================================================
 # Phase 5 -- extreme obstacle crossing.
 #
+# --- Wall-climb technique unlocked (2026-09-11, folded from sandbox Try50) ------------
+#
+# Frame analysis of Unitree's own Go2-W footage (sandbox/go2w_70cm_climb_keyframes.png)
+# showed how a Go2-W clears a wall taller than itself: not a jump -- it stops nose-to-wall,
+# puts the front wheels on the *vertical face* and rolls them up while the rear legs
+# extend (body pitching to 60-80 deg, chest resting on the top edge), plants the front
+# wheels on top, then drives forward while the rear wheels roll up the face in turn.
+# Per-episode arithmetic on the previous default charged about -6 for executing that
+# (joint_pos ~-3.4, goal_dont_wait -2.0, flat_orientation_l2 -0.7) against a +0.12 arrival
+# bonus, and terminated the chest contact as a crash. Six changes, all measured together
+# as one hypothesis ("stop taxing the pose"), each marked "Try50" below:
+#   * flat_orientation_l2 and joint_pos zeroed in a +-0.6 m band around the wall ring
+#     (wall columns only);
+#   * goal_dont_wait tests 3-D speed, so rising is not "waiting";
+#   * base_contact exempts leaning (latest horizontal reaction <= 200 N) while keeping
+#     the 400 N ceiling for real collisions;
+#   * startup friction randomisation floor 0.3 -> 0.8 (a third of envs had trained at an
+#     effective mu <= 0.6 for their whole life);
+#   * two measurement fixes -- goal_radius_range (1.75, 2.5) -> (2.2, 2.5) and the
+#     curriculum promotion rim 1.925 -> 1.6 m -- see PHASE5_PROMOTE_DISTANCE below.
+# Measured with scripts/rsl_rl/eval_wall.py (Play layout, 100+ episodes per height):
+# crossing at 0.60 m 9 % -> 67 % (deterministic) and 2 % -> 72 % (stochastic); at 0.50 m
+# 43 % -> 82 %; base_contact at 0.60 m 86-93 % -> 26 %. Checkpoint promoted to this
+# task's own latest run. Reference-state initialisation (Try51-53) was tried on top and
+# added nothing measurable -- the policy already crossed from the ground once the taxes
+# were gone. The remaining gap to a *scored* success is the zero-command creep after
+# arrival (Go2w-v1-Phase5-Adjust's job): 68 % of 0.60 m episodes reach the goal but only
+# 17-23 % are still within 0.5 m of it at the end, which is what goal_arrival pays for.
+# Do not read Episode_Reward/goal_arrival as a crossing rate. Full record: sandbox/
+# SUMMARY.md, 2026-09-09..11.
+#
 # --- Terrain/command/reward redesign (2026-08-18) --------------------------------------
 #
 # Folded in from the Go2w-v1-Phase5-Try15 sandbox experiment (2026-08-17/18), itself a
@@ -177,6 +208,27 @@ PHASE5_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
 )
 
 
+# Wall-ring geometry of PHASE5_TERRAIN_CFG's thin_wall tile: centreline at
+# (size - 2*border_width)/2 - 0.5*wall_spacing = 1.25 m from spawn, thickness 0.40 ->
+# faces at 1.05 / 1.45. Shared by wall_body_height and the Try50 wall-band gates.
+PHASE5_WALL_DISTANCE = 1.25
+PHASE5_WALL_FAR_FACE = 1.45
+# Try50 measurement fixes. Promotion needs displacement > PHASE5_PROMOTE_DISTANCE, but
+# arrival (command -> zero) can happen as close as min(goal_radius) - arrival_radius,
+# so the two are coupled: far_face < promote_distance <= min_goal_radius - arrival_radius
+# -- the lower bound so only genuine crossings promote, the upper so a robot that
+# legitimately arrives at the nearest allowed goal is not left unpromoted. The previous
+# values ((1.75, 2.5) and tile_size*0.35 = 1.925) let 27 % of goals be "arrived at" from
+# on top of the wall and never promoted a robot that crossed and stopped as told.
+PHASE5_GOAL_RADIUS_RANGE = (2.2, 2.5)
+PHASE5_PROMOTE_DISTANCE = 1.6
+PHASE5_WALL_GATE = {"wall_distance": PHASE5_WALL_DISTANCE, "gate_width": 0.6, "gate_width_far": 0.6}
+PHASE5_FRICTION_RANGE = (0.8, 1.2)
+assert PHASE5_WALL_FAR_FACE < PHASE5_PROMOTE_DISTANCE <= PHASE5_GOAL_RADIUS_RANGE[0] - 0.5, (
+    "promote_distance must lie in (far_face, min_goal_radius - arrival_radius]"
+)
+
+
 @configclass
 class RobotSceneCfgPhase5(RobotSceneCfgPhase4):
     # max_init_terrain_level=7 predates the terrain redesign above but is kept -- it
@@ -197,8 +249,11 @@ class CommandsCfgPhase5(CommandsCfgPhase3):
     other column (the wall rings) gets goal-directed steering via
     MixedGoalVelocityCommand -- one random goal per episode placed just beyond the wall
     (goal_radius_range clears both the wall ring and the curriculum's own promotion rim
-    at tile_size*0.35=1.925 m), synthesized lin_vel_x/ang_vel_z toward it, and the command
+    at PHASE5_PROMOTE_DISTANCE), synthesized lin_vel_x/ang_vel_z toward it, and the command
     dropping to exactly zero on arrival.
+
+    goal_radius_range is PHASE5_GOAL_RADIUS_RANGE (Try50, 2026-09-11) -- the earlier
+    (1.75, 2.5) contradicted this docstring's own requirement, see the constants above.
 
     This replaces UniformTerrainGatedVelocityCommand (Lesson 4 above), which forced
     lin_vel_x >= 0.4 on every non-"rough" column -- the robot almost never received a
@@ -224,7 +279,7 @@ class CommandsCfgPhase5(CommandsCfgPhase3):
         ranges=CommandsCfgPhase2().base_velocity.ranges,
         limit_ranges=CommandsCfgPhase2().base_velocity.limit_ranges,
         rough_terrain_names=("rough",),
-        goal_radius_range=(1.75, 2.5),
+        goal_radius_range=PHASE5_GOAL_RADIUS_RANGE,  # Try50; see the constants above
         arrival_radius=0.5,
         max_lin_vel=1.0,
         max_ang_vel=1.0,
@@ -358,7 +413,17 @@ class RewardsCfgPhase5(RewardsCfgPhase3):
             "command_name": "base_velocity",
         },
     )
-    flat_orientation_l2 = RewardsCfgPhase3().flat_orientation_l2.replace(weight=-0.5)
+    # Try50 (2026-09-11): the three pose taxes on the wall climb, see the module header.
+    flat_orientation_l2 = RewTerm(
+        func=mdp.flat_orientation_l2_wall_gated,
+        weight=-0.5,
+        params={"command_name": "base_velocity", **PHASE5_WALL_GATE},
+    )
+    joint_pos = RewTerm(
+        func=mdp.joint_position_penalty_wall_gated,
+        weight=RewardsCfgPhase3().joint_pos.weight,
+        params={**RewardsCfgPhase3().joint_pos.params, "command_name": "base_velocity", **PHASE5_WALL_GATE},
+    )
 
     goal_move_in_direction = RewTerm(
         func=mdp.goal_move_in_direction_reward,
@@ -376,7 +441,7 @@ class RewardsCfgPhase5(RewardsCfgPhase3):
         params={"command_name": "base_velocity", "arrival_deadline_s": 8.0, "activation_window": 1.0},
     )
     goal_dont_wait = RewTerm(
-        func=mdp.goal_dont_wait_penalty,
+        func=mdp.goal_dont_wait_penalty_3d,  # Try50: 3-D speed, see mdp/rewards.py
         weight=-1.0,
         params={"command_name": "base_velocity", "speed_threshold": 0.2},
     )
@@ -391,7 +456,7 @@ class RewardsCfgPhase5(RewardsCfgPhase3):
         params={
             "command_name": "base_velocity",
             "wall_height_range": (0.10, 0.60),
-            "wall_distance": 1.25,
+            "wall_distance": PHASE5_WALL_DISTANCE,
             "gate_width": 0.6,
             "gate_width_far": 1.5,
             "nominal_clearance": 0.15,
@@ -414,8 +479,12 @@ class TerminationsCfgPhase5(TerminationsCfg):
     (it accounted for ~1.3 % of terminations); flat_orientation_l2 is, which is why that
     weight was halved rather than this angle raised further.
 
-    base_contact and foot_impact both use mdp.illegal_contact_excluding_top rather than
-    plain illegal_contact. That variant splits contacts by direction: resting or pushing
+    foot_impact uses mdp.illegal_contact_excluding_top; base_contact used the same until
+    2026-09-11 and now uses mdp.illegal_contact_excluding_supported (Try50, re-implementing
+    Try42): the top-only exemption read the chest pressed against the face during the
+    climb as a crash and ended 86-93 % of 0.60 m attempts; see that function's docstring.
+    The rest of this paragraph describes the top-only variant, which is still what
+    foot_impact uses. That variant splits contacts by direction: resting or pushing
     down on a step's flat top reads as vertical-dominant and is exempt, while slamming
     into a vertical riser reads as horizontal-dominant and still terminates -- so genuine
     climbing technique is not punished but reckless charging is. Introduced after an
@@ -436,8 +505,12 @@ class TerminationsCfgPhase5(TerminationsCfg):
 
     bad_orientation = TerminationsCfg().bad_orientation.replace(params={"limit_angle": 2.0})
     base_contact = DoneTerm(
-        func=mdp.illegal_contact_excluding_top,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="base"), "threshold": 400.0},
+        func=mdp.illegal_contact_excluding_supported,  # Try50 (Try42 re-implemented)
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names="base"),
+            "threshold": 400.0,
+            "supported_horizontal_max": 200.0,
+        },
     )
     foot_impact = DoneTerm(
         func=mdp.illegal_contact_excluding_top,
@@ -488,7 +561,10 @@ class CurriculumCfgPhase5(CurriculumCfg):
     that checkpoint -- not yet resolved, worth investigating further.
     """
 
-    terrain_levels = CurrTerm(func=mdp.terrain_levels_climb_demote_on_fail)
+    terrain_levels = CurrTerm(
+        func=mdp.terrain_levels_climb_demote_on_fail,
+        params={"promote_distance": PHASE5_PROMOTE_DISTANCE},  # Try50; see the constants above
+    )
     lin_vel_cmd_levels = CurrTerm(func=mdp.lin_vel_cmd_levels_column_aware)
 
 
@@ -517,13 +593,24 @@ class RobotEnvCfgPhase5(RobotEnvCfgPhase4):
         # proprioception-only, so this affects value estimation only -- no tensor shape
         # changes, and checkpoints stay loadable across this edit.
         self.observations.critic.height_scan.clip = (-2.0, 5.0)
+        # Try50 (2026-09-11): startup friction floor 0.3 -> 0.8. Terrain mu is 1.0 with
+        # friction_combine_mode="multiply", so the robot-side draw *is* the effective mu,
+        # fixed per env at startup: a third of the envs used to spend their whole life at
+        # <= 0.6, where rolling a wheel up a vertical face needs twice the press force.
+        # Phase5-only (Phase1-4 keep the base EventCfg range).
+        self.events.physics_material.params["static_friction_range"] = PHASE5_FRICTION_RANGE
+        self.events.physics_material.params["dynamic_friction_range"] = PHASE5_FRICTION_RANGE
 
 
 @configclass
 class RobotPlayEnvCfgPhase5(RobotEnvCfgPhase5):
     """Inspection layout: wall only (no "rough" -- play mode is for looking at the climb;
     off-obstacle behaviour is what a deploy sim is for), 4 columns x 1 row pinned to
-    exact 30/40/50/60 cm (60 cm is PHASE5_TERRAIN_CFG's own wall_height_range ceiling).
+    exact 40/50/60/70 cm (60 cm is PHASE5_TERRAIN_CFG's own wall_height_range ceiling;
+    70 cm is the footage's wall, outside the training range, kept to see whether the
+    technique generalises upward -- 0.30 dropped 2026-09-11 since it is never the
+    interesting column any more). scripts/rsl_rl/eval_wall.py runs this same layout
+    headless for N episodes per column and is the crossing-rate instrument.
 
     Exact per-height pinning requires one column per height (a degenerate (h, h)
     wall_height_range) -- a single column's height varies continuously-with-jitter across
@@ -547,5 +634,5 @@ class RobotPlayEnvCfgPhase5(RobotEnvCfgPhase5):
                 platform_width=2.0,
                 border_width=1.0,
             )
-            for h in (0.30, 0.40, 0.50, 0.60)
+            for h in (0.40, 0.50, 0.60, 0.70)
         }

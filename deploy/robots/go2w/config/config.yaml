@@ -51,4 +51,7 @@ FSM:
       Passive: LT + B.on_pressed
     keyboard_transitions:
       Passive: "0"
-    policy_dir: ../../../logs/rsl_rl/go2w_v1_phase5_adjust
+    policy_dir: ../../../logs/rsl_rl/go2w_v1_phase5
+    # Tilt (rad) at which the FSM drops to Passive. Default 1.0 when unset. The wall
+    # climb pitches to 60-80 deg, so match training's bad_orientation limit here.
+    bad_orientation_limit: 2.0

@@ -59,6 +59,11 @@ gym.register(
 # problem this redesign fixes. Follow-up sandbox tries against this phase (thin_wall
 # thickness variants, a still-unsolved 0.50 m stall) are recorded in sandbox/SUMMARY.md --
 # none are currently registered (cleared 2026-08-19, see sandbox/__init__.py).
+# 2026-09-11: folded in from Go2w-v1-Phase5-Try50 -- the six changes that let the policy
+# use the wheel-on-wall-face climb from Unitree's own footage (crossing at 0.60 m
+# measured 9 % -> 67 % with scripts/rsl_rl/eval_wall.py). See velocity_env_cfg_phase5.py's
+# module header. Its checkpoint is this task's latest run (logs/rsl_rl/go2w_v1_phase5/
+# 2026-09-09_16-01-05); run Go2w-v1-Phase5-Adjust on top of it before deploying.
 gym.register(
     id="Go2w-v1-Phase5",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
