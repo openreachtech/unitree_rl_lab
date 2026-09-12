@@ -25,6 +25,7 @@ Stance kinds follow ``HandstandCommand``'s sign convention: ``handstand`` stands
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, Union
@@ -216,7 +217,12 @@ def step_from_dict(data: dict[str, Any]) -> Step:
     allowed = {name for name in cls.__dataclass_fields__ if name != "skill"}
     unknown = set(data) - allowed - {"skill"}
     _require(not unknown, f"{kind} does not take {sorted(unknown)}; allowed fields: {sorted(allowed)}")
-    step = cls(**{key: value for key, value in data.items() if key != "skill"})
+    try:
+        step = cls(**{key: value for key, value in data.items() if key != "skill"})
+    except TypeError as exc:  # a required field is missing; say which, in the form a model can act on
+        required = [name for name, f in cls.__dataclass_fields__.items()
+                    if name != "skill" and f.default is dataclasses.MISSING]
+        raise ProgramError(f"{kind} is missing {sorted(set(required) - set(data))}: {exc}") from exc
     step.validate()
     return step
 
