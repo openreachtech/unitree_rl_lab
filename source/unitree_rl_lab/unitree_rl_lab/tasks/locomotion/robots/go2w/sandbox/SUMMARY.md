@@ -1698,3 +1698,173 @@ the keyframe PNG.
 Next on this line: `Go2w-v1-Phase5-Adjust` (~1000 iterations) on the promoted checkpoint,
 then `eval_wall.py` again -- the number that should move is **held**, not arrived; then
 MuJoCo at 0.62 m with the tilt guard at 2.0.
+
+## 2026-09-14: is actuator torque the bottleneck at 0.60 m? (measured: no)
+
+Question raised: could the motors be rate-limiting the climb, and should the actuator
+limits be raised ~1.5x as an experiment? Before touching anything, `eval_wall.py` got a
+`--torque-stats` option that reads Isaac's pre-clip `computed_torque` against
+`effort_limit` (IdealPDActuator clips computed -> applied) and reports, per wall height
+and joint group, the fraction of joint-steps saturated inside the wall band
+|r - 1.25| <= 0.6 (where the climb happens), over the whole episode, and the 99th
+percentile of |applied|/limit. Run on the promoted default checkpoint
+(`go2w_v1_phase5/2026-09-09_16-01-05/model_7995.pt`, deterministic, 128 envs,
+100+ episodes per height; report `eval_wall_deterministic_torque_model_7995.md`):
+
+| wall | hip sat band / all / p99 | thigh | calf (knee) | wheel |
+|---|---|---|---|---|
+| 0.40 m | 0.011 / 0.015 / 1.00 | 0.075 / 0.066 / 1.00 | 0.000 / 0.000 / 0.82 | 0.673 / 0.503 / 1.00 |
+| 0.50 m | 0.019 / 0.012 / 1.00 | 0.090 / 0.073 / 1.00 | 0.000 / 0.000 / 0.84 | 0.639 / 0.525 / 1.00 |
+| 0.60 m | 0.010 / 0.009 / 1.00 | 0.088 / 0.075 / 1.00 | 0.000 / 0.000 / 0.84 | 0.600 / 0.517 / 1.00 |
+| 0.70 m | 0.002 / 0.004 / 0.98 | 0.097 / 0.085 / 1.00 | 0.001 / 0.000 / 0.86 | 0.592 / 0.539 / 1.00 |
+
+Reading:
+
+- **Knee (calf, 45.43 N*m) never saturates.** p99 of demand is 0.84 of the limit even in
+  the band at 0.70 m. This is the joint that lifts the body; if torque were the wall,
+  its demand would be pinned at 1.00 the way the thigh's is. 16% of headroom sits unused.
+- **Thigh (23.7 N*m) saturates ~9% of band joint-steps**, weakly rising with height
+  (0.075 -> 0.097). The only joint where a limit visibly shapes behaviour, and it is the
+  real motor's rating. Not enough to explain a 31% failure rate whose mix is
+  base_contact 0.26 / bad_orientation 0.08 (falls, not stalls).
+- **Wheel saturation (~60% in band, ~52% everywhere) is structural, not a climb symptom.**
+  Wheels are driven by `JointVelocityAction` scale 8 through damping 0.5 with zero
+  stiffness, so tau = 0.5*(8a - w): any |a| >~ 6 hits the 23.5 N*m clip. The policy uses
+  the wheel as a bang-bang torque actuator on flat ground as much as at the wall, and the
+  rate is *higher* at 0.40 m than at 0.60 m. Separate sim2real note: MuJoCo's original
+  wheel spec was 15 N*m (raised to 23.7 on 2026-08-13 to match Isaac); a policy that
+  lives at the 23.5 clip half the time will feel a 15 N*m wheel. That is an argument for
+  checking the real wheel rating, not for raising Isaac's.
+
+Decision: the 1.5x actuator experiment is not run. hip/thigh 23.7 and calf 45.43 are the
+real Go2 motor ratings and MuJoCo's `ctrlrange` (the arbiter) matches them, so a policy
+trained at 35.6 / 68 N*m could only pass MuJoCo if MuJoCo were also lifted above the
+hardware, i.e. it would not be deployable, and the saturation table already says the
+limit is not what the policy is pushing against. The residual at 0.60 m remains
+base_contact (chest/belly strike on the far side) and holding after arrival.
+
+### Correction, same day: zero-shot in a 1.5x-motor env says torque *does* matter
+
+The experiment was requested anyway, so before training anything the cheapest test was
+run: the **same promoted checkpoint**, unchanged, evaluated inside an env whose only
+difference is every `effort_limit` x1.5 (`Go2w-v1-Phase5-Try54`, see below). eval_wall,
+deterministic, 128 envs, 100+ episodes per height, report
+`eval_wall_deterministic_torque_in_Go2w_v1_Phase5_Try54_model_7995.md` next to the
+checkpoint:
+
+| wall | crossed 1.0x motors | crossed 1.5x motors (zero-shot) | base_contact 1.0x -> 1.5x | bad_orientation 1.0x -> 1.5x |
+|---|---|---|---|---|
+| 0.40 m | 0.96 | 0.96 | 0.03 -> 0.04 | 0.10 -> 0.08 |
+| 0.50 m | 0.75 | 0.83 | 0.22 -> 0.17 | 0.05 -> 0.13 |
+| 0.60 m | 0.69 | **0.80** | 0.26 -> 0.17 | 0.08 -> 0.16 |
+| 0.70 m | 0.29 | **0.50** | 0.09 -> 0.07 | 0.47 -> 0.43 |
+
+Run-to-run spread of the deterministic 0.60 m crossing on this checkpoint has been
+0.67 / 0.70 / 0.69 across three evals, so +0.11 at 0.60 m and +0.21 at 0.70 m are
+outside noise. Saturation under 1.5x: thigh 0.088 -> 0.005 of band joint-steps, wheel
+0.60 -> 0.25, hip and calf 0 (calf p99 0.63). So the section above was right that the
+knee is not the limit and wrong in its conclusion: the **thigh** (9 % saturated at
+23.7 N*m) and/or the **wheel** (at its clip most of the time) were costing crossings,
+and simply giving the existing policy headroom on them converts base_contact failures
+into crossings at 0.60 m and roughly doubles 0.70 m. The saturation table measures how
+often the limit binds, not how much each binding step costs; a 9 % binding rate on the
+joint that swings the leg over the lip turned out to be expensive.
+
+Caveat that still stands: 23.7 N*m is the thigh motor's rating. What this result
+changes is the *question* -- from "raise the limit" (not deployable) to "where does the
+thigh saturate and can the technique or the action scale avoid it", and "what is the
+real wheel motor's peak torque" (MuJoCo's original spec said 15, Isaac trains at 23.5).
+
+## 2026-09-14: Try54 -- actuator effort_limit x1.5, trained
+
+`sandbox/velocity_env_cfg_phase5_try54.py`, registered `Go2w-v1-Phase5-Try54`. Single
+change against the default Phase5: `_scale_effort_limits(cfg, 1.5)` in `__post_init__`
+(env and Play) -> hip/thigh 35.55, calf 68.145, wheel 35.25 N*m. Stiffness/damping,
+action scales, rewards, terminations untouched; verified headless that the default, its
+Play cfg and the shared `UNITREE_GO2W_CFG` still read 23.7/45.43/23.5.
+
+Protocol matched to Try50 (which is now the default): resume from the pre-Try50
+`go2w_v1_phase5/2026-09-04_01-26-22/model_5996.pt` for 2000 iterations, so the
+comparison is Try54's `model_7995` vs the default's `model_7995` at equal iterations
+from the same parent. Launched 2026-09-14 12:35 (`go2w_v1_phase5_try54/2026-09-14_12-35-47`):
+
+```
+python scripts/rsl_rl/train.py --task Go2w-v1-Phase5-Try54 --resume --previous-task Go2w-v1-Phase5 \
+    --load_run 2026-09-04_01-26-22 --checkpoint model_5996.pt --num_envs 4096 --headless \
+    --deploy-keyboard-commands --max_iterations 2000
+```
+
+MuJoCo side: `unitree_mujoco/unitree_robots/go2w_x15/` = `go2w/` with every motor
+`ctrlrange` x1.5 (23.7 -> 35.55, knee 45.43 -> 68.145; assets symlinked, scene files
+copied unchanged, header comment says why it exists). Start with
+`./unitree_mujoco -r go2w_x15 -s scene_terrain.xml` and point the deploy `policy_dir` at
+`logs/rsl_rl/go2w_v1_phase5_try54`. It exists only so the sim2sim check of Try54 is fair
+to Try54; a policy that needs it is not deployable.
+
+eval_wall tweak: with an explicit `--checkpoint` the report filename now carries
+`_in_<task>` so a foreign-policy evaluation cannot overwrite the checkpoint's own report.
+
+**Try54 result** (2000 iterations from `model_5996.pt`, run
+`go2w_v1_phase5_try54/2026-09-14_12-35-47`, `model_7995.pt`; training log
+`events_log_summary_go2w_v1_phase5_try54_model_7995.md`: terrain_levels 6.13 vs the
+default's 6.08, base_contact 0.047 vs 0.032, mean_reward 8.76 vs 8.40 -- indistinguishable,
+as usual for this metric). eval_wall, 128 envs, 100+ episodes per height. The whole
+answer is one 2x2 of **0.60 m crossing rate (deterministic)**, policy x motor limits:
+
+| policy \ env | 1.0x motors (real rating) | 1.5x motors |
+|---|---|---|
+| default `model_7995` | 0.69 (0.67 / 0.70 in earlier evals) | **0.80** (zero-shot, above) |
+| Try54 `model_7995` | **0.24** | 0.82 |
+
+Full Try54 rows (reports next to its checkpoint, `_torque` suffix; the 1.0x row is
+`eval_wall_deterministic_torque_in_Go2w_v1_Phase5_model_7995.md`):
+
+| env / mode | 0.40 m | 0.50 m | 0.60 m crossed / held | 0.70 m | 0.60 m base_contact / bad_orientation |
+|---|---|---|---|---|---|
+| 1.5x deterministic | 0.97 | 0.83 | 0.82 / 0.21 | 0.02 | 0.12 / 0.09 |
+| 1.5x stochastic | 0.98 | 0.93 | 0.65 / 0.19 | 0.01 | 0.25 / 0.13 |
+| 1.0x deterministic | 0.97 | 0.72 | 0.24 / 0.03 | 0.00 | 0.19 / 0.09 |
+| default, 1.0x det / stoch (reference) | 0.96 / 1.00 | 0.75 / 0.92 | 0.69 / 0.73 | 0.29 / 0.11 | 0.26 / 0.08 |
+
+Reading, in order of weight:
+
+1. **Training with 1.5x motors bought nothing that zero-shot had not already bought.**
+   0.82 vs 0.80 at 0.60 m deterministic; stochastic 0.65 is *below* the default's 0.73
+   at 1.0x. The 2000 iterations found no new technique -- they found the same climb with
+   more thigh torque behind it.
+2. **The Try54 policy does not transfer to real motor ratings: 0.82 -> 0.24.** Its
+   thigh saturates 12.4 % of climb joint-steps at 23.7 N*m (default: 8.8 %) -- it learned
+   to spend torque the hardware does not have. On a real Go2W this policy would be worse
+   than the default at the very height it was meant to fix. This is the answer to "can
+   we train with bigger motors and deploy": no.
+3. **0.70 m collapsed** (0.29 -> 0.02) although the zero-shot default *gained* there
+   (0.29 -> 0.50). Training at 1.5x on the 0.10-0.60 m range specialised the technique
+   to the training ceiling; bad_orientation 0.43 / 0.66 at 0.70 m.
+4. What the campaign learned that is worth keeping: the zero-shot table. Headroom on the
+   thigh and wheel is worth ~+0.11 at 0.60 m and ~+0.2 at 0.70 m with the *existing*
+   policy. The thigh's 23.7 N*m rating is fixed, so the productive follow-ups are (a)
+   find *where* in the climb the thigh saturates (RSI-style keyframe timing, or a
+   per-phase saturation breakdown in eval_wall) and shape the technique or the
+   `JointPositionAction` scale so that step is not torque-bound; (b) settle the real
+   wheel motor's peak torque -- if it is 23.7 the wheel is fine, if it is 15 N*m the
+   default is already over-spending it 50 % of the time and MuJoCo's ctrlrange should
+   go back down.
+
+Status: Try54 is a negative result. Not folded. Code (`velocity_env_cfg_phase5_try54.py`,
+registration), log root and the MuJoCo `go2w_x15` variant are left in place for a
+Play/MuJoCo look (`rplay go2w_v1_phase5_try54`; `./unitree_mujoco -r go2w_x15 -s
+scene_terrain.xml` with deploy `policy_dir` -> `go2w_v1_phase5_try54`); delete all three
+once seen, per the sandbox convention. Note when watching: in the *stock* MuJoCo `go2w`
+(real ctrlrange) this policy is expected to fail 0.60 m three times out of four -- that
+is row 2, not a MuJoCo problem.
+
+**Try54 deleted (2026-09-14, same day).** Decision: terrain_levels did not move and the
+policy does not transfer to the real motor rating, so nothing to fold. Removed:
+`sandbox/velocity_env_cfg_phase5_try54.py` and its registration (sandbox is empty
+again), `logs/rsl_rl/go2w_v1_phase5_try54/` (340 MB; the four eval_wall / aggregate
+reports are reproduced in the tables above), and the MuJoCo variant
+`unitree_robots/go2w_x15/` (the stock `go2w` keeps the real 23.7 / 45.43 ctrlrange).
+Kept: `eval_wall.py --torque-stats` and the zero-shot default-in-1.5x table next to the
+default checkpoint (`eval_wall_deterministic_torque_in_Go2w_v1_Phase5_Try54_model_7995.md`)
+as the record that thigh/wheel headroom is worth ~+0.11 at 0.60 m. The default Phase5 was
+never touched by this try.
