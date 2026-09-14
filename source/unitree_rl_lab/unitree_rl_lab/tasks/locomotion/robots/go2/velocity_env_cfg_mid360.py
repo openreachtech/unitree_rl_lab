@@ -73,11 +73,20 @@ about base z by an angle growing as ``sensor_t * 0.1`` (quadratic in step count,
 not substitute for one: a rotation about z leaves each ray's z component untouched, so
 every ray keeps its elevation exactly and the band never moves.
 
-Remaining caveat
-----------------
-Rearward the real nose mount is blind behind the head and trunk; the RayCaster only sees
-the static ground mesh, so the sim looks straight through the body and is more optimistic
-than hardware there (same caveat as velocity_env_cfg_lidar.py).
+Self-occlusion
+--------------
+The robot blocks its own rays, which the stock IsaacLab ``RayCaster`` cannot do -- it casts
+against one static mesh with its transform baked at init, so the body is transparent and a
+ray fired past a leg still reports the ground behind it. ``MID360_DYNAMIC_MESH`` (on by
+default) swaps in ``OccludedRollingLivoxSensor``, which carries the robot's collision
+geometry as a second warp mesh moving with the bodies and drops any ray the body catches. In
+play that shows up as red (held) cells sweeping with the gait where a leg crosses the field
+of view. See ``sensors/robot_occluder.py`` and ``MID360_DYNAMIC_MESH`` for what it costs.
+
+Note this is the *sensor's own* robot only. Other robots and any other dynamic object are
+still invisible -- at ``env_spacing`` 2.5 m against a 1.4 x 1.0 m map window that does not
+matter here, and Phase 4's walls are baked into the static terrain mesh, so they occlude
+correctly either way.
 """
 
 from __future__ import annotations
@@ -89,7 +98,11 @@ from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 
-from unitree_rl_lab.sensors import LivoxPatternCfg, RollingLivoxSensorCfg
+from unitree_rl_lab.sensors import (
+    LivoxPatternCfg,
+    OccludedRollingLivoxSensorCfg,
+    RollingLivoxSensorCfg,
+)
 from unitree_rl_lab.tasks.locomotion import mdp
 from unitree_rl_lab.tasks.locomotion.mdp.lidar_elevation_map import LidarNoiseCfg
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_blind_phase4 import (
@@ -124,6 +137,58 @@ hardware's rate, so the 0.1 s elevation sweep is untouched -- measured against t
 4,000, each step's elevation band and median ground reach are the same to within a few
 tenths of a degree and a few cm. Set to 1 for the sensor's full point rate."""
 
+MID360_OCCLUDER_MODE = "hit"
+"""What a ray that lands on the robot reports. Needs ``MID360_DYNAMIC_MESH``.
+
+``"hit"`` returns the point on the robot's own surface, so the leg or belly the beam
+actually struck appears in the height map as if it were terrain. That is what the raw point
+cloud off a real MID-360 contains -- the laser does hit the legs and the light does come
+back -- so this is the right setting when the height map on hardware is built straight from
+the raw cloud.
+
+``"drop"`` turns the same ray into a miss, which models the self-filter that mapping
+pipelines normally apply (the robot's own collision shapes are used to delete its points
+before they reach the grid). Pick it if ``deploy/``'s height-map publisher will do that
+filtering; otherwise the sim would be cleaner than the robot.
+
+The difference is not subtle, measured walking at 0.6 m/s with noise off, as the fraction of
+cells the map places above the true ground:
+
+    band from the L1     >5cm    >15cm    max
+    0.00-0.14 m   hit   48.6%    23.1%   43.0 cm
+                  drop   7.3%     0.5%   17.7 cm
+    overall       hit   13.9%     3.0%
+                  drop   6.8%     0.2%
+
+The near field is where it lands, because that is where the robot's own body is. 43 cm is
+taller than any Phase 4 wall, and it moves with the gait.
+"""
+
+MID360_DYNAMIC_MESH = True
+"""Whether the robot's own body blocks its rays -- see ``sensors/robot_occluder.py``.
+
+On, the sensor is ``OccludedRollingLivoxSensor``: the robot's collision geometry becomes a
+second warp mesh that moves with the bodies each step, and a ray that would have gone through
+a leg is dropped rather than reporting the ground behind it. Off, it is the plain
+``RollingLivoxSensor`` and the robot is transparent, which is what the stock IsaacLab
+``RayCaster`` gives you and what every other LiDAR task in this repo still does.
+
+Default on because transparency is not a small error here. The L1 sits at the nose and looks
+down and back; the front hips are 9.6 cm behind it, so much of the map's rear half is reached
+by rays that pass right by a leg. Left transparent, those cells come back *measured* and
+correct where the hardware would have no data at all -- so the map's unobserved pattern is
+wrong, and wrong in a gait-correlated way, which is exactly the structure a height-map
+encoder would otherwise learn to rely on. Measured standing still on flat ground, the body
+takes 5.1 percentage points of the returns (1,000 rays -> about 51 blocked per step); walking
+and stepping over Phase 4's walls swings the legs further and takes more.
+
+The cost is real: at 4,096 environments the occluder mesh is 18 bodies x 4,096 = 2.66M
+vertices and 4.90M triangles, whose BVH is refit every step. Measured against the same task
+without it, a training iteration goes 1.479 s -> 1.852 s (+25%), of which the dynamic mesh is
++0.365 s -- about twice what the MID-360's own raycast costs. Narrow
+``occluder_body_names`` to buy some back: ``["base", "F[LR]_.*"]`` keeps the parts that
+actually shadow a forward-looking mount and roughly halves the triangle count."""
+
 # ---------------------------------------------------------------------------
 # Mount: the real L1 (utlidar) pose from go2_description.urdf's ``radar_joint``,
 # ``xyz="0.28945 0 -0.046825" rpy="0 2.8782 0"`` -- the nose tip, pitched 164.9 deg
@@ -141,11 +206,21 @@ GO2_L1_ROT = (math.cos(_L1_PITCH / 2), 0.0, math.sin(_L1_PITCH / 2), 0.0)
 """(w, x, y, z) quaternion of the L1 mount: a pure pitch of 2.8782 rad."""
 
 
-def _mid360_scanner_cfg(debug_vis: bool) -> RollingLivoxSensorCfg:
-    """A fresh sensor cfg per env-cfg instance, so play tweaks never leak into train."""
-    return RollingLivoxSensorCfg(
+def _mid360_scanner_cfg(
+    debug_vis: bool, dynamic_mesh: bool = MID360_DYNAMIC_MESH
+) -> RollingLivoxSensorCfg:
+    """A fresh sensor cfg per env-cfg instance, so play tweaks never leak into train.
+
+    ``dynamic_mesh`` picks the sensor class and nothing else: mount, scan sequence, ray count,
+    range and noise are identical either way, so the two differ in exactly one respect. See
+    ``MID360_DYNAMIC_MESH``.
+    """
+    cfg_class = OccludedRollingLivoxSensorCfg if dynamic_mesh else RollingLivoxSensorCfg
+    # Only the occluding config has these fields; the plain one would reject them.
+    occluder_kwargs = {"occluder_mode": MID360_OCCLUDER_MODE} if dynamic_mesh else {}
+    return cfg_class(
         prim_path="{ENV_REGEX_NS}/Robot/base",
-        offset=RollingLivoxSensorCfg.OffsetCfg(pos=GO2_L1_MOUNT, rot=GO2_L1_ROT),
+        offset=cfg_class.OffsetCfg(pos=GO2_L1_MOUNT, rot=GO2_L1_ROT),
         # Bolted to the nose like the real L1: pitch and roll swing the pattern
         # with the body.
         ray_alignment="base",
@@ -154,6 +229,7 @@ def _mid360_scanner_cfg(debug_vis: bool) -> RollingLivoxSensorCfg:
             samples=MID360_SAMPLES_PER_STEP,
             downsample=MID360_RAY_DOWNSAMPLE,
         ),
+        **occluder_kwargs,
         mesh_prim_paths=["/World/ground"],
         max_distance=20.0,
         min_range=0.2,
@@ -202,9 +278,9 @@ Three of the six augmentations in the reference paper (see ``mdp/lidar_elevation
 stay off because this sensor produces them from geometry rather than from a model:
 *Pruning* -- the 1,000-ray budget over 609 cells, plus the 10 Hz elevation sweep, already
 leaves whole annuli unmeasured for several steps at a time, which is a more realistic
-temporally-correlated dropout than random patch removal; *Height* and *Robot Pose* -- the
-held cells carry no motion compensation, so stale readings drift out of register as the
-robot advances.
+temporally-correlated dropout than random patch removal; *Height* and *Robot Pose* -- a held
+cell carries whatever the terrain looked like when a beam last landed there, and is
+transported forward on simulated odometry rather than re-measured.
 
 Deliberately **not** modelled, and worth knowing before trusting a sim-to-real number:
 
@@ -219,8 +295,46 @@ Deliberately **not** modelled, and worth knowing before trusting a sim-to-real n
     material information in the raycast to key off.
   * *Motion distortion.* A frame's points are acquired over 20 ms while the body moves,
     but every ray here is cast from one pose.
-  * *Self-occlusion.* RayCaster sees only the ground mesh, so the front legs never cross
-    a nose-mounted downward field of view the way they would on hardware.
+
+Self-occlusion used to be on this list and no longer is: ``MID360_DYNAMIC_MESH`` puts the
+robot's own collision geometry in the way of its rays.
+
+**Outliers are mis-scaled for this sensor, and it shows in play.** ``outlier_range`` is
+0.15 / 0.30 / 0.60 m, but this mount's ground returns run 0.15..1.6 m with a median near
+0.4 m, so a strong outlier is larger than the whole measurement. ``_perturb`` moves a point
+along its own ray, and the distance is clamped at zero, so a short outlier lands somewhere
+between the ground and the sensor -- at the limit, on the sensor itself. Every ray leaves
+the L1 at the nose, and the map keeps the *highest* return per cell (an ``amin`` on these
+inverted heights), so the near-side outliers always win their cell and the far-side ones
+never do. The result is a one-sided conical spray of raised cells with its apex at the
+robot's face, held in place by the previous-value fill.
+
+Measured against the true terrain, cell for cell, over 4 environments:
+
+    cells more than 5 cm above ground, by distance from the L1 mount
+    0.00-0.15 m   46.3% with noise, 4.5% without
+    0.15-0.30 m   12.9% / 1.1%
+    0.30-0.45 m    6.9% / 4.6%
+    0.60-0.80 m    2.3% / 1.9%
+
+The radial gradient is entirely the noise: without it the near field is no worse than the
+far field. The innermost band is worst because it is also the blind disc -- the steepest ray
+leaves at -62.3 deg from 0.273 m up, so nothing lands within 0.143 m of the mount and a
+spike there is never overwritten. Self-occlusion is not the cause and in fact reduces it
+(7.1% of cells over 5 cm with the occluder, 9.1% without).
+
+Making the magnitude proportional to the measured distance was considered and **rejected**:
+a wild reading from a faulty unit does not know how far away the target was, and scaling the
+error by range would model only the mixed-pixel half of the phenomenon. The absolute
+magnitude stays.
+
+What that leaves is the near-face spray, which is a real consequence of the model and will
+reappear whenever ``scale`` is non-zero. Two levers that do not touch the absolute-magnitude
+decision: lower ``outlier_range`` / ``outlier_prob``, or stop treating a short outlier as a
+point at the sensor -- ``rel = direction * (distance + error).clamp(min=0.0)`` in ``_perturb``
+puts it exactly on the mount, and no LiDAR reports a range below its own minimum. Dropping
+those as non-returns instead would keep faults arbitrary while removing the one artifact that
+is physically impossible.
 """
 
 
@@ -272,6 +386,7 @@ def _attach_mid360(
     debug_vis: bool,
     show_raw_points: bool = False,
     keep_lidar_map: bool = False,
+    dynamic_mesh: bool = MID360_DYNAMIC_MESH,
 ) -> None:
     """Bolt the MID-360 and its height map onto a blind-phase cfg.
 
@@ -289,8 +404,16 @@ def _attach_mid360(
     attributes, so whichever runs second wins. Set True to keep it and read the mid360
     map's diagnostics with care. Training configs have no ``lidar_map`` group to begin
     with, so it is a no-op there.
+
+    ``dynamic_mesh`` decides whether the robot blocks its own rays; see
+    ``MID360_DYNAMIC_MESH`` for what it costs and why it defaults on. In play it is the one
+    switch worth flipping back and forth: with it on, a leg crossing the field of view leaves
+    a red (held) streak in the map that sweeps with the gait; with it off that same streak is
+    green and confidently wrong.
     """
-    cfg.scene.mid360_scanner = _mid360_scanner_cfg(debug_vis=show_raw_points)
+    cfg.scene.mid360_scanner = _mid360_scanner_cfg(
+        debug_vis=show_raw_points, dynamic_mesh=dynamic_mesh
+    )
     cfg.scene.mid360_scanner.update_period = cfg.decimation * cfg.sim.dt
     cfg.observations.mid360_map = Mid360MapObsCfg()
     if debug_vis:

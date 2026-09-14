@@ -211,6 +211,14 @@ def _lidar_height_scan(
             "horizontal_fov": LIDAR_H_FOV,
             "flat_fill": GO2_FLAT_SCAN_VALUE,
             "noise": noise,
+            # Pinned off, against the term's own default. Motion compensation carries a held
+            # cell with the ground instead of leaving it pinned to a body-relative slot, which
+            # is a real fidelity fix -- but every Go2-HM-Noisy / -Belief / -Clean run and every
+            # number in sandbox/TERRAIN_ENCODER.md was trained and measured against the
+            # uncompensated map, and this term feeds those tasks' policy input directly. Turn
+            # it on here only alongside retraining that lineage; the MID-360 tasks, which are
+            # new, take the term's default of True.
+            "motion_compensation": False,
             "debug_vis": debug_vis,
             "debug_vis_env_index": debug_vis_env_index,
         },

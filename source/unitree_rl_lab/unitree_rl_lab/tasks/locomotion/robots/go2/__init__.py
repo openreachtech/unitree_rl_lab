@@ -288,14 +288,17 @@ gym.register(
 
 
 # ===========================================================================
-# Experimental: Go2-Blind-GRU-Phase4 plus a Livox MID-360 on RollingLivoxSensor
-# (4,000 rays/step = the real sensor's 200k pts/s at 50 Hz, with the scan window
-# advancing each step the way the hardware does). Display-only observation group;
-# policy inputs unchanged, so Go2-Blind-GRU-Phase4 checkpoints still load. There is
-# no mid360 experiment folder, so play needs that checkpoint passed explicitly:
+# Experimental: Go2-Blind-GRU-Phase4 plus a Livox MID-360, consuming the real scan
+# sequence at the hardware's rate (4,000 rows/step = 200k pts/s at 50 Hz, of which
+# every 4th is cast) and blocked by the robot's own collision geometry. Display-only
+# observation group; policy inputs unchanged, so Go2-Blind-GRU-Phase4 checkpoints
+# still load. There is no mid360 experiment folder, so play needs that checkpoint
+# passed explicitly:
 #   python scripts/rsl_rl/play.py --task Go2-Blind-GRU-Mid360-Phase4 --num_envs 4 \
 #       --checkpoint logs/rsl_rl/go2_blind_gru_phase4/<run>/model_7300.pt
-# See velocity_env_cfg_mid360.py.
+# Green cells are measured this step, red are held from an earlier one; the legs
+# should sweep red streaks through the map. Flip MID360_DYNAMIC_MESH in
+# velocity_env_cfg_mid360.py to see the same run with the body transparent.
 # ===========================================================================
 gym.register(
     id="Go2-Blind-GRU-Mid360-Phase4",
@@ -307,3 +310,4 @@ gym.register(
         "rsl_rl_cfg_entry_point": _RUNNER,
     },
 )
+
