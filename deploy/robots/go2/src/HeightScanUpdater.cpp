@@ -31,6 +31,8 @@ void HeightScanUpdater::init()
         if (hs_cfg["exclude_half_x"].IsDefined()) cfg_.exclude_half_x = hs_cfg["exclude_half_x"].as<float>();
         if (hs_cfg["exclude_half_y"].IsDefined()) cfg_.exclude_half_y = hs_cfg["exclude_half_y"].as<float>();
         if (hs_cfg["gather_enabled"].IsDefined()) cfg_.gather_enabled = hs_cfg["gather_enabled"].as<bool>();
+        if (hs_cfg["topic"].IsDefined()) cfg_.topic = hs_cfg["topic"].as<std::string>();
+        if (hs_cfg["validate_raster"].IsDefined()) cfg_.validate_raster = hs_cfg["validate_raster"].as<bool>();
     }
 
     const int raster_size = cfg_.grid_nx * cfg_.grid_ny;
@@ -64,7 +66,7 @@ void HeightScanUpdater::init()
 
     node_ = rclcpp::Node::make_shared("go2_heightmap_receiver");
     height_scan_sub_ = node_->create_subscription<heightmap_generator::msg::HeightMap>(
-        kHeightScanTopic,
+        cfg_.topic,
         rclcpp::QoS(10),
         [this](heightmap_generator::msg::HeightMap::SharedPtr msg) {
             on_height_scan(std::move(msg));
@@ -73,9 +75,11 @@ void HeightScanUpdater::init()
     spin_thread_ = std::thread([this]() { executor_.spin(); });
     spin_thread_.detach();
     spdlog::info(
-        "HeightScanUpdater: {}x{} raster ({} cells), gather_enabled={}, policy input size={}",
-        cfg_.grid_nx, cfg_.grid_ny, raster_size, cfg_.gather_enabled, keep_index_.size());
-    spdlog::info("HeightScanUpdater subscribed to ROS 2 {} (heightmap_generator/HeightMap)", kHeightScanTopic);
+        "HeightScanUpdater: {}x{} raster ({} cells), gather_enabled={}, validate_raster={}, "
+        "policy input size={}",
+        cfg_.grid_nx, cfg_.grid_ny, raster_size, cfg_.gather_enabled, cfg_.validate_raster,
+        keep_index_.size());
+    spdlog::info("HeightScanUpdater subscribed to ROS 2 {} (heightmap_generator/HeightMap)", cfg_.topic);
 }
 
 std::vector<float> HeightScanUpdater::get() const
@@ -89,7 +93,7 @@ void HeightScanUpdater::on_height_scan(const heightmap_generator::msg::HeightMap
     std::vector<float> scan;
     if (!parse_height_scan(*msg, scan))
     {
-        spdlog::warn("Rejected incompatible HeightMap on {}", kHeightScanTopic);
+        spdlog::warn("Rejected incompatible HeightMap on {}", cfg_.topic);
         return;
     }
 
@@ -102,7 +106,7 @@ void HeightScanUpdater::on_height_scan(const heightmap_generator::msg::HeightMap
         const auto non_empty = std::count_if(scan.begin(), scan.end(),
             [](float v) { return v != kHeightScanEmpty; });
         spdlog::info("HeightScanUpdater: first HeightMap received on {} ({}/{} non-empty cells)",
-            kHeightScanTopic, non_empty, scan.size());
+            cfg_.topic, non_empty, scan.size());
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
@@ -113,19 +117,39 @@ bool HeightScanUpdater::parse_height_scan(
     const heightmap_generator::msg::HeightMap& msg,
     std::vector<float>& out) const
 {
-    // heightmap_generator publishes the full raster (msg.width/height describe it);
-    // the policy only ever trained on the cells keep_index_ selects out of it (or the
-    // whole raster, if gather_enabled is false), so validate against the raster
-    // shape, not keep_index_.size().
-    const int raster_size = cfg_.grid_nx * cfg_.grid_ny;
-    if (msg.width != static_cast<uint32_t>(cfg_.grid_nx)
-        || msg.height != static_cast<uint32_t>(cfg_.grid_ny)
-        || std::abs(msg.resolution - cfg_.resolution) > 1.0e-5f
-        || std::abs(msg.x_min - cfg_.x_min) > 1.0e-5f
-        || std::abs(msg.y_min - cfg_.y_min) > 1.0e-5f
-        || msg.data.size() != static_cast<size_t>(raster_size))
+    if (cfg_.validate_raster)
     {
-        return false;
+        // heightmap_generator publishes the full raster (msg.width/height describe
+        // it); the policy only ever trained on the cells keep_index_ selects out of
+        // it (or the whole raster, if gather_enabled is false), so validate against
+        // the raster shape, not keep_index_.size().
+        const int raster_size = cfg_.grid_nx * cfg_.grid_ny;
+        if (msg.width != static_cast<uint32_t>(cfg_.grid_nx)
+            || msg.height != static_cast<uint32_t>(cfg_.grid_ny)
+            || std::abs(msg.resolution - cfg_.resolution) > 1.0e-5f
+            || std::abs(msg.x_min - cfg_.x_min) > 1.0e-5f
+            || std::abs(msg.y_min - cfg_.y_min) > 1.0e-5f
+            || msg.data.size() != static_cast<size_t>(raster_size))
+        {
+            return false;
+        }
+    }
+    else
+    {
+        // Not a raster (e.g. belief_encoder_node's output): already the policy-facing
+        // vector verbatim, in final order - copy it straight across, ignoring
+        // keep_index_ entirely (it indexes into a raster this message isn't).
+        if (msg.data.size() != keep_index_.size())
+        {
+            return false;
+        }
+        out.resize(msg.data.size());
+        for (std::size_t i = 0; i < msg.data.size(); ++i)
+        {
+            const float value = msg.data[i];
+            out[i] = std::isfinite(value) ? value : kHeightScanEmpty;
+        }
+        return true;
     }
 
     out.resize(keep_index_.size());

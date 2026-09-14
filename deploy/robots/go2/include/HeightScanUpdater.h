@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -14,7 +15,7 @@ namespace go2
 
 inline constexpr float kHeightScanEmpty = 0.0f;
 inline constexpr float kHeightScanFlatDefault = 0.0f;
-inline constexpr const char* kHeightScanTopic = "/heightmap/data";
+inline constexpr const char* kHeightScanTopicDefault = "/heightmap/data";
 
 // Runtime-configurable heightmap grid, read from config.yaml's
 // FSM.Velocity.height_scan block in HeightScanUpdater::init() (any field left unset
@@ -40,6 +41,20 @@ struct HeightScanGridConfig
     // input verbatim, no cells excluded (matches older policies whose HeightMap
     // message size already equalled their height_scan input size).
     bool gather_enabled = true;
+
+    // Topic to subscribe. Default is heightmap_generator's own raw/noisy raster.
+    // Point this at belief_encoder_node's output (typically /heightmap/data_belief)
+    // to run the "Belief" arm through its frozen terrain encoder instead of feeding
+    // the actor raw data directly - see that node's module docstring.
+    std::string topic = kHeightScanTopicDefault;
+
+    // true: validate the incoming message as a dense grid_nx x grid_ny raster (width/
+    // height/resolution/x_min/y_min must match) before gathering. false: skip that -
+    // the message is already the policy-facing vector verbatim (its data.size() must
+    // just equal grid_nx * grid_ny with gather_enabled: false), as belief_encoder_node
+    // publishes (388 keep-index-ordered values, width=0/height=0 - it is no longer a
+    // raster). Meaningless combined with gather_enabled: true.
+    bool validate_raster = true;
 };
 
 // Consumes the raster heightmap_generator publishes (msg.width x msg.height cells,
@@ -57,6 +72,9 @@ public:
 
     // Policy observation: the gathered cells, in keep-index order. Valid after init().
     std::vector<float> get() const;
+
+    // The topic actually subscribed (config.yaml-resolved). Valid after init().
+    const std::string& topic() const { return cfg_.topic; }
 
     // Length of get()'s result (and what the deployed policy's height_scan input must
     // be sized for). Valid after init().

@@ -7,6 +7,8 @@
 #include "isaaclab/envs/mdp/actions/joint_actions.h"
 #include "isaaclab/envs/mdp/terminations.h"
 
+#include <functional>
+
 class State_RLBase : public FSMState
 {
 public:
@@ -38,6 +40,9 @@ public:
             while (policy_thread_running)
             {
                 env->step();
+                if (on_policy_step) {
+                    on_policy_step(env.get());
+                }
 
                 // Sleep
                 std::this_thread::sleep_until(sleepTill);
@@ -47,7 +52,7 @@ public:
     }
 
     void run();
-    
+
     void exit()
     {
         policy_thread_running = false;
@@ -55,6 +60,13 @@ public:
             policy_thread.join();
         }
     }
+
+    // Optional hook invoked once per policy step, right after env->step() (so it sees
+    // the same env state the actor's own inference just used this step). Empty by
+    // default; a robot's own State_RLBase.cpp/constructor can assign it for
+    // robot-specific side effects without this common header needing to know about
+    // them (e.g. go2's ProprioBeliefPublisher).
+    std::function<void(isaaclab::ManagerBasedRLEnv*)> on_policy_step;
 
 private:
     std::unique_ptr<isaaclab::ManagerBasedRLEnv> env;

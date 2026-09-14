@@ -4,6 +4,7 @@
 #include "isaaclab/envs/mdp/observations/observations.h"
 #include "isaaclab/envs/mdp/actions/joint_actions.h"
 #include "HeightScanUpdater.h"
+#include "ProprioBeliefPublisher.h"
 #include "param.h"
 
 #include <array>
@@ -89,6 +90,10 @@ REGISTER_OBSERVATION(keyboard_velocity_commands)
     cmd[1] = std::clamp(cmd[1], sy(0), sy(1));
     cmd[2] = std::clamp(cmd[2], sz(0), sz(1));
 
+    // Shares this same (unscaled) command with ProprioBeliefPublisher, which has no
+    // other way to reach it - env->cfg only has the *ranges*, not the latched value.
+    go2::ProprioBeliefPublisher::instance().set_velocity_command(cmd);
+
     return std::vector<float>(cmd.begin(), cmd.end());
 }
 
@@ -152,6 +157,11 @@ State_RLBase::State_RLBase(int state_mode, std::string state_string)
         std::make_shared<unitree::BaseArticulation<LowState_t::SharedPtr>>(FSMState::lowstate)
     );
     env->alg = std::make_unique<isaaclab::OrtRunner>(policy_dir / "exported" / "policy.onnx");
+
+    go2::ProprioBeliefPublisher::instance().init();
+    this->on_policy_step = [](isaaclab::ManagerBasedRLEnv* env) {
+        go2::ProprioBeliefPublisher::instance().publish(env);
+    };
 
     this->registered_checks.emplace_back(
         std::make_pair(

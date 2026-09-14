@@ -24,7 +24,7 @@ void init_fsm_state()
     FSMState::lowstate->wait_for_connection();
     spdlog::info("Connected to robot.");
     go2::HeightScanUpdater::instance().init();
-    spdlog::info("HeightScanUpdater initialized (subscribed to {})", go2::kHeightScanTopic);
+    spdlog::info("HeightScanUpdater initialized (subscribed to {})", go2::HeightScanUpdater::instance().topic());
 }
 
 int main(int argc, char** argv)
