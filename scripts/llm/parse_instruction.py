@@ -21,7 +21,7 @@ import unicodedata
 
 FLIP_WORDS = [
     ("backflip", r"バク転|バックフリップ|後方宙返り|後ろ回転"),
-    ("frontflip", r"前方回転|前転|フロントフリップ|前方宙返り"),
+    ("frontflip", r"前方回転|前転|フロントフリップ|前方宙返り|ハンドスプリング"),
     ("sideflip_left", r"左側転|左へのサイドフリップ|左回りの側転|左にサイドフリップ"),
     ("sideflip_right", r"右側転|右へのサイドフリップ|右回りの側転|右にサイドフリップ"),
     ("jump", r"ジャンプ|垂直跳び|真上に跳"),
@@ -129,7 +129,11 @@ def parse_clause(text: str) -> dict | None:
         return step
 
     if flip is not None:
-        return {"skill": "flip", "kind": flip, "count": _count(text)}
+        step = {"skill": "flip", "kind": flip, "count": _count(text)}
+        # "そのまま" / "走りながら" / "勢いで" before a flip: fired out of the run, not from standing.
+        if re.search(r"そのまま|止まら[ずん]|走りながら|勢い", text):
+            step["running"] = True
+        return step
 
     direction = _search(DIRECTION_WORDS, text)
     angle = _angle(text)
@@ -170,9 +174,25 @@ def parse_instruction(text: str) -> list[dict]:
     return steps
 
 
+def instruction_turns(row: dict) -> list[tuple[int, str]]:
+    """``(assistant turn index, the person's words)`` for every turn marked ``roundtrip`` -- the
+    turns whose user text is a rendered instruction. The state block is not part of the words."""
+    if "turns" not in row:  # the earlier single-turn shape
+        return [(0, row["input"])]
+    out = []
+    turns = row["turns"]
+    for k, (user, assistant) in enumerate(zip(turns[0::2], turns[1::2])):
+        if assistant.get("roundtrip"):
+            out.append((k, STATE_LINE.sub("", user["content"], count=1)))
+    return out
+
+
+STATE_LINE = re.compile(r"^\[状態\][^\n]*\n")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("dataset", help="dataset JSONL; only `id` and `input` are read")
+    parser.add_argument("dataset", help="dataset JSONL; only `id` and the instruction turns are read")
     parser.add_argument("-o", "--out", required=True)
     args = parser.parse_args()
 
@@ -180,9 +200,10 @@ def main() -> None:
     with open(args.out, "w") as out:
         for line in open(args.dataset):
             row = json.loads(line)
-            reparsed = parse_instruction(row["input"])
-            out.write(json.dumps({"id": row["id"], "reparsed_program": reparsed}, ensure_ascii=False) + "\n")
-            written += 1
+            for turn, text in instruction_turns(row):
+                reparsed = parse_instruction(text)
+                out.write(json.dumps({"id": row["id"], "turn": turn, "reparsed_program": reparsed}, ensure_ascii=False) + "\n")
+                written += 1
     print(f"reparsed {written} instructions -> {args.out}")
 
 

@@ -8,7 +8,9 @@ What the model is taught, per row:
     <|im_start|>system\\n{system prompt}<|im_end|>          <- masked, loss is not taken here
     <|im_start|>user\\n{instruction}<|im_end|>              <- masked
     <|im_start|>assistant\\n<think>\\n\\n</think>\\n\\n      <- masked: the empty think block the
-    {reply}\\n\\nprogram: [...]<|im_end|>                      non-thinking template always inserts
+    {reply}\\n\\naction: ...\\nprogram: [...]<|im_end|>       non-thinking template always inserts
+    <|im_start|>user\\n{next turn}<|im_end|>                 <- masked; the conversation continues as a
+    <|im_start|>assistant\\n<think>...  {next answer}<|im_end|>   raw stream (see chat_format)
 
 Two details decide whether this works at all.
 
@@ -42,36 +44,50 @@ from peft import LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from chat_format import render_output  # noqa: E402
+from chat_format import conversation_text, first_prompt, render_output, row_turns  # noqa: E402
 
 IGNORE = -100
 
 
 def build_rows(dataset: str, system_prompt: str, tokenizer, max_len: int, limit: int | None):
-    """Tokenise every row into ``input_ids`` and ``labels``, masking everything but the answer."""
+    """Tokenise every row into ``input_ids`` and ``labels``, masking everything but the answers.
+
+    A row is a conversation; the loss is taken on every assistant turn, each one tokenised apart
+    from the prompt text before it so the boundary is the one inference has. The prompt text is
+    the raw stream `chat_format.conversation_text` describes, checked here against the template.
+    """
     eos = tokenizer.convert_tokens_to_ids("<|im_end|>")
     if eos != tokenizer.eos_token_id:
         print(f"  note: eos_token_id is {tokenizer.eos_token_id}, using <|im_end|> = {eos}")
+    templated = tokenizer.apply_chat_template(
+        [{"role": "system", "content": system_prompt}, {"role": "user", "content": "x"}],
+        tokenize=False, add_generation_prompt=True, enable_thinking=False)
+    assert templated == first_prompt(system_prompt, "x"), "chat_format.first_prompt drifted from the tokenizer's template"
 
     train, evals, dropped = [], [], 0
     for line in open(dataset):
         row = json.loads(line)
-        prompt = tokenizer.apply_chat_template(
-            [{"role": "system", "content": system_prompt}, {"role": "user", "content": row["input"]}],
-            tokenize=False, add_generation_prompt=True, enable_thinking=False,
-        )
-        prompt_ids = tokenizer(prompt, add_special_tokens=False).input_ids
-        answer = render_output(row["output"]["reply"], row["output"]["program"])
-        answer_ids = tokenizer(answer, add_special_tokens=False).input_ids + [eos]
-
-        if len(prompt_ids) + len(answer_ids) > max_len:
+        ids, labels, n_answer = [], [], 0
+        user_texts, answers = [], []
+        for user_text, reply, action, program in row_turns(row):
+            user_texts.append(user_text)
+            prompt = conversation_text(system_prompt, user_texts, answers)
+            answer = render_output(reply, action, program)
+            answers.append(answer)
+            # Only the part of the prompt not yet tokenised: the first turn whole, then each
+            # "<|im_end|>\n<|im_start|>user..." continuation after the previous answer.
+            delta = prompt if not ids else prompt[len(prompt_so_far):]
+            delta_ids = tokenizer(delta, add_special_tokens=False).input_ids
+            answer_ids = tokenizer(answer, add_special_tokens=False).input_ids
+            ids += delta_ids + answer_ids + [eos]
+            labels += [IGNORE] * len(delta_ids) + answer_ids + [eos]
+            n_answer += len(answer_ids) + 1
+            # The <|im_end|> was appended as a token above; the "\n" after it is part of the next delta.
+            prompt_so_far = prompt + answer + "<|im_end|>"
+        if len(ids) > max_len:
             dropped += 1
             continue
-        item = {
-            "input_ids": prompt_ids + answer_ids,
-            "labels": [IGNORE] * len(prompt_ids) + answer_ids,
-            "n_answer": len(answer_ids),
-        }
+        item = {"input_ids": ids, "labels": labels, "n_answer": n_answer, "turns": len(answers)}
         (evals if row["split"] == "eval" else train).append(item)
 
     if dropped:
@@ -95,12 +111,13 @@ def collate(batch: list[dict], pad_id: int) -> dict[str, torch.Tensor]:
 def show_example(tokenizer, item: dict) -> None:
     """Print one tokenised row with the masked boundary visible -- read this before a long run."""
     ids, labels = item["input_ids"], item["labels"]
-    cut = next(i for i, label in enumerate(labels) if label != IGNORE)
     print("\n--- one training row ---")
-    print(f"  prompt ends : ...{tokenizer.decode(ids[max(0, cut - 24):cut])!r}")
-    print(f"  loss starts : {tokenizer.decode(ids[cut:cut + 24])!r}")
+    starts = [i for i in range(len(ids)) if labels[i] != IGNORE and (i == 0 or labels[i - 1] == IGNORE)]
+    for k, cut in enumerate(starts):
+        print(f"  turn {k + 1} prompt ends : ...{tokenizer.decode(ids[max(0, cut - 24):cut])!r}")
+        print(f"  turn {k + 1} loss starts : {tokenizer.decode(ids[cut:cut + 20])!r}")
     print(f"  loss ends   : ...{tokenizer.decode(ids[-12:])!r}")
-    print(f"  tokens      : {len(ids)} total, {len(ids) - cut} supervised\n")
+    print(f"  tokens      : {len(ids)} total, {item['n_answer']} supervised over {item['turns']} turn(s)\n")
 
 
 def main() -> None:
@@ -115,9 +132,9 @@ def main() -> None:
     parser.add_argument("--alpha", type=int, default=32)
     parser.add_argument("--dropout", type=float, default=0.05)
     parser.add_argument("--lora", action="store_true", help="plain LoRA instead of DoRA, for comparison")
-    parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--grad-accum", type=int, default=2)
-    parser.add_argument("--max-len", type=int, default=1280)
+    parser.add_argument("--batch-size", type=int, default=4, help="8 fitted 1280-token rows; the ~2000-token conversations need 4")
+    parser.add_argument("--grad-accum", type=int, default=4)
+    parser.add_argument("--max-len", type=int, default=2304, help="prompt ~1400 tokens + up to three turns")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--limit", type=int, help="tiny run, to check the wiring")
     args = parser.parse_args()

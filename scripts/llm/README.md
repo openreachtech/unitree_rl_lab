@@ -30,8 +30,18 @@ compiler inserts the stops, settle gaps, spacing and clamps.
 | `move`   | `dir` (8 compass points, robot frame), `speed`, `duration_s` **or** `distance_m` | diagonals are true 45 degrees |
 | `turn`   | `dir` left/right, `speed`, `duration_s` **or** `angle_deg`  | left = positive yaw                          |
 | `stop`   | `duration_s`                                                |                                              |
-| `flip`   | `kind` backflip / frontflip / sideflip_left / sideflip_right / jump, `count` | maps to `JumpCommand.MOTION_*` |
+| `flip`   | `kind` backflip / frontflip / sideflip_left / sideflip_right / jump, `count`, optional `running` | maps to `JumpCommand.MOTION_*` |
 | `stance` | `kind` handstand (front legs) / hindstand (hind legs), `duration_s`, optional `dir`+`speed` | `HandstandCommand` sign +1 / -1 |
+
+A flip is done from standing unless `"running": true`, which fires it at the end of the `move` just
+before it without stopping; the flip ends the move, and the stop (or the next step) follows as
+soon as the window closes. Training mostly ran on after landing, so whether an immediate stop
+costs landings is something `--calibrate` measures (`--running-recover-s` compares). The policy pairs each heading with one rotation
+(`JumpCommand._select_motion_for_direction`: forward → frontflip, backward → backflip, left/right →
+the matching sideflip, diagonals by their fore-aft component) and only offers a move under 1.0 m/s,
+so `validate_program` rejects a running flip whose kind does not match the move's direction or
+whose move is `fast`. The model is taught to propose the matching kind instead
+(`RUNNING_FLIP_FOR` in `grammar.py`).
 
 Speed words are nominal command magnitudes in `CompilerConfig` (forward 0.5 / 1.0 / 2.0 m/s,
 backward 0.4 / 0.6 / 0.9, lateral 0.4 / 0.5 / 0.8, yaw 0.6 / 0.8 / 1.0 rad/s -- the slow ones were
@@ -78,16 +88,36 @@ same ones training logged -- so a "landed" here means what it meant during train
 The procedure is written up in `DATASET.md` (Japanese); this is the short version.
 
 ```bash
-# 4. Instructions + replies for 5000 entries, from the validated programs and the capability table.
-python scripts/llm/build_dataset.py --out data/llm/dataset.jsonl --total 5000
+# 4. Instructions + replies: 5000 single-turn rows plus 2500 two/three-turn dialogues (dialogues.py),
+#    from the validated programs and the capability table. Every user turn carries a state block.
+python scripts/llm/build_dataset.py --out data/llm/dataset.jsonl --total 5000 --dialogues 2500
 
 # 5. Round-trip: read each instruction back into a program, using words only, and compare.
 python scripts/llm/parse_instruction.py data/llm/dataset.jsonl -o data/llm/reparse.jsonl
 python scripts/llm/roundtrip_check.py data/llm/dataset.jsonl data/llm/reparse.jsonl
 
-# 6. Seven automated quality checks (grammar, declines, warnings, numerals, wording, dupes, balance).
+# 6. Ten automated checks per assistant turn (format, grammar, state, declines, warnings, numerals,
+#    wording, dialogue logic, dupes, balance), then the wire format and the GBNF over every target.
 python scripts/llm/check_dataset.py data/llm/dataset.jsonl
+python scripts/llm/chat_format.py --check data/llm/dataset.jsonl
+python scripts/llm/gbnf_match.py --dataset data/llm/dataset.jsonl
+
+# 7. Fine-tune (env_llm), score every turn of the held-out split, and the hand-written set.
+python scripts/llm/train_sft.py --out logs/llm/qwen3-1.7b-dora-v2
+python scripts/llm/eval_model.py --adapter logs/llm/qwen3-1.7b-dora-v2/adapter
+python scripts/llm/handwritten_eval.py && python scripts/llm/eval_model.py --adapter ... --dataset data/llm/handwritten_eval.jsonl
+
+# 8. Fold the adapter in, convert to GGUF, quantize, and run the grammar through the real sampler.
+#    llama.cpp lives in /home/tak/isaacsim/llama.cpp (CPU build); the Jetson gets its own CUDA build.
+python scripts/llm/export_gguf.py --adapter logs/llm/qwen3-1.7b-dora-v3/adapter --out logs/llm/gguf/v3 --test
 ```
+
+`<out>/` then holds `model-Q8_0.gguf` (~1.75 GB; Q8 keeps the trained weights nearly intact and the Orin has the memory), `output.gbnf` and the `system_prompt.txt` the
+adapter was trained under -- everything the serving side needs. Measured on the workstation CPU
+(16 threads, Q4_K_M; Q8 is somewhat slower): prompt eval ~880 tok/s, generation ~78 tok/s; a 1.6k-token prompt costs ~1.8 s,
+so the server must keep the KV cache between turns (`llama-server` with `cache_prompt`) and the
+client must append to the conversation rather than re-render it -- which is what
+`chat_format.conversation_text` is for.
 
 The wording lives in two hand-written modules and nothing else: `phrasebank.py` (Japanese surface
 forms for every step, in three registers) and `negatives.py` (chit-chat, impossible requests,
@@ -99,9 +129,32 @@ step 6 mean something.
 `data/llm/system_prompt.txt` holds the system prompt (the grammar spec plus the behavioural rules);
 it is stored once rather than repeated on all 5000 rows.
 
-## Next stages (not built yet)
+## The wire format
 
-- **Fine-tune** a small instruction model to emit `{"reply": ..., "program": [...]}`.
+`chat_format.py` is the single definition of what the model reads and writes; the trainer, the
+eval, the robot client and the GBNF grammar all import it.
+
+```
+[状態] 実行中 2.1s/7.4s: 前へ5m(いま 残り3.1s) → 前方回転×1(走りながら) / 中断可     ← user turn: state block
+ええ天気やなあ                                                                       ← then what the person said
+
+ほんまやな、走ってて気持ちいいわ。                                                   ← assistant turn: one-line reply
+
+action: none                                                                         ← what to do with the queue
+program: []
+```
+
+`action` is `none` (leave the robot alone), `cancel` (stop, drop the queue), `replace` (stop and run
+this), `insert` (do this now, then go back to the interrupted step -- a bare 「ハンドスプリングして！」
+mid-run flips out of the run and the run continues) or `append` (run this after). `none`/`cancel`
+carry `[]`, the other three a non-empty program; an inserted program is compiled against the step
+under way (`compile_program(..., context=, resume=True)`), which is also what checks a running
+flip's kind against the heading the robot actually has; `render_output` refuses other pairings and the GBNF cannot express them. The state block
+heads every user turn so the history stays append-only. `gbnf_match.py` is a small reference
+matcher that checks every training target against the generated grammar without llama.cpp.
+
+## Next stages
+
 - **End-to-end evaluation**: run the fine-tuned model's programs back through
   `validate_programs.py` and check they still stand up at the end.
 - **Robot executor**: consume `Timeline.events()` in `State_Multitask` (velocity set, flip request,

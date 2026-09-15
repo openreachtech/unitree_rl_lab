@@ -20,6 +20,8 @@ from .compiler import CompilerConfig, Timeline, compile_program
 from .grammar import (
     DIRECTIONS,
     FLIP_KINDS,
+    RUNNING_FLIP_FOR,
+    RUNNING_FLIP_SPEEDS,
     SPEEDS,
     STANCE_KINDS,
     TURN_DIRECTIONS,
@@ -46,6 +48,8 @@ __all__ = [
     "Move",
     "Program",
     "ProgramError",
+    "RUNNING_FLIP_FOR",
+    "RUNNING_FLIP_SPEEDS",
     "SPEEDS",
     "STANCE_KINDS",
     "SamplerConfig",

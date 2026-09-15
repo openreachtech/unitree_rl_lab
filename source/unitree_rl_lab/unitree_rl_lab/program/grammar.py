@@ -18,6 +18,15 @@ motion codes in :data:`FLIP_MOTION`:
     sideflip_right  rolls to the robot's right                  MOTION_SIDEFLIP_RIGHT, roll  +1 turn
     jump            straight up, no rotation                    MOTION_JUMP,           0.20 m
 
+A flip is normally done from standing. With ``"running": true`` it is fired at the end of the
+preceding ``move`` without stopping first. The policy then chooses the rotation itself from the
+commanded heading (``JumpCommand._select_motion_for_direction``): forward -> frontflip, backward ->
+backflip, left -> sideflip_left, right -> sideflip_right, the dominant axis deciding on a diagonal
+and ties going fore-aft. The grammar makes that choice explicit rather than silent -- a running
+flip whose kind does not match the move's direction is an error, so the model has to propose the
+matching one instead of asking for something the robot would quietly replace. Running flips are
+only offered under the acrobatics speed ceiling (1.0 m/s), which rules out ``"fast"``.
+
 Stance kinds follow ``HandstandCommand``'s sign convention: ``handstand`` stands on the front legs
 (hind legs lifted, ``STANCE_FRONT = +1``); ``hindstand`` stands on the hind legs (front lifted,
 ``STANCE_HIND = -1``).
@@ -69,6 +78,21 @@ FLIP_MOTION: dict[str, tuple[int, float, float]] = {
 }
 
 STANCE_SIGN: dict[str, float] = {"handstand": 1.0, "hindstand": -1.0}
+
+
+def _running_flip_for(direction: str) -> str:
+    """The rotation the policy pairs with a heading -- the same rule as the command term's."""
+    ux, uy = DIRECTION_VECTORS[direction]
+    if abs(ux) >= abs(uy):  # fore-aft wins ties, so the diagonals pitch rather than roll
+        return "frontflip" if ux > 0 else "backflip"
+    return "sideflip_left" if uy > 0 else "sideflip_right"
+
+
+RUNNING_FLIP_FOR: dict[str, str] = {direction: _running_flip_for(direction) for direction in DIRECTIONS}
+"""Heading -> the only flip kind that can be done while moving that way."""
+
+RUNNING_FLIP_SPEEDS: tuple[str, ...] = ("slow", "normal")
+"""Speed words under the acrobatics ceiling. A move at "fast" (2.0 m/s) cannot carry a flip."""
 
 # Japanese labels, for prompts and the generated replies.
 JA: dict[str, str] = {
@@ -172,16 +196,34 @@ class Stop:
 
 @dataclass
 class Flip:
-    """One of the acrobatic moves, ``count`` times in a row. Always performed from standing."""
+    """One of the acrobatic moves, ``count`` times in a row.
+
+    From standing by default. ``running`` fires it at the end of the ``move`` just before it,
+    without stopping; :func:`validate_program` checks the kind matches that move's heading.
+    """
 
     kind: str
     count: int = 1
+    running: bool = False
     skill: str = field(default="flip", init=False)
 
     def validate(self) -> None:
         _require(self.kind in FLIP_KINDS, f"flip.kind must be one of {list(FLIP_KINDS)}, got {self.kind!r}")
         _require(isinstance(self.count, int) and not isinstance(self.count, bool), "flip.count must be an integer")
         _require(self.count >= 1, f"flip.count must be at least 1, got {self.count}")
+        _require(isinstance(self.running, bool), f"flip.running must be true or false, got {self.running!r}")
+
+    def validate_after(self, previous: Step | None) -> None:
+        """The cross-step rule: what a running flip may follow."""
+        if not self.running:
+            return
+        _require(isinstance(previous, Move),
+                 f"a running flip ({self.kind}) must come right after a move; it is what the robot flips out of")
+        expected = RUNNING_FLIP_FOR[previous.dir]
+        _require(self.kind == expected,
+                 f"while moving {previous.dir} the robot can only do {expected}, not {self.kind}")
+        _require(previous.speed in RUNNING_FLIP_SPEEDS,
+                 f"a running flip needs the move at {' or '.join(RUNNING_FLIP_SPEEDS)} speed, not {previous.speed!r}")
 
 
 @dataclass
@@ -231,7 +273,8 @@ def step_to_dict(step: Step) -> dict[str, Any]:
     """The JSON object for one step, ``skill`` first and ``None`` fields dropped."""
     data = asdict(step)
     out: dict[str, Any] = {"skill": data.pop("skill")}
-    out.update({key: value for key, value in data.items() if value is not None})
+    # `running` is written only when set: a standing flip reads the same as before the field existed.
+    out.update({key: value for key, value in data.items() if value is not None and not (key == "running" and value is False)})
     return out
 
 
@@ -252,9 +295,23 @@ def program_to_json(program: Program, indent: int | None = None) -> str:
     return json.dumps([step_to_dict(step) for step in program], ensure_ascii=False, indent=indent)
 
 
-def validate_program(program: Program) -> None:
+def validate_program(program: Program, context: Step | None = None) -> None:
+    """Check every step, including the rules between steps.
+
+    ``context`` is the step the robot is in the middle of when this program is *inserted* into a
+    running one -- so a program that is just ``[running frontflip]`` is valid while a forward move
+    is under way, and the same check applies as if the move were written in front of it.
+    """
+    previous: Step | None = context
     for step in program:
         step.validate()
+        if isinstance(step, Flip):
+            step.validate_after(previous)
+        previous = step
+
+
+def _running_table() -> str:
+    return "\n".join(f"  {direction:<15} -> {kind}" for direction, kind in RUNNING_FLIP_FOR.items())
 
 
 def describe_grammar() -> str:
@@ -264,7 +321,7 @@ def describe_grammar() -> str:
   {{"skill": "move",   "dir": <direction>, "speed": <speed>, "duration_s": <s> | "distance_m": <m>}}
   {{"skill": "turn",   "dir": "left"|"right", "speed": <speed>, "duration_s": <s> | "angle_deg": <deg>}}
   {{"skill": "stop",   "duration_s": <s>}}
-  {{"skill": "flip",   "kind": <flip>, "count": <n>}}
+  {{"skill": "flip",   "kind": <flip>, "count": <n>, "running": true (optional)}}
   {{"skill": "stance", "kind": <stance>, "duration_s": <s>, "dir": <direction> (optional), "speed": <speed>}}
 
   <direction> : {" | ".join(DIRECTIONS)}   (robot frame; forward = where the head points)
@@ -272,6 +329,13 @@ def describe_grammar() -> str:
   <flip>      : {" | ".join(FLIP_KINDS)}
   <stance>    : {" | ".join(STANCE_KINDS)}   (handstand = on the front legs, hindstand = on the hind legs)
 
-Rules: "move" and "turn" take exactly one of the two length fields. Flips and stances are always done
-from standing; the executor stops the robot first, so do not add a stop before them. An empty list is a
-valid program and means "do nothing". Steps run in order, one after another."""
+Rules: "move" and "turn" take exactly one of the two length fields. Flips and stances are done from
+standing; the executor stops the robot first, so do not add a stop before them. An empty list is a
+valid program and means "do nothing". Steps run in order, one after another.
+
+A flip with "running": true is done at the end of the "move" right before it, without stopping. The
+kind is fixed by the move's direction -- no other kind is possible while moving that way:
+
+{_running_table()}
+
+The move must be at "slow" or "normal" speed ("fast" is over the acrobatics speed limit)."""

@@ -2,12 +2,17 @@
 
     python scripts/llm/build_dataset.py --out data/llm/dataset.jsonl --total 5000
 
-Every row is one (instruction, reply + program) pair:
+Every row is a conversation -- one exchange for the single-turn rows, two or three for the
+dialogues from ``dialogues.py`` -- in one shape:
 
     {"id": "s0-000123#kansai", "split": "train", "category": "normal", "style": "kansai",
-     "input": "前へ3mくらい進んでから、バク転2回してや。",
-     "output": {"reply": "...", "program": [...]},
+     "turns": [{"role": "user", "content": "[状態] 待機中\n前へ3mくらい進んでから、バク転2回してや。", "state": {...}},
+               {"role": "assistant", "reply": "...", "action": "replace", "program": [...], "roundtrip": true}],
      "source": {"program_id": "s0-000123", "passed": true, "kind": "paraphrase"}}
+
+``content`` carries the state block the model sees; ``state`` is the same thing as data, for the
+checks. ``roundtrip`` marks an assistant turn whose user text is a rendered instruction for its
+program, i.e. one the reparse check applies to.
 
 Two things decide what a row looks like, and they are kept apart on purpose:
 
@@ -25,6 +30,7 @@ warn below 80%, say nothing at or above 80%. Those rates are *population* rates 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import json
 import random
@@ -34,8 +40,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "source" / "unitree_rl_lab"))
 
+import chat_format as cf
+import dialogues
 import negatives as ng
 import phrasebank as pb
+from unitree_rl_lab.program import CapabilityTable, CompilerConfig, compile_program, program_from_json
 
 DECLINE_BELOW = 0.10
 WARN_BELOW = 0.80
@@ -62,7 +71,12 @@ def load_rates(capability_path: str, validated: list[dict]) -> dict[str, float]:
     ``validated.jsonl`` as "did this replica recover to four feet", so it is counted here.
     """
     skills = json.load(open(capability_path))["skills"]
-    rates = {kind: skills[f"flip:{kind}"]["rate"] for kind in SKILL_JA if f"flip:{kind}" in skills}
+    rates = {}
+    for kind in SKILL_JA:
+        for tail in ("", ":running"):  # a running flip is its own entry -- see step_kind()
+            key = f"flip:{kind}{tail}"
+            if key in skills:
+                rates[f"{kind}{tail}"] = skills[key]["rate"]
 
     total: dict[str, int] = {}
     recovered: dict[str, int] = {}
@@ -76,7 +90,10 @@ def load_rates(capability_path: str, validated: list[dict]) -> dict[str, float]:
 
 
 def step_kind(step: dict) -> str | None:
-    return step.get("kind") if step["skill"] in ("flip", "stance") else None
+    """The capability key's tail for a flip or stance: what its success rate is looked up under."""
+    if step["skill"] not in ("flip", "stance"):
+        return None
+    return f"{step['kind']}:running" if step.get("running") else step["kind"]
 
 
 def classify(program: list[dict], rates: dict[str, float]) -> tuple[list[dict], list[str], list[str]]:
@@ -91,10 +108,16 @@ def classify(program: list[dict], rates: dict[str, float]) -> tuple[list[dict], 
             continue
         keep.append(step)
         if rate < WARN_BELOW:
-            label = CAUTION_LABEL.get(kind)
+            label = CAUTION_LABEL.get(kind.split(":")[0])  # a running frontflip fails the same way
             if label and label not in cautions:
                 cautions.append(label)
+        if is_repeated_running_frontflip(step) and "running_frontflip_repeat" not in cautions:
+            cautions.append("running_frontflip_repeat")  # the compiler clamps it to 1; the reply says so
     return keep, declined, cautions
+
+
+def is_repeated_running_frontflip(step: dict) -> bool:
+    return step["skill"] == "flip" and step.get("running") and step["kind"] == "frontflip" and step.get("count", 1) > 1
 
 
 # ------------------------------------------------------------------------------------- replies
@@ -116,12 +139,12 @@ def build_reply(steps: list[dict], declined: list[str], cautions: list[str], sty
 
     if steps:
         parts.append(pb.restate(steps, style, rng))
-    for label in cautions[:2]:
+    for label in cautions:
         parts.append(rng.choice(pb.CAUTIONS[label][style]))
     if duration_s is not None and not declined and len(steps) >= 2 and rng.random() < 0.35:
         parts.append(total_time_sentence(duration_s, style, rng))
     tail = rng.choice(pb.REPLY_TAIL[style])
-    if tail:
+    if tail and tail.rstrip("!。") not in parts[-1]:  # "…いくで。いくで。"
         parts.append(tail)
     return "".join(parts)
 
@@ -131,6 +154,21 @@ def build_reply(steps: list[dict], declined: list[str], cautions: list[str], sty
 
 def split_for(key: str) -> str:
     return "eval" if int(hashlib.sha1(key.encode()).hexdigest(), 16) % 10 == 0 else "train"
+
+
+def single_turn(row_id: str, split: str, category: str, style: str, user_text: str, reply: str,
+                action: str, program: list[dict], source: dict, roundtrip: bool = False) -> dict:
+    """One exchange in the ``turns`` shape every row uses, spoken to an idle robot with no history."""
+    cf.check_pairing(action, program)
+    assistant = {"role": "assistant", "reply": reply, "action": action, "program": program}
+    if roundtrip:
+        assistant["roundtrip"] = True
+    return {
+        "id": row_id, "split": split, "category": category, "style": style,
+        "turns": [{"role": "user", "content": cf.render_user_turn(cf.RobotState.idle(), user_text),
+                   "state": dataclasses.asdict(cf.RobotState.idle())}, assistant],
+        "source": source,
+    }
 
 
 def program_row(record: dict, style: str, rates: dict[str, float], rng: random.Random) -> dict:
@@ -148,29 +186,17 @@ def program_row(record: dict, style: str, rates: dict[str, float], rng: random.R
 
     instruction = pb.instruction(program, style, rng)
     reply = build_reply(keep, declined, cautions, style, record["timeline"]["duration_s"], rng)
-    return {
-        "id": f"{record['id']}#{style}",
-        "split": split_for(record["id"]),
-        "category": category,
-        "style": style,
-        "input": instruction,
-        "output": {"reply": reply, "program": keep},
-        "source": {"program_id": record["id"], "passed": record["passed"], "kind": "paraphrase"},
-    }
+    return single_turn(f"{record['id']}#{style}", split_for(record["id"]), category, style, instruction, reply,
+                       "replace" if keep else "none", keep,
+                       {"program_id": record["id"], "passed": record["passed"], "kind": "paraphrase"}, roundtrip=True)
 
 
 def negative_row(index: int, category: str, style: str, input_text: str, reply: str,
                  program: list[dict]) -> dict:
     key = f"neg-{category}-{index:04d}"
-    return {
-        "id": f"{key}#{style}",
-        "split": split_for(key),
-        "category": category,
-        "style": style,
-        "input": input_text,
-        "output": {"reply": reply, "program": program},
-        "source": {"program_id": None, "passed": None, "kind": category},
-    }
+    return single_turn(f"{key}#{style}", split_for(key), category, style, input_text, reply,
+                       "replace" if program else "none", program,
+                       {"program_id": None, "passed": None, "kind": category}, roundtrip=category == "over_ask")
 
 
 # ------------------------------------------------------------------------------------ negatives
@@ -296,6 +322,10 @@ def assign_styles(records: list[dict], rng: random.Random) -> list[tuple[dict, s
     return pairs
 
 
+def row_key(row: dict) -> tuple:
+    return tuple((t.get("content"), t.get("reply"), json.dumps(t.get("program"), ensure_ascii=False)) for t in row["turns"])
+
+
 def take_rows(records: list[dict], quota: int, rates: dict[str, float], rng: random.Random,
               seen: set[tuple]) -> list[dict]:
     """Fill a quota from a pool, skipping rows that would duplicate one already written.
@@ -308,7 +338,7 @@ def take_rows(records: list[dict], quota: int, rates: dict[str, float], rng: ran
         if len(rows) >= quota:
             break
         row = program_row(record, style, rates, rng)
-        key = (row["input"], row["output"]["reply"], json.dumps(row["output"]["program"], ensure_ascii=False))
+        key = row_key(row)
         if key in seen:
             continue
         seen.add(key)
@@ -316,26 +346,50 @@ def take_rows(records: list[dict], quota: int, rates: dict[str, float], rng: ran
     return rows
 
 
-SYSTEM_PROMPT = """あなたは四足歩行ロボット Go2 です。日本語の指示を聞き、短い返事と実行するプログラムを返します。
+SYSTEM_PROMPT = """あなたは四足歩行ロボット Go2 です。人の日本語を聞き、短い返事と、自分の動きへの指示を返します。
+会話は続きます。前のやりとりを覚えていて、「もう一回」「やめて」「それでいい」のような言葉は前の流れから解釈します。
+
+人の発言の先頭には [状態] の1行が付きます。今なにをしているか(待機中 / 実行中と進み具合、済んだ手順と残りの手順、
+中断できるか)と、直前に実行したプログラムが書いてあります。移動中は「走りながらの技: 〜」に、いまの進行方向で
+走りながらできる技(1つだけ)か「なし(速すぎる)」が書いてあります。返事はこの状態に合わせます。
 
 出力は次の形式ひとつだけ:
 
 <日本語の返事>
 
+action: <none | cancel | replace | insert | append>
 program: [<手順>]
 
-返事は1行(改行を入れない)、そのあと空行、そのあと "program: " と手順のリスト。
-program の行は必ず書く。実行する手順が無いときも空のリスト [] を書く。
+返事は1行(改行を入れない)、そのあと空行、そのあと action の行と program の行。どちらの行も必ず書く。
+
+action の意味:
+- none    : 今の動きに触らない。雑談・質問・技の提案・返事待ちのとき。program は []。
+- cancel  : 今の動きを止め、残りの手順も捨てる。「止めて」「待って」「やめて」のとき。program は []。
+- replace : 今の動きを止めて、この program に差し替える。待機中の新しい指示はこれ。「やっぱり〜」「〜にして」もこれ。
+- insert  : 今すぐこの program をやって、終わったら中断した動きに戻る。実行中に技や旋回だけを言われたとき
+            (「ハンドスプリングして！」「左に曲がって」)。止めてと言われていないので止まらない。
+- append  : 今の動きが終わってから、この program を続けて実行する。「終わったら〜も」のとき。
+実行中に雑談されても止めない(none)。待機中に「止めて」と言われたら、もう止まっていると返す(none)。
 
 {grammar}
 
 守ること:
 - 指示に無い手順を足さない。指示された順番を変えない。
-- 雑談・質問・ロボットにできない依頼には program: [] を書き、返事だけ返す。
-- ジャンプ (flip kind "jump") は着地に成功しないので program に入れない。ほかの手順が
-  あるときはジャンプだけを外し、断ったことを返事で言う。
+- 雑談・質問・ロボットにできない依頼は action: none、program: [] で、返事だけ返す。
+- ジャンプ (flip kind "jump") は着地に成功しないのでできない。ジャンプだけを頼まれたら、断るだけでなく
+  代わりにできる技(バク転など)を提案して聞く(none)。相手が承知したら、その技を program に入れる(replace)。
+  ほかの手順と一緒に頼まれたときは、ジャンプだけを外して残りを実行し、断ったことを返事で言う。
+- 走りながらの技は進行方向で決まる: 前・左斜め前・右斜め前 → 前方回転(frontflip)、
+  後ろ・左斜め後ろ・右斜め後ろ → バク転(backflip)、左 → 左側転(sideflip_left)、右 → 右側転(sideflip_right)。
+  頼まれた技がその方向の技と同じならそのまま実行する(提案はしない)。違う技を頼まれたときだけ、
+  その方向でできる技を提案して聞く(none)。実行中に技を言われたら [状態] の「走りながらの技」と比べる:
+  同じなら "running": true で insert、違えば提案(none)、「なし(速すぎる)」なら止まってからの技を insert し、
+  そのことを返事で言う。速く走りながらの技を頼まれたら、普通の速さに落として実行し、そのことを返事で言う。
 - 前方回転 (frontflip) は約4回に1回着地に失敗する。倒立 (handstand) は降りるときに
   半分以上の確率で転ぶ。どちらも実行はするが、返事で一言ことわる。
+- 走りながらの前方回転は連続すると失敗するので1回しかやらない。2回以上頼まれても program は
+  頼まれたとおりに書き、1回だけになることを返事で言う。
+- 「もう一回」は直前に実行したプログラムをそのまま(replace)。「今度は〜で」が付いたらその部分だけ変える。
 - 実測にない約束をしない(「必ず成功する」「ぴったり5m」など)。
 - 上限を超える要求はそのまま program に入れ、どこまでしか実行できないかを返事で言う
   (アクロバットは{flip_limit}回まで、二足立ちは{stance_max}秒まで、プログラム全体は{program_max}秒まで)。
@@ -357,7 +411,8 @@ def main() -> None:
     parser.add_argument("--validated", default="data/llm/validated.jsonl")
     parser.add_argument("--capability", default="data/llm/capability.json")
     parser.add_argument("--out", default="data/llm/dataset.jsonl")
-    parser.add_argument("--total", type=int, default=5000)
+    parser.add_argument("--total", type=int, default=5000, help="single-turn rows")
+    parser.add_argument("--dialogues", type=int, default=2500, help="multi-turn rows on top of --total")
     parser.add_argument("--rates-out", default="data/llm/rates.json")
     parser.add_argument("--prompt-out", default="data/llm/system_prompt.txt")
     parser.add_argument("--seed", type=int, default=20260911)
@@ -366,9 +421,17 @@ def main() -> None:
     rng = random.Random(args.seed)
     validated = [json.loads(line) for line in open(args.validated)]
     rates = load_rates(args.capability, validated)
+    # The stated total comes from the compiler as it is *now*, not from the timeline the sim ran:
+    # a clamp added since (running frontflips to one) shortens what the robot will actually do.
+    compiler = CompilerConfig(calibration=CapabilityTable.load(args.capability).calibration())
+    for record in validated:
+        record["timeline"]["duration_s"] = round(compile_program(program_from_json(record["program"]), compiler).duration, 3)
 
     has_declined = [r for r in validated if any(rates.get(step_kind(s), 1.0) < DECLINE_BELOW for s in r["program"])]
     declined_ids = {r["id"] for r in has_declined}
+    # A request that is *only* a declined skill is answered with a proposal and a follow-up turn
+    # (dialogues.sc_jump_propose), not with a flat refusal, so those programs make no single row.
+    has_declined = [r for r in has_declined if classify(r["program"], rates)[0]]
     passed = [r for r in validated if r["passed"] and r["id"] not in declined_ids]
     failed = [r for r in validated if not r["passed"] and r["id"] not in declined_ids]
 
@@ -389,6 +452,16 @@ def main() -> None:
     rows += over_ask_rows(round(quota_negatives * share["over_ask"]), rng)
     rows += topic_rows(ng.AMBIGUOUS, "ambiguous", round(quota_negatives * share["ambiguous"]), rng)
 
+    # Dialogues start from programs the robot does in full, so every follow-up is about a program
+    # that was actually carried out.
+    pool = [r for r in passed if not classify(r["program"], rates)[1]]
+    ctx = dialogues.Context(
+        first_reply=lambda steps, style, duration, r: build_reply(steps, [], classify(steps, rates)[2], style, duration, r),
+        cautions_for=lambda steps, style, r: "".join(r.choice(pb.CAUTIONS[label][style]) for label in classify(steps, rates)[2]),
+        other_programs=[], compiler=compiler,
+        all_records=[r for r in validated if not classify(r["program"], rates)[1]])
+    rows += dialogues.build_dialogue_rows(pool, args.dialogues, pb.STYLES, ctx, rng, seen)
+
     json.dump(rates, open(args.rates_out, "w"), ensure_ascii=False, indent=2, sort_keys=True)
     write_system_prompt(args.prompt_out)
 
@@ -401,7 +474,8 @@ def main() -> None:
     for row in rows:
         counts[row["category"]] = counts.get(row["category"], 0) + 1
     evals = sum(1 for row in rows if row["split"] == "eval")
-    print(f"wrote {len(rows)} rows -> {args.out}   (train {len(rows) - evals} / eval {evals})")
+    turns = sum(len(row["turns"]) // 2 for row in rows)
+    print(f"wrote {len(rows)} rows, {turns} assistant turns -> {args.out}   (train {len(rows) - evals} / eval {evals})")
     for category, n in sorted(counts.items(), key=lambda kv: -kv[1]):
         print(f"  {category:<16} {n}")
     print("  rates used:", {k: round(v, 3) for k, v in sorted(rates.items())})

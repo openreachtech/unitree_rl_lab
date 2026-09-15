@@ -46,6 +46,10 @@ parser.add_argument("--no-push", action="store_true",
                     help="Disable the periodic push disturbance. On by default for --calibrate, where a clean\n"
                          "speed measurement is the point; leave it on when validating, pushes happen for real.")
 parser.add_argument("--limit", type=int, default=None, help="Only the first N programs of the file.")
+parser.add_argument("--running-recover-s", type=float, default=None,
+                    help="Override CompilerConfig.running_recover_s: running time kept after a running flip's last\n"
+                         "landing before the stop. Run --calibrate at 0 and at 1.5 to see whether an immediate\n"
+                         "stop costs landings.")
 parser.add_argument("--untrained", action="store_true",
                     help="Skip loading a checkpoint and run the freshly initialised network. The robot will fall;\n"
                          "this only exercises the command plumbing and scoring without a trained policy.")
@@ -81,6 +85,8 @@ import unitree_rl_lab.tasks  # noqa: F401, E402
 from unitree_rl_lab.program import (  # noqa: E402
     DIRECTIONS,
     FLIP_KINDS,
+    RUNNING_FLIP_FOR,
+    RUNNING_FLIP_SPEEDS,
     SPEEDS,
     STANCE_KINDS,
     CapabilityTable,
@@ -121,6 +127,14 @@ def canonical_programs() -> list[dict]:
     for kind in FLIP_KINDS:
         for count in (1, 3):
             out.append({"id": f"flip:{kind}:x{count}", "program": [Flip(kind=kind, count=count)]})
+    # Running flips: the kind is fixed by the heading, so one program per heading and speed.
+    for direction in DIRECTIONS:
+        for speed in RUNNING_FLIP_SPEEDS:
+            for count in (1, 3):
+                kind = RUNNING_FLIP_FOR[direction]
+                out.append({"id": f"flip:{kind}:running:{direction}:{speed}:x{count}",
+                            "program": [Move(dir=direction, speed=speed, duration_s=3.0),
+                                        Flip(kind=kind, count=count, running=True)]})
     for kind in STANCE_KINDS:
         for seconds in (5.0, 10.0):
             out.append({"id": f"stance:{kind}:{seconds:g}s", "program": [Stance(kind=kind, duration_s=seconds)]})
@@ -394,7 +408,8 @@ class BatchRun:
                 if seg.kind == "flip":
                     ok = flip_ok[ids, flip_k]
                     passed &= ok
-                    flips.append({"kind": seg.flip, "t": round(seg.t0, 2), "success_rate": ok.float().mean().item(),
+                    flips.append({"kind": seg.flip, "running": seg.running_flip, "t": round(seg.t0, 2),
+                                  "success_rate": ok.float().mean().item(),
                                   "fall_rate": fell_during.float().mean().item(), "ok": ok.tolist(), "fell": fell_during.tolist()})
                     flip_k += 1
                 elif seg.kind == "stance":
@@ -449,7 +464,8 @@ class BatchRun:
 def record_capability(table: CapabilityTable, result: dict) -> None:
     for flip in result["flips"]:
         for ok, fell in zip(flip["ok"], flip["fell"]):
-            table.record_event(f"flip:{flip['kind']}", success=ok, fell=fell)
+            key = f"flip:{flip['kind']}:running" if flip.get("running") else f"flip:{flip['kind']}"
+            table.record_event(key, success=ok, fell=fell)
     for stance in result["stances"]:
         for ok, fell, hold, recover in zip(stance["ok"], stance["fell"], stance["hold_fraction"], stance["recover_s"]):
             table.record_event(f"stance:{stance['kind']}", success=ok, fell=fell, hold_fraction=hold, recover_s=recover)
@@ -481,6 +497,8 @@ def main():
         # Measuring the table: compile against nominal speeds, not against the previous table.
         compiler = CompilerConfig()
         table = CapabilityTable()
+    if args_cli.running_recover_s is not None:
+        compiler.running_recover_s = args_cli.running_recover_s
 
     timelines = []
     for record in records:

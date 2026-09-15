@@ -16,7 +16,20 @@ import random
 from dataclasses import dataclass, field
 
 from .compiler import CompilerConfig, Timeline, compile_program
-from .grammar import DIRECTIONS, FLIP_KINDS, STANCE_KINDS, Flip, Move, Program, ProgramError, Stance, Stop, Turn
+from .grammar import (
+    DIRECTIONS,
+    FLIP_KINDS,
+    RUNNING_FLIP_FOR,
+    RUNNING_FLIP_SPEEDS,
+    STANCE_KINDS,
+    Flip,
+    Move,
+    Program,
+    ProgramError,
+    Stance,
+    Stop,
+    Turn,
+)
 
 
 def _weighted(rng: random.Random, table: dict) -> object:
@@ -61,6 +74,9 @@ class SamplerConfig:
         default_factory=lambda: {"backflip": 0.35, "frontflip": 0.2, "sideflip_left": 0.15, "sideflip_right": 0.15, "jump": 0.15}
     )
     flip_counts: dict[int, float] = field(default_factory=lambda: {1: 0.60, 2: 0.25, 3: 0.15})
+    running_flip_after_move: float = 0.18
+    """Probability that a move at slow/normal speed is followed straight away by the running flip
+    its heading allows (``RUNNING_FLIP_FOR``). Counts as a step of its own."""
     stance_kinds: dict[str, float] = field(default_factory=lambda: {"handstand": 0.55, "hindstand": 0.45})
     stance_durations_s: dict[float, float] = field(default_factory=lambda: {3.0: 0.30, 5.0: 0.40, 8.0: 0.15, 10.0: 0.15})
     stance_walks: float = 0.15
@@ -120,6 +136,10 @@ def sample_program(
             step = sample_step(rng, cfg, previous)
             program.append(step)
             previous = step.skill
+            if isinstance(step, Move) and step.speed in RUNNING_FLIP_SPEEDS and rng.random() < cfg.running_flip_after_move:
+                # The kind is not a choice: it is the one the heading permits.
+                program.append(Flip(kind=RUNNING_FLIP_FOR[step.dir], count=_weighted(rng, cfg.flip_counts), running=True))
+                previous = "flip"
         if previous != "stop" and rng.random() < cfg.trailing_stop:
             program.append(Stop(duration_s=_weighted(rng, cfg.stop_durations_s)))
         try:

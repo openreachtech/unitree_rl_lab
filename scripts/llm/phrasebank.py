@@ -176,7 +176,7 @@ SPEED_WORDS: dict[str, dict[str, list[str]]] = {
 
 FLIP_WORDS: dict[str, list[str]] = {
     "backflip": ["バク転", "バックフリップ", "後方宙返り", "バク転"],
-    "frontflip": ["前方回転", "前転", "フロントフリップ", "前方宙返り"],
+    "frontflip": ["前方回転", "前転", "フロントフリップ", "前方宙返り", "ハンドスプリング"],
     "sideflip_left": ["左側転", "左へのサイドフリップ", "左回りの側転"],
     "sideflip_right": ["右側転", "右へのサイドフリップ", "右回りの側転"],
     "jump": ["ジャンプ", "垂直跳び", "ジャンプ"],
@@ -188,6 +188,14 @@ FLIP_VERBS: dict[str, list[Verb]] = {
     "sideflip_left": [V_SURU, V_YARU],
     "sideflip_right": [V_SURU, V_YARU],
     "jump": [V_SURU, V_YARU, V_TOBU],
+}
+
+# A flip fired out of the preceding move, without stopping. The instruction has to say so, or the
+# reader (and the model) would take it for the ordinary stop-then-flip.
+RUNNING_WORDS: dict[str, list[str]] = {
+    "polite": ["そのまま", "止まらずに", "走りながら", "その勢いで", "走った勢いで"],
+    "kansai": ["そのまま", "止まらんで", "走りながら", "その勢いで", "勢いのまま", "走った勢いで"],
+    "short": ["そのまま", "走りながら"],
 }
 
 STANCE_WORDS: dict[str, list[str]] = {
@@ -267,6 +275,11 @@ CAUTIONS: dict[str, dict[str, list[str]]] = {
             "降りるとこがまだあかんねん。それでもやってみるわ。",
         ],
         "short": ["降りる時こけるかも。", "降りるの苦手やけど。"],
+    },
+    "running_frontflip_repeat": {
+        "polite": ["走りながらの前方回転は連続すると失敗するので、1回だけ行います。", "走りながらの前方回転は1回までにします。"],
+        "kansai": ["走りながらの前転は続けるとこけるから、1回だけにするで。", "走りながらの前転は1回までな。"],
+        "short": ["走りながらの前転は1回まで。"],
     },
     "hindstand_descent": {
         "polite": ["降りるときにふらつくことがあります。", "戻るときに少し不安定です。"],
@@ -362,7 +375,10 @@ def stop_clause(step: dict, style: str, rng: random.Random) -> Clause:
 def flip_clause(step: dict, style: str, rng: random.Random) -> Clause:
     word = rng.choice(FLIP_WORDS[step["kind"]])
     count = count_word(int(step.get("count", 1)), style, rng)
-    place = "その場で" if rng.random() < 0.2 else ""
+    if step.get("running"):
+        place = rng.choice(RUNNING_WORDS[style])
+    else:
+        place = "その場で" if rng.random() < 0.2 else ""
     particle = "を" if count and rng.random() < 0.6 else ""
     verb = rng.choice(FLIP_VERBS[step["kind"]])
     return Clause(f"{place}{word}{particle}{count}", verb)
@@ -414,7 +430,8 @@ def short_phrase(step: dict, rng: random.Random) -> str:
         return rng.choice([f"停止{seconds_word(step.get('duration_s', 1.0), 'short', rng)}", f"{seconds_word(step.get('duration_s', 1.0), 'short', rng)}停止"])
     if skill == "flip":
         count = count_word(int(step.get("count", 1)), "short", rng)
-        return f"{FLIP_WORDS[step['kind']][0]}{count}"
+        running = rng.choice(RUNNING_WORDS["short"]) if step.get("running") else ""
+        return f"{running}{FLIP_WORDS[step['kind']][0]}{count}"
     word = STANCE_WORDS[step["kind"]][0]
     amount = seconds_word(step.get("duration_s", 5.0), "short", rng)
     if step.get("dir"):

@@ -10,7 +10,6 @@
 validated.jsonl（プログラム + sim 実測）＋ capability.json（能力表）
    │
    ├─ 1. 分割        学習 / 評価をプログラム単位で分ける       build_dataset.py
-   ├─ 2. 事実の整理  実測から「何が起こるか」を一文にまとめる   build_facts.py
    ├─ 3. 指示文生成  言い回し辞書から 3 つの口調で組み立てる     phrasebank.py
    ├─ 4. 往復検証    指示文 → プログラムに逆パースして照合       parse_instruction.py + roundtrip_check.py
    ├─ 5. 応答文生成  実測と能力表に基づく返事（警告・断り）      build_dataset.py + phrasebank.py
@@ -27,14 +26,24 @@ python scripts/llm/roundtrip_check.py data/llm/dataset.jsonl data/llm/reparse.js
 python scripts/llm/check_dataset.py data/llm/dataset.jsonl
 ```
 
-学習させるモデルの入出力は次の形に固定する。
+学習させるモデルの入出力は次の形に固定する（定義は `chat_format.py` の 1 か所）。
 
-```json
-入力:  "5mくらい直進してから、バク転して"
-出力:  {"reply": "了解、5m進んでからバク転するね。", "program": [{"skill":"move","dir":"forward","distance_m":5}, {"skill":"flip","kind":"backflip"}]}
+```
+入力（user ターン）:
+[状態] 待機中
+5mくらい直進してから、バク転して
+
+出力（assistant ターン）:
+了解、5m進んでからバク転するね。
+
+action: replace
+program: [{"skill":"move","dir":"forward","speed":"normal","distance_m":5.0}, {"skill":"flip","kind":"backflip","count":1}]
 ```
 
-雑談や断る場合は `"program": []`。
+user ターンの先頭には必ず **[状態] の 1 行**（待機中 / 実行中と進み具合、済んだ手順と残り、中断可否、
+直前に実行したプログラム）が付く。`action` は `none`（触らない）/ `cancel`（止める）/ `replace`
+（差し替え）/ `insert`（今やって元に戻る）/ `append`（終わったら）。雑談や断る場合は
+`action: none` + `program: []`。会話は複数ターン続く（11 節）。
 
 ## 1. 入力データと分割
 
@@ -53,10 +62,12 @@ python scripts/llm/check_dataset.py data/llm/dataset.jsonl
 
 ## 2. 事実の整理（fact sheet）
 
-モデルに渡す前に、各プログラムについて機械的に「事実」を作る。生成モデルには
-プログラム JSON ではなく、この事実を読ませる。数値が嘘になるのを防ぐため。
+各プログラムについて、実測から「何が起こるか」を機械的に決める。返事に書く数値が嘘に
+ならないよう、言い回しはこの事実の上にだけ乗せる。
 
-実装済み: `scripts/llm/build_facts.py`（`validated.jsonl` + `capability.json` -> `facts.jsonl`）。
+当初は事実を `facts.jsonl` に書き出す独立の手順（`build_facts.py`）だったが、生成を外部 LLM に
+頼らず組み立て式にしたので、同じ判断は `build_dataset.py` の `classify()` / `load_rates()` が
+その場で行う。独立ファイルは不要になり、スクリプトは 2026-09-15 に削除した。
 
 例:
 
@@ -231,19 +242,23 @@ slow で 0.5 m など）なので、サンプラーの重みを見直す材料�
 
 ## 7. 整形と規模
 
-学習用 JSONL、1 行 1 例。
+学習用 JSONL、1 行 1 会話。単発の指示も 1 ターンの会話として同じ形で持つ。
 
 ```json
 {"id": "s0-000123#kansai", "split": "train", "category": "normal", "style": "kansai",
- "input": "前へ3mくらい進んでから、バク転2回してや。",
- "output": {"reply": "...", "program": [...]},
+ "turns": [{"role": "user", "content": "[状態] 待機中\n前へ3mくらい進んでから、バク転2回してや。", "state": {...}},
+           {"role": "assistant", "reply": "...", "action": "replace", "program": [...], "roundtrip": true}],
  "source": {"program_id": "s0-000123", "passed": true, "kind": "paraphrase"}}
 ```
+
+`content` はモデルが見る文字列（状態ブロック込み）、`state` は同じものをチェック用にデータで持つ。
+`roundtrip` は「user の言葉がそのプログラムの指示文になっている」ターンの印で、4 の往復検証はこの印の
+あるターンだけを見る（「もう一回」「ストップ」は逆パースの対象外）。
 
 システムプロンプトは行に持たせず `data/llm/system_prompt.txt` に 1 つだけ置く
 （文法仕様 `describe_grammar()` ＋ 守ること）。学習時に各行の前に付ける。
 
-実際に作った 5000 件の内訳:
+実際に作った内訳（単発 5000 ＋ 対話 2500 → 7360 会話 / 10140 assistant ターン、2026-09-14）。単発の分:
 
 | カテゴリ | 件数 | 内容 |
 |---|---|---|
@@ -255,26 +270,29 @@ slow で 0.5 m など）なので、サンプラーの重みを見直す材料�
 | `impossible` | 220 | 文法にない依頼を断る |
 | `over_ask` | 170 | 上限超え。要求どおり出して、切る旨を返事で言う |
 | `ambiguous` | 90 | 聞き返す |
-| `declined` | 42 | ジャンプだけの要求。`program: []` |
+| `running_fast` | 50 | 「速く走りながら前転」。普通の速さに落として実行し、そのことを言う |
 
-口調は関西弁 1861 / 丁寧 1682 / 短文 1457。分割は train 4532 / eval 468
-（プログラム `id` のハッシュで 90:10。同じプログラムの言い換えは必ず同じ側に入る）。
+ジャンプだけの要求（旧 `declined`）は単発では作らず、提案 → はい/いや の対話にした（11 節）。
+分割は train / eval をプログラム `id` のハッシュで 90:10（同じプログラムの言い換えと対話は必ず同じ側）。
 
 件数を変えるときは `--total`。プログラムが足りなければ `sample_programs.py` で増やして
 再検証する（生成は数秒、sim 検証は 2000 本で 15 分）。
 
 ## 8. 品質チェック（学習前に必ず）
 
-`check_dataset.py` が 7 項目を見る。1 つでも落ちたら非ゼロ終了。
+`check_dataset.py` が assistant ターンごとに 10 項目を見る。1 つでも落ちたら非ゼロ終了。
 
 | 項目 | 内容 |
 |---|---|
-| grammar | 全出力プログラムが `unitree_rl_lab.program` で parse・validate できる |
+| format | `none`/`cancel` は `program: []`、`replace`/`insert`/`append` は空でない |
+| grammar | 全出力プログラムが `unitree_rl_lab.program` で parse・validate できる。`insert` は実行中の手順を文脈にして検証 |
+| state | `cancel`/`insert`/`append` は実行中にしか出ない。実行中の雑談は `none`。待機中の「止めて」は `none` |
 | declined | 一般成功率 10% 未満のスキルが出力に残っていない |
 | cautions | 80% 未満のスキルを含む行に警告文がある。**含まない行に警告文が無い**（言っていない危険をでっち上げないこと） |
-| numerals | 返事の数値がすべて根拠を持つ（プログラムの値、sim の所要時間 ±2 秒、コンパイラの上限、要求された値のいずれか） |
+| numerals | 返事の数値がすべて根拠を持つ（プログラムの値、コンパイラが今出す所要時間 ±2 秒、上限、要求された値、状態ブロックの値のいずれか） |
 | forbidden | 「必ず」「ぴったり」「絶対」「確実に」「100%」が無い |
-| duplicates | 同一の (入力, 返事, プログラム) が無い |
+| dialogue | 提案に「はい」と答えたターンは提案どおりのプログラム。「もう一回」は直前のプログラム。「続けて」はその後半 |
+| duplicates | 同一の会話が無い |
 | balance | カテゴリ・口調・分割・入力の一意率を出す（目で見る用） |
 
 これに加えて人がやること:
@@ -292,19 +310,26 @@ slow で 0.5 m など）なので、サンプラーの重みを見直す材料�
 3. 返事の口調は指示文に合わせる。
 4. 断るのはジャンプのみ。倒立は警告して必ず挑戦する。
 
+5. 警告系（前方回転・倒立）は黙って実行して一言ことわる。できない系（ジャンプ、進行方向と合わない
+   走りながらの技）だけ代替を提案して聞く。毎回確認されるロボットは使いにくい。
+6. 走りながらの技の種類は進行方向で決まる（ポリシーの `_select_motion_for_direction`）。文法で強制し、
+   違う技を頼まれたら提案に回す。走りながらの前方回転は連続すると失敗する（2 回目 0.38）ので
+   コンパイラが 1 回に切り、返事で言う。
+7. 会話履歴は「生の書き足し」で持つ（Qwen3 のテンプレートは過去ターンの `<think></think>` を消して
+   描き直すので、それでは KV キャッシュが毎ターン無効になる）。定義は `chat_format.conversation_text`。
+
 残っているもの:
 
-1. ファインチューニング対象モデルの選定 → 要件は `MODEL.md`。実行場所は Go2 オンボード
-   （Jetson）、出力順は `reply` 先のままに決定済み。候補は Qwen2.5-1.5B-Instruct と Qwen3-1.7B。
-2. 学習後の sim での end-to-end 評価。
-3. ロボット側の実行器（`Timeline.events()` を食わせる部分）。
+1. 学習後の sim での end-to-end 評価。
+2. ロボット側の実行器（`Timeline.events()` を食わせる部分、insert/append/cancel、状態の報告）。
+3. 手書きテスト（`handwritten_eval.py`、35 件）の関西弁は関西人が書き足すこと。
 
 ## 10. 成果物
 
 | パス | 内容 |
 |---|---|
-| `data/llm/facts.jsonl` | 2 の事実（プログラムごと、2000 行） |
-| `data/llm/dataset.jsonl` | 最終データ 5000 行（train / eval を `split` で区別） |
+| `data/llm/dataset.jsonl` | 最終データ 7360 会話（train / eval を `split` で区別） |
+| `data/llm/handwritten_eval.jsonl` | フレーズバンクに無い言い回しの手書きテスト 35 件（`handwritten_eval.py` が生成） |
 | `data/llm/reparse.jsonl` | 4 の逆パース結果（検証用の中間物） |
 | `data/llm/rates.json` | 生成時に使った一般成功率。`check_dataset.py` が読む |
 | `data/llm/system_prompt.txt` | 学習・推論時に各行の前に付けるシステムプロンプト |
@@ -312,3 +337,43 @@ slow で 0.5 m など）なので、サンプラーの重みを見直す材料�
 
 いずれも生成物で `.gitignore` 対象。能力表 `data/llm/capability.json` だけは
 sim を回さないと作れないのでコミットする。
+
+## 11. 対話（マルチターン）
+
+ロボットが動いている間も会話は続く。「もう一回」「あ、ストップ」「ハンドスプリングして！」に答える
+ために、`dialogues.py` がシナリオから 2〜3 ターンの会話を作る。1 ターン目は 3 節の指示文と 5 節の返事
+そのまま、2 ターン目以降が新しい部分。
+
+**状態ブロック**は毎 user ターンの先頭に付く 1 行で、コンパイル済みタイムラインから
+`chat_format.state_from_timeline` が作る。数字（経過秒、残り秒、済んだ手順）は全部本物。
+
+```
+[状態] 実行中 6.1s/10.0s: 前へ2m(済) → 左側転×1(済) → 右斜め前へ3m(いま 残り2.9s) / 中断可
+[状態] 待機中 / 直前(完了): 前へ5m → バク転×1
+[状態] 待機中 / 直前(中断): 前へ5m(済) → バク転×1(途中) → 左回り90度
+```
+
+| シナリオ | 状態 | 入力 | action / program |
+|---|---|---|---|
+| dlg_repeat | 完了後 | 「もう一回」「同じの、ゆっくりで」 | replace / 直前と同じ（速度だけ slow に） |
+| dlg_interrupt | 実行中 | 「ストップ」 | cancel / []（技の途中なら「着地してから止まる」） |
+| dlg_resume | 中断後 | 「続けて」 | replace / 止めた手順から後ろ |
+| dlg_insert | move 中 | 技の名前だけ | insert / 進行方向の技を running で |
+| dlg_insert_fast | fast の move 中 | 技の名前だけ | insert / 止まってからの技（速いと走りながらは無理） |
+| dlg_insert_turn | move 中 | 「左に曲がって」 | insert / turn |
+| dlg_insert_propose | move 中 | 方向と合わない技 | none + 提案 → はい: insert / いや: none |
+| dlg_append | 実行中 | 「終わったら〜も」 | append |
+| dlg_correction | 実行中 | 「やっぱり〜」 | replace / 別プログラム |
+| dlg_chitchat | 実行中 | 雑談 | none（**止めない**） |
+| dlg_status | 実行中 | 「今なにしてる？」 | none / 状態ブロックを読んで答える |
+| dlg_stopped | 完了後 | 「ストップ」「今なにしてる？」 | none / もう止まっている |
+| dlg_jump_propose | 待機中 | 「ジャンプして」 | none + 代替提案 → はい: replace / いや: none |
+| dlg_running_propose | 待機中 | 「前に走りながらバク転」 | none + 前転を提案 → はい: replace / いや: none |
+
+言い回しは `dialogues.py` 上部の表に手書き、判断（どの action、どのプログラム、警告の有無）は
+シナリオ関数と能力表から。単発と同じ分離。`dlg_status` は状態ブロックを読まないと正解が書けないので、
+モデルが状態を無視していないかの直接のテストになる。`dlg_chitchat` は「雑談でロボットが止まる」事故の
+負例。
+
+学習は全 assistant ターンに loss を掛ける（`train_sft.py`）。評価は前のターンを正解で埋めて 1 ターンずつ
+採点する（`eval_model.py`、action 正解率と「止めるか否か」の正解率を追加）。

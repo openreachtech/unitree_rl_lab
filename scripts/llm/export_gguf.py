@@ -1,0 +1,144 @@
+"""Fold the DoRA adapter into the base weights and produce the GGUF the robot runs.
+
+    source /home/tak/isaacsim/env_llm/bin/activate
+    python scripts/llm/export_gguf.py --adapter logs/llm/qwen3-1.7b-dora-v3/adapter --out logs/llm/gguf/v3
+
+Three steps, each skipped when its output already exists:
+
+1. merge     PEFT ``merge_and_unload`` -> a plain HF model in ``<out>/merged`` (bf16). DoRA's
+             magnitude vectors are folded into the weights here; the served model is a 1.7B dense
+             model with no adapter machinery.
+2. convert   ``llama.cpp/convert_hf_to_gguf.py`` -> ``<out>/model-f16.gguf``
+3. quantize  ``llama-quantize`` -> ``<out>/model-<quant>.gguf`` (default Q4_K_M, the size the Jetson
+             needs; Q8_0 is the reference to compare against if the 4-bit model misbehaves)
+
+The system prompt the adapter was trained under and the GBNF grammar are written next to the
+weights, so the serving side has everything it needs in one directory. ``--test`` then runs
+``llama-completion`` on the quantized model with the grammar and a sample conversation, on this machine,
+which is the first time the grammar meets the real sampler.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+from chat_format import conversation_text, gbnf_grammar, parse_output, render_user_turn, RobotState  # noqa: E402
+
+LLAMA_CPP = Path("/home/tak/isaacsim/llama.cpp")
+
+
+def merge(base: str, adapter: str, out: Path) -> Path:
+    merged = out / "merged"
+    if (merged / "config.json").exists():
+        print(f"merged model exists: {merged}")
+        return merged
+    import torch
+    from peft import PeftModel
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    print(f"merging {adapter} into {base} (cpu)")
+    started = time.time()
+    model = AutoModelForCausalLM.from_pretrained(base, dtype=torch.bfloat16, device_map="cpu")
+    model = PeftModel.from_pretrained(model, adapter).merge_and_unload()
+    model.save_pretrained(merged, safe_serialization=True)
+    AutoTokenizer.from_pretrained(base).save_pretrained(merged)
+    print(f"  merged in {time.time() - started:.0f}s -> {merged}")
+    return merged
+
+
+def convert(merged: Path, out: Path) -> Path:
+    f16 = out / "model-f16.gguf"
+    if f16.exists():
+        print(f"f16 gguf exists: {f16}")
+        return f16
+    script = LLAMA_CPP / "convert_hf_to_gguf.py"
+    print(f"converting -> {f16}")
+    subprocess.run([sys.executable, str(script), str(merged), "--outfile", str(f16), "--outtype", "f16"],
+                   check=True, env={"PYTHONPATH": str(LLAMA_CPP / "gguf-py"), "PATH": "/usr/bin:/bin"})
+    return f16
+
+
+def quantize(f16: Path, out: Path, quant: str) -> Path:
+    q = out / f"model-{quant}.gguf"
+    if q.exists():
+        print(f"{quant} gguf exists: {q}")
+        return q
+    print(f"quantizing -> {q}")
+    subprocess.run([str(LLAMA_CPP / "build" / "bin" / "llama-quantize"), str(f16), str(q), quant], check=True,
+                   stdout=subprocess.DEVNULL)
+    return q
+
+
+def test(gguf: Path, out: Path, threads: int) -> None:
+    """One conversation through llama-completion with the grammar on; print what came back and the speed."""
+    system_prompt = (out / "system_prompt.txt").read_text()
+    program = [{"skill": "move", "dir": "forward", "speed": "normal", "duration_s": 10.0}]
+    cases = [
+        ([render_user_turn(RobotState.idle(), "5mくらい前に走ってから、そのままハンドスプリングして")], []),
+        ([render_user_turn(RobotState.idle(), "前に10秒歩いて。")], []),
+    ]
+    from chat_format import state_from_timeline
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "source" / "unitree_rl_lab"))
+    from unitree_rl_lab.program import compile_program, program_from_json
+    running = state_from_timeline(program, compile_program(program_from_json(program)), 3.0)
+    first_answer = "了解、前に10秒歩くで。\n\naction: replace\nprogram: " + json.dumps(program, ensure_ascii=False)
+    cases.append(([cases[1][0][0], render_user_turn(running, "バク転して！")], [first_answer]))
+    cases.append(([cases[1][0][0], render_user_turn(running, "ええ天気やなあ")], [first_answer]))
+
+    for user_texts, answers in cases:
+        prompt = conversation_text(system_prompt, user_texts, answers)
+        prompt_file = out / "_prompt.txt"
+        prompt_file.write_text(prompt)
+        cmd = [str(LLAMA_CPP / "build" / "bin" / "llama-completion"), "-m", str(gguf), "-f", str(prompt_file),
+               "--grammar-file", str(out / "output.gbnf"), "-n", "200", "--temp", "0", "-t", str(threads),
+               "-no-cnv", "--no-display-prompt", "-r", "<|im_end|>"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        text = result.stdout.replace("[end of text]", "").strip()
+        perf = " ".join(re.sub(r".*common_perf_print:\s*", "", line).strip()
+                        for line in result.stderr.splitlines() if "prompt eval time" in line or " eval time" in line)
+        print(f"\n--- {user_texts[-1].splitlines()[-1]}")
+        print(text)
+        try:
+            reply, action, prog = parse_output(text)
+            print(f"  parsed: action={action} steps={len(prog)}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  PARSE FAILED: {exc}")
+            print(result.stderr[-800:])
+        print(f"  {perf}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--base", default="/home/tak/models/Qwen3-1.7B")
+    parser.add_argument("--adapter", required=True)
+    parser.add_argument("--out", required=True)
+    parser.add_argument("--quant", default="Q8_0", help="Q8_0 keeps the trained weights nearly intact and fits the Orin easily; Q4_K_M only if speed demands it")
+    parser.add_argument("--test", action="store_true", help="run llama-completion with the grammar on a few turns")
+    parser.add_argument("--threads", type=int, default=16)
+    args = parser.parse_args()
+
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    trained_prompt = Path(args.adapter).parent / "system_prompt.txt"
+    shutil.copy(trained_prompt if trained_prompt.exists() else "data/llm/system_prompt.txt", out / "system_prompt.txt")
+    (out / "output.gbnf").write_text(gbnf_grammar())
+
+    merged = merge(args.base, args.adapter, out)
+    f16 = convert(merged, out)
+    q = quantize(f16, out, args.quant)
+    for path in (f16, q):
+        print(f"  {path.name:<22} {path.stat().st_size / 2**20:8.0f} MB")
+    if args.test:
+        test(q, out, args.threads)
+
+
+if __name__ == "__main__":
+    main()

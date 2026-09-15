@@ -50,6 +50,8 @@ def step_matches(want: dict, got: dict) -> str | None:
         return f"kind {want.get('kind')} != {got.get('kind')}"
     if want.get("dir") != got.get("dir"):
         return f"dir {want.get('dir')} != {got.get('dir')}"
+    if bool(want.get("running")) != bool(got.get("running")):
+        return f"running {bool(want.get('running'))} != {bool(got.get('running'))}"
     if want["skill"] != "stop":
         want_speed = want.get("speed", "normal")
         got_speed = got.get("speed", "normal")
@@ -95,30 +97,47 @@ def main():
     parser.add_argument("reparse")
     args = parser.parse_args()
 
-    reparsed_by_id = {json.loads(line)["id"]: json.loads(line)["reparsed_program"] for line in open(args.reparse)}
+    reparsed_by_key = {}
+    for line in open(args.reparse):
+        item = json.loads(line)
+        reparsed_by_key[(item["id"], item.get("turn", 0))] = item["reparsed_program"]
 
     total = passed = 0
     for line in open(args.dataset):
         row = json.loads(line)
-        total += 1
-        output = row["output"]["program"]
-        reparsed = reparsed_by_id.get(row["id"])
+        for turn, output in checked_turns(row):
+            total += 1
+            reparsed = reparsed_by_key.get((row["id"], turn))
+            passed += judge(row, output, reparsed)
+
+    print(f"\n{passed}/{total} passed")
+    sys.exit(0 if passed == total else 1)
+
+
+def checked_turns(row: dict) -> list[tuple[int, list[dict]]]:
+    """The assistant turns the round trip applies to: every one marked ``roundtrip``."""
+    if "turns" not in row:
+        return [(0, row["output"]["program"])]
+    turns = row["turns"]
+    return [(k, a["program"]) for k, a in enumerate(turns[1::2]) if a.get("roundtrip")]
+
+
+def judge(row: dict, output: list[dict], reparsed) -> bool:
+    if True:  # the body below was the loop body; kept flat to leave the rules readable
 
         if reparsed is None:
             if output == []:
                 print(f"  OK    {row['id']:<24} (no program on either side)")
-                passed += 1
-            else:
-                print(f"  FAIL  {row['id']:<24} no reparse recorded but output is non-empty")
-            continue
+                return True
+            print(f"  FAIL  {row['id']:<24} no reparse recorded but output is non-empty")
+            return False
 
         if row["category"] in NO_PROGRAM:
             if output == []:
                 print(f"  OK    {row['id']:<24} [{row['category']}] (program is empty, as it must be)")
-                passed += 1
-            else:
-                print(f"  FAIL  {row['id']:<24} [{row['category']}] must not emit a program")
-            continue
+                return True
+            print(f"  FAIL  {row['id']:<24} [{row['category']}] must not emit a program")
+            return False
 
         if row["category"] in ("partial_decline", "declined"):
             reason = check_partial_decline(output, reparsed)
@@ -127,12 +146,9 @@ def main():
 
         if reason is None:
             print(f"  OK    {row['id']:<24} [{row['category']}]")
-            passed += 1
-        else:
-            print(f"  FAIL  {row['id']:<24} [{row['category']}]  {reason}")
-
-    print(f"\n{passed}/{total} passed")
-    sys.exit(0 if passed == total else 1)
+            return True
+        print(f"  FAIL  {row['id']:<24} [{row['category']}]  {reason}")
+        return False
 
 
 if __name__ == "__main__":
