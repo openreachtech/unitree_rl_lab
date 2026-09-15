@@ -111,7 +111,14 @@ def base_height_climb_reward(
     ray_hits_w = sensor.data.ray_hits_w  # (N, R, 3)
     ray_xy = ray_hits_w[:, :, :2]
     ray_z = ray_hits_w[:, :, 2]
+    # RayCaster reports +-inf for rays that miss the terrain mesh entirely.
+    # Masking those out of the nearest-ray search below avoids picking an
+    # invalid ray when a valid one exists, but if a whole scan misses the
+    # mesh (e.g. robot toppled off a terrain edge) the gather would still
+    # return a raw +-inf. Sanitize the source so local_terrain_h is always
+    # finite, and zero the reward outright when there is no valid ray at all.
     valid_rays = torch.isfinite(ray_z)
+    ray_z = torch.nan_to_num(ray_z, nan=-1e3, posinf=-1e3, neginf=-1e3)
 
     dist = torch.norm(base_xy.unsqueeze(1) - ray_xy, dim=-1)  # (N, R)
     dist = torch.where(valid_rays, dist, torch.full_like(dist, 1e9))
@@ -121,6 +128,7 @@ def base_height_climb_reward(
     target_z = local_terrain_h + nominal_clearance
     height_error = base_z - target_z
     reward = torch.exp(-torch.square(height_error) / std**2)
+    reward = reward * valid_rays.any(dim=1).float()
 
     if command_name is not None:
         cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
@@ -293,9 +301,17 @@ def foot_clearance_terrain_adaptive(
     ray_hits_w = sensor.data.ray_hits_w                             # (N, R, 3)
     ray_xy_w   = ray_hits_w[:, :, :2]                               # (N, R, 2)
     ray_z_w    = ray_hits_w[:, :, 2]                                # (N, R)
+    # RayCaster reports +-inf for rays that miss the terrain mesh. This
+    # function previously didn't exclude invalid rays at all (it could pick
+    # one as "nearest" even with a valid ray close by). Mask them out of the
+    # search and sanitize the source so terrain_z is always finite; the reward
+    # is zeroed below when a scan has no valid ray at all.
+    valid_rays = torch.isfinite(ray_z_w)                            # (N, R)
+    ray_z_w = torch.nan_to_num(ray_z_w, nan=-1e3, posinf=-1e3, neginf=-1e3)
 
-    # Nearest height-scan point to each foot: (N, F, R) -> argmin -> (N, F)
+    # Nearest *valid* height-scan point to each foot: (N, F, R) -> argmin -> (N, F)
     dist = torch.norm(foot_xy_w.unsqueeze(2) - ray_xy_w.unsqueeze(1), dim=-1)
+    dist = torch.where(valid_rays.unsqueeze(1), dist, torch.full_like(dist, 1e9))
     nearest = dist.argmin(dim=-1)                                    # (N, F)
 
     terrain_z = torch.gather(
@@ -314,6 +330,7 @@ def foot_clearance_terrain_adaptive(
     swing = (~in_contact).float()                                   # (N, F)
 
     reward = torch.sum(achieved * swing, dim=1)                     # (N,)
+    reward = reward * valid_rays.any(dim=1).float()
 
     # Only while motion is commanded: standing envs must not be pushed to step.
     cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)  # (N,)
@@ -330,6 +347,8 @@ def adaptive_foot_clearance_reward(
     natural_clearance: float = 0.03,
     max_clearance: float = 0.20,
     roughness_ref: float = 0.05,
+    command_name: str | None = None,
+    min_cmd_norm: float = 0.1,
 ) -> torch.Tensor:
     """Reward swing feet for clearing the terrain ahead, with the clearance
     *target* itself scaled by how much clearance is actually needed.
@@ -356,6 +375,16 @@ def adaptive_foot_clearance_reward(
     (``natural_clearance``) while an approaching stair riser raises it toward
     ``max_clearance``. Swing detection reuses the same open-loop CPG gate as
     ``wild_foot_clearance_reward`` to keep gait timing/coordination unchanged.
+
+    ``command_name``: if set, the reward is masked to 0 whenever
+    ``|command| <= min_cmd_norm`` (mirrors ``stall_penalty``/
+    ``base_height_climb_reward``'s gating). The CPG swing phase
+    (:func:`_cpg_leg_phases_rad`) is a pure open-loop clock driven by elapsed
+    episode time, not by command or actual motion -- so without this gate,
+    a standing, zero-command robot still cycles through "swing" phases every
+    ``period`` seconds and is still paid to lift each foot by
+    ``natural_clearance``, i.e. march in place. Gating restricts that payout
+    to when there's an actual command to walk.
     """
     robot: Articulation = env.scene[asset_cfg.name]
     sensor = env.scene[sensor_cfg.name]
@@ -369,6 +398,14 @@ def adaptive_foot_clearance_reward(
     ray_xy_w = ray_hits_w[:, :, :2]
     ray_z_w = ray_hits_w[:, :, 2]
     valid_rays = torch.isfinite(ray_z_w)  # (N, R)
+    # local_h/ahead_h below are two *independently* nearest-ray-selected
+    # heights that get differenced in obstacle_height. The argmin masking
+    # avoids invalid rays when a valid one exists, but if a whole scan misses
+    # the terrain mesh (e.g. robot toppled off a stair edge) the gather would
+    # return raw +inf and inf - inf = NaN, which then propagates into PPO's
+    # returns/advantages and corrupts the value function. Sanitize the source
+    # so the gather is always finite, and zero the reward for all-invalid scans.
+    ray_z_w = torch.nan_to_num(ray_z_w, nan=-1e3, posinf=-1e3, neginf=-1e3)
 
     def _nearest_height(query_xy: torch.Tensor) -> torch.Tensor:
         # query_xy: (N, F, 2) -> nearest scanned height per foot: (N, F)
@@ -406,7 +443,285 @@ def adaptive_foot_clearance_reward(
     phases = _cpg_leg_phases_rad(env, period, offset)
     is_swing = phases < torch.pi
     reward = reward * is_swing.float()
-    return torch.sum(reward, dim=-1)
+    reward = torch.sum(reward, dim=-1) * valid_rays.any(dim=1).float()
+
+    if command_name is not None:
+        cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
+        reward = reward * (cmd_norm > min_cmd_norm)
+
+    return reward
+
+
+def quiet_standing_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    contact_sensor_cfg: SceneEntityCfg,
+    sensor_cfg: SceneEntityCfg | None = None,
+    command_name: str = "base_velocity",
+    max_cmd_norm: float = 0.1,
+    joint_vel_std: float = 1.0,
+    roughness_ref: float = 0.05,
+) -> torch.Tensor:
+    """Reward literal stillness (all feet planted, low joint velocity) while the
+    commanded velocity is ~0 *and* the terrain underneath is flat.
+
+    base_height_climb_reward, wild_foot_clearance, and stall_penalty are all
+    gated *off* near zero command -- that removes pressure toward motion, but
+    nothing pushes back toward hard stillness being the unambiguous optimum.
+    Generic penalties left active there (action_rate, joint_torques, energy,
+    joint_vel) are small and uniform, and don't specifically cost a small
+    asymmetric single-leg lift more than doing nothing, so residual noise
+    (policy stochasticity, height-scan noise still feeding the observation
+    even though it no longer drives reward at rest) can leave that lift as a
+    locally-costless habit. This adds the missing positive pressure: reward is
+    ``all_feet_planted * exp(-mean(joint_vel^2) / joint_vel_std^2)``, masked to
+    0 whenever ``|command| > max_cmd_norm`` -- the inverse of the existing
+    motion-reward gates, active only in the regime they turn off.
+
+    ``sensor_cfg``: if set, also masks the reward by terrain flatness under
+    the robot (same height-range-over-roughness_ref gate
+    ``adaptive_foot_clearance_reward`` uses). Standing envs are spawned across
+    the *whole* curriculum terrain, not just flat ground -- a zero-command env
+    can be sitting on or next to a stair. Without this gate, "freeze here" gets
+    rewarded there too, which can bias the shared policy toward hesitating
+    right when a climb needs a committed push. With it, the reward only ever
+    fires on genuinely flat terrain, so it can't compete with
+    stall_penalty/stair_commit's "don't freeze on the stairs" pressure.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    contact_sensor: ContactSensor = env.scene.sensors[contact_sensor_cfg.name]
+
+    in_contact = contact_sensor.data.current_contact_time[:, contact_sensor_cfg.body_ids] > 0.0
+    all_planted = in_contact.all(dim=1).float()
+
+    joint_vel = asset.data.joint_vel
+    stillness = torch.exp(-torch.mean(torch.square(joint_vel), dim=1) / joint_vel_std**2)
+
+    reward = all_planted * stillness
+
+    if sensor_cfg is not None:
+        sensor = env.scene[sensor_cfg.name]
+        ray_z = sensor.data.ray_hits_w[:, :, 2]
+        valid_rays = torch.isfinite(ray_z)
+        z_for_max = torch.where(valid_rays, ray_z, torch.full_like(ray_z, -1e9))
+        z_for_min = torch.where(valid_rays, ray_z, torch.full_like(ray_z, 1e9))
+        roughness = (z_for_max.amax(dim=1) - z_for_min.amin(dim=1)).clamp(min=0.0)
+        flatness_gate = torch.clamp(1.0 - roughness / roughness_ref, 0.0, 1.0)
+        reward = reward * flatness_gate
+
+    cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
+    reward = reward * (cmd_norm <= max_cmd_norm)
+
+    return reward
+
+
+def joint_deviation_flat_gated_l1(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    sensor_cfg: SceneEntityCfg,
+    roughness_ref: float = 0.05,
+) -> torch.Tensor:
+    """Penalize joint deviation from default pose, scaled by how flat the terrain is.
+
+    Plain ``joint_deviation_l1`` applied to hip joints (to stop an unforced wide/
+    side-swinging gait on flat ground) turned out to also suppress the hip
+    abduction a policy legitimately needs to balance while crossing a thin wall
+    -- MuJoCo testing on a wall-climbing task showed continued training under a
+    flat, ungated hip penalty trading away climbing ability entirely in
+    exchange for a cleaner flat-ground gait, rather than converging to a
+    policy that has both.
+
+    This reuses the same height-range-over-``roughness_ref`` gate
+    ``adaptive_foot_clearance_reward``/``quiet_standing_reward`` use: full
+    penalty on genuinely flat terrain, fading to ~0 as the scanned patch under
+    the robot gets rougher (i.e. near/on an obstacle), so the constraint only
+    applies where there's no climbing-related reason to violate it.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    angle = asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+    deviation = torch.sum(torch.abs(angle), dim=1)
+
+    sensor = env.scene[sensor_cfg.name]
+    ray_z = sensor.data.ray_hits_w[:, :, 2]
+    valid_rays = torch.isfinite(ray_z)
+    z_for_max = torch.where(valid_rays, ray_z, torch.full_like(ray_z, -1e9))
+    z_for_min = torch.where(valid_rays, ray_z, torch.full_like(ray_z, 1e9))
+    roughness = (z_for_max.amax(dim=1) - z_for_min.amin(dim=1)).clamp(min=0.0)
+    flatness_gate = torch.clamp(1.0 - roughness / roughness_ref, 0.0, 1.0)
+
+    return deviation * flatness_gate
+
+
+def joint_deviation_swing_gated_l1(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    period: float,
+    offset: list[float],
+) -> torch.Tensor:
+    """Penalize joint deviation from default pose, but only while that leg is
+    in its open-loop swing phase (reuses ``adaptive_foot_clearance_reward``'s
+    ``_cpg_leg_phases_rad`` gate).
+
+    ``joint_deviation_flat_gated_l1`` gates a hip-deviation penalty by terrain
+    flatness, which turned out to be the wrong axis for a "stop using hip to
+    lift the foot" goal: it relaxes exactly during obstacle crossing, which is
+    precisely where MuJoCo testing showed the unwanted hip-swing motion also
+    happening (not just on flat ground). Swing phase is what's actually common
+    to both cases -- the foot is being lifted -- so gating on that instead
+    penalizes hip motion whenever a lift is underway, on flat ground *and*
+    while crossing an obstacle, while leaving stance-phase hip position
+    (support/balance, unrelated to the lifting motion) untaxed.
+
+    ``asset_cfg``: joints in FR/FL/RR/RL order, matching ``offset``'s leg
+    order convention (same as ``adaptive_foot_clearance_reward``'s feet).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    joint_ids = asset_cfg.joint_ids
+    deviation = torch.abs(
+        asset.data.joint_pos[:, joint_ids] - asset.data.default_joint_pos[:, joint_ids]
+    )  # (N, 4)
+
+    phases = _cpg_leg_phases_rad(env, period, offset)
+    is_swing = (phases < torch.pi).float()
+
+    return torch.sum(deviation * is_swing, dim=-1)
+
+
+def calf_flexion_clearance_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    calf_asset_cfg: SceneEntityCfg,
+    sensor_cfg: SceneEntityCfg,
+    period: float,
+    offset: list[float],
+    lookahead_distance: float = 0.15,
+    natural_flex: float = 0.05,
+    max_flex: float = 0.4,
+    max_obstacle_height: float = 0.25,
+    roughness_ref: float = 0.05,
+) -> torch.Tensor:
+    """Positive reward for clearing an approaching obstacle via calf/knee
+    flexion specifically -- the "bend the elbow" motion -- as an explicit,
+    rewarded alternative to hip abduction.
+
+    A hip-deviation penalty alone gives no signal about *which* joint should
+    take over the lifting motion instead. MuJoCo testing found the robot kept
+    using hip-swing for both the ordinary flat-ground gait and obstacle
+    crossing even once hip motion was taxed, because nothing rewarded the
+    substitute strategy directly.
+
+    Reuses ``adaptive_foot_clearance_reward``'s exact obstacle-lookahead
+    (height-scan point ``lookahead_distance`` ahead of each foot, along the
+    base's current travel direction, minus the height directly under the
+    foot) and terrain-roughness gate (so the target collapses to
+    ``natural_flex`` on flat ground, not a full high-step every stride), but
+    both the *target* and the *achieved* quantity here are calf-joint flexion
+    angle (radians), not foot world-height -- rewarding actual knee bend,
+    not clearance however it was achieved. ``obstacle_height`` (meters) is
+    converted to a unitless 0-1 ratio via ``max_obstacle_height`` before
+    scaling the radian target range, since the two are different units.
+    Swing detection reuses the same open-loop CPG gate as the other
+    foot-clearance rewards.
+
+    Only rewards flexion in the direction that actually lifts the foot (calf
+    joint angle decreasing below its default, for Go2's convention) -- not
+    absolute deviation, which would also pay for straightening the leg past
+    default.
+
+    ``asset_cfg``: feet, FR/FL/RR/RL order (for the lookahead/roughness
+    geometry). ``calf_asset_cfg``: the matching calf joints, same order --
+    this is a per-leg reward, so the two lists must correspond 1:1.
+    """
+    robot: Articulation = env.scene[asset_cfg.name]
+    sensor = env.scene[sensor_cfg.name]
+
+    foot_ids = asset_cfg.body_ids
+    foot_pos_w = robot.data.body_pos_w[:, foot_ids, :]  # (N, F, 3)
+    foot_xy_w = foot_pos_w[:, :, :2]
+
+    ray_hits_w = sensor.data.ray_hits_w  # (N, R, 3)
+    ray_xy_w = ray_hits_w[:, :, :2]
+    ray_z_w = ray_hits_w[:, :, 2]
+    valid_rays = torch.isfinite(ray_z_w)
+    ray_z_w = torch.nan_to_num(ray_z_w, nan=-1e3, posinf=-1e3, neginf=-1e3)
+
+    def _nearest_height(query_xy: torch.Tensor) -> torch.Tensor:
+        dist = torch.norm(query_xy.unsqueeze(2) - ray_xy_w.unsqueeze(1), dim=-1)
+        dist = torch.where(valid_rays.unsqueeze(1), dist, torch.full_like(dist, 1e9))
+        nearest = dist.argmin(dim=-1)
+        return torch.gather(
+            ray_z_w.unsqueeze(1).expand(-1, query_xy.shape[1], -1), dim=2, index=nearest.unsqueeze(-1)
+        ).squeeze(-1)
+
+    local_h = _nearest_height(foot_xy_w)  # (N, F)
+
+    base_vel_xy = robot.data.root_lin_vel_w[:, :2]
+    base_speed = torch.norm(base_vel_xy, dim=1)
+    moving = (base_speed > 0.05).float().view(-1, 1, 1)
+    unit_dir = (base_vel_xy / base_speed.clamp(min=1e-3).unsqueeze(1)).unsqueeze(1)
+    ahead_xy = foot_xy_w + unit_dir * lookahead_distance * moving
+    ahead_h = _nearest_height(ahead_xy)  # (N, F)
+    obstacle_height = torch.clamp(ahead_h - local_h, min=0.0)  # (N, F), meters
+
+    z_for_max = torch.where(valid_rays, ray_z_w, torch.full_like(ray_z_w, -1e9))
+    z_for_min = torch.where(valid_rays, ray_z_w, torch.full_like(ray_z_w, 1e9))
+    roughness = (z_for_max.amax(dim=1) - z_for_min.amin(dim=1)).clamp(min=0.0)
+    roughness_gate = torch.clamp(roughness / roughness_ref, 0.0, 1.0).unsqueeze(1)  # (N, 1)
+
+    obstacle_ratio = torch.clamp(obstacle_height / max_obstacle_height, 0.0, 1.0)  # (N, F), unitless
+    target_flex = natural_flex + roughness_gate * obstacle_ratio * (max_flex - natural_flex)  # (N, F), rad
+
+    calf: Articulation = env.scene[calf_asset_cfg.name]
+    calf_ids = calf_asset_cfg.joint_ids
+    # Go2's calf joint angle *decreases* (more negative) as the knee bends/flexes
+    # further -- that's the direction that actually lifts the foot. Using
+    # torch.abs() here would also reward straightening the leg past default,
+    # which doesn't clear anything; clamp to only the flexing direction.
+    calf_flex = torch.clamp(
+        calf.data.default_joint_pos[:, calf_ids] - calf.data.joint_pos[:, calf_ids], min=0.0
+    )  # (N, F), rad
+
+    achieved = torch.clamp(calf_flex / target_flex.clamp(min=1e-3), 0.0, 1.0)
+
+    phases = _cpg_leg_phases_rad(env, period, offset)
+    is_swing = phases < torch.pi
+    reward = achieved * is_swing.float()
+    return torch.sum(reward, dim=-1) * valid_rays.any(dim=1).float()
+
+
+def idle_joint_vel_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    command_name: str = "base_velocity",
+    max_cmd_norm: float = 0.1,
+) -> torch.Tensor:
+    """Smooth penalty on joint velocity, active only near zero command.
+
+    quiet_standing_reward tried to fix flat-ground idle flutter with a
+    positive bonus behind a hard "all 4 feet planted" gate -- a binary AND
+    across four contact sensors that can flicker to zero from ordinary
+    contact-sensor noise even while genuinely standing still. A policy
+    optimizing expected reward against a signal that flickers like that has
+    an incentive to actively probe/correct trying to recapture it, which is a
+    plausible explanation for why quiet_standing sometimes made the flutter
+    *worse*, not better, across several weight/gate variants.
+
+    This term is deliberately not that: it's a plain, continuous quadratic
+    penalty (``sum(joint_vel^2)``, same kernel as the always-on
+    ``joint_vel_l2``) with no contact dependency at all, so there is no
+    discontinuity anywhere for the policy to chase or destabilize around --
+    the gradient just always points toward lower joint velocity. Masked to 0
+    whenever ``|command| > max_cmd_norm``, so it only ever competes with "do
+    nothing" alternatives, never with actual gaits.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    joint_vel = asset.data.joint_vel
+    penalty = torch.sum(torch.square(joint_vel), dim=1)
+
+    cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
+    penalty = penalty * (cmd_norm <= max_cmd_norm)
+
+    return penalty
 
 
 def feet_too_near(
@@ -580,7 +895,12 @@ def stair_commit_reward(
     ray_hits_w = sensor.data.ray_hits_w  # (N, R, 3)
     ray_xy = ray_hits_w[:, :, :2]
     ray_z = ray_hits_w[:, :, 2]
+    # front_terrain_h - hind_terrain_h below differences two independent
+    # nearest-ray lookups; inf - inf = NaN if a scan misses the terrain mesh
+    # entirely. Sanitize the source so the gather is always finite, and zero
+    # the reward for all-invalid scans (see adaptive_foot_clearance_reward).
     valid_rays = torch.isfinite(ray_z)
+    ray_z = torch.nan_to_num(ray_z, nan=-1e3, posinf=-1e3, neginf=-1e3)
 
     def _nearest_height(query_xy: torch.Tensor) -> torch.Tensor:
         dist = torch.norm(query_xy.unsqueeze(2) - ray_xy.unsqueeze(1), dim=-1)  # (N, 2, R)
@@ -597,6 +917,10 @@ def stair_commit_reward(
     front_planted = in_contact[:, :2].any(dim=1)
     hind_down = in_contact[:, 2:].any(dim=1)
     straddling = front_planted & hind_down & ((front_terrain_h - hind_terrain_h) > height_gap_threshold)
+
+    # A scan that misses the terrain mesh entirely can't establish a valid
+    # front/hind height gap, so it must not count as straddling.
+    straddling = straddling & valid_rays.any(dim=1)
 
     forward_speed = torch.clamp(asset.data.root_lin_vel_b[:, 0], min=0.0, max=max_forward_speed)
     climb_speed = torch.clamp(asset.data.root_lin_vel_w[:, 2], min=0.0, max=max_climb_speed)
@@ -651,4 +975,97 @@ def joint_mirror(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, mirror_joint
             dim=-1,
         )
     reward *= 1 / len(mirror_joints) if len(mirror_joints) > 0 else 0
+    return reward
+
+
+def wall_approach_commit_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    sensor_cfg: SceneEntityCfg,
+    command_name: str,
+    period: float,
+    offset: list[float],
+    lookahead_distance: float = 0.15,
+    obstacle_height_threshold: float = 0.08,
+    max_obstacle_height: float = 0.25,
+    target_clearance: float = 0.15,
+    min_cmd_norm: float = 0.1,
+) -> torch.Tensor:
+    """Positive reward for a swing foot reaching toward a wall ahead in the
+    *commanded* direction, even from a dead stop.
+
+    ``adaptive_foot_clearance_reward``/``calf_flexion_clearance_reward`` both
+    derive their obstacle lookahead from the base's *current* velocity
+    direction, deliberately zeroed below 0.05 m/s ("no obstacle to see" for a
+    standing robot -- see their comments). That's correct for a robot that's
+    genuinely supposed to be standing still, but it also means the one signal
+    telling the policy "there's a wall, lift for it" switches itself off the
+    moment the robot hesitates and stalls in front of a tall wall -- which is
+    exactly the failure mode this term targets: Play observation was that the
+    robot freezes completely *before* contact walking forward into a tall
+    wall (low walls cross fine), but crosses tall walls fine walking
+    backward, where it doesn't stall first and instead reactively lifts
+    higher right after its foot bumps the wall. Using the *commanded*
+    direction instead of actual velocity keeps the lookahead live through a
+    stall, as long as the command still asks to move that way -- it can't
+    self-disable in the one state (stalled, but still commanded) it's needed
+    most for.
+
+    Otherwise the same shape as ``foot_clearance_terrain_adaptive``: strictly
+    positive, capped at 1.0 per foot, swing-gated and command-gated -- except
+    it only pays out when a real wall is detected ahead
+    (``obstacle_height_threshold``, set above ordinary height-scan noise), so
+    it doesn't compete with the ordinary flat-ground gait the other clearance
+    rewards already shape.
+    """
+    from isaaclab.utils.math import quat_apply, yaw_quat
+
+    robot: Articulation = env.scene[asset_cfg.name]
+    sensor = env.scene[sensor_cfg.name]
+
+    foot_ids = asset_cfg.body_ids
+    foot_pos_w = robot.data.body_pos_w[:, foot_ids, :]  # (N, F, 3)
+    foot_xy_w = foot_pos_w[:, :, :2]
+    foot_z_w = foot_pos_w[:, :, 2]
+
+    ray_hits_w = sensor.data.ray_hits_w  # (N, R, 3)
+    ray_xy_w = ray_hits_w[:, :, :2]
+    ray_z_w = ray_hits_w[:, :, 2]
+    valid_rays = torch.isfinite(ray_z_w)
+    ray_z_w = torch.nan_to_num(ray_z_w, nan=-1e3, posinf=-1e3, neginf=-1e3)
+
+    def _nearest_height(query_xy: torch.Tensor) -> torch.Tensor:
+        dist = torch.norm(query_xy.unsqueeze(2) - ray_xy_w.unsqueeze(1), dim=-1)
+        dist = torch.where(valid_rays.unsqueeze(1), dist, torch.full_like(dist, 1e9))
+        nearest = dist.argmin(dim=-1)
+        return torch.gather(
+            ray_z_w.unsqueeze(1).expand(-1, query_xy.shape[1], -1), dim=2, index=nearest.unsqueeze(-1)
+        ).squeeze(-1)
+
+    local_h = _nearest_height(foot_xy_w)  # (N, F)
+
+    # Commanded lin_vel_x/y is in the base frame; rotate by current heading
+    # (yaw only) to get a world-frame direction comparable to foot_xy_w/ray_xy_w.
+    command_b = env.command_manager.get_command(command_name)  # (N, 3): vx, vy, wz
+    cmd_norm = torch.norm(command_b[:, :2], dim=1)  # (N,)
+    heading_quat = yaw_quat(robot.data.root_quat_w)  # (N, 4)
+    command_vec_b = torch.cat([command_b[:, :2], torch.zeros_like(command_b[:, :1])], dim=-1)  # (N, 3)
+    command_dir_w = quat_apply(heading_quat, command_vec_b)[:, :2]  # (N, 2)
+    unit_dir = (command_dir_w / cmd_norm.clamp(min=1e-3).unsqueeze(1)).unsqueeze(1)  # (N, 1, 2)
+
+    ahead_xy = foot_xy_w + unit_dir * lookahead_distance  # (N, F, 2)
+    ahead_h = _nearest_height(ahead_xy)  # (N, F)
+    obstacle_height = torch.clamp(ahead_h - local_h, min=0.0, max=max_obstacle_height)  # (N, F)
+    is_wall = (obstacle_height > obstacle_height_threshold).float()
+
+    target = (target_clearance * obstacle_height / max_obstacle_height).clamp(min=1e-3)
+    clearance = torch.clamp(foot_z_w - local_h, min=0.0)
+    achieved = torch.clamp(clearance / target, 0.0, 1.0)
+
+    phases = _cpg_leg_phases_rad(env, period, offset)
+    is_swing = (phases < torch.pi).float()
+
+    reward = achieved * is_swing * is_wall
+    reward = torch.sum(reward, dim=-1) * valid_rays.any(dim=1).float()
+    return reward * (cmd_norm > min_cmd_norm).float()
     return reward

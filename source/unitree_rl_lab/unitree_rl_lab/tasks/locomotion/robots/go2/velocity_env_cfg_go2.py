@@ -2,6 +2,8 @@ from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
+from isaaclab.utils.noise import AdditiveGaussianNoiseCfg as GaussianNoiseCfg
+from isaaclab.utils.noise import NoiseModelWithAdditiveBiasCfg
 
 from unitree_rl_lab.assets.models.teacher_actor import TeacherActorCritic
 from unitree_rl_lab.assets.models.modules.student_teacher import StudentTeacher
@@ -10,117 +12,54 @@ from unitree_rl_lab.tasks.locomotion.agents.rsl_rl_distillation_cfg import Belie
 from unitree_rl_lab.tasks.locomotion import mdp
 from unitree_rl_lab.tasks.locomotion.mdp.observations import height_scan_excluding_body
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import (
+    HEIGHT_SCAN_RESOLUTION,
+    HEIGHT_SCAN_SIZE,
     CommandsCfg,
     ObservationsCfg,
     RewardsCfg,
     RobotEnvCfg,
 )
 
-import os
-import math
-import torch
-import scipy.spatial.transform as transform
-from .lidar_cfg import get_go2_lidar_cfg
-from .heightmap_visualizer import visualize_heightmap
-import sys
-# リポジトリルート (sourceとdeployが同居するフォルダ) を走査して自動取得
-current_dir = os.path.dirname(os.path.abspath(__file__))
-root_dir = None
-while current_dir != os.path.dirname(current_dir):
-    if os.path.exists(os.path.join(current_dir, "deploy")) and os.path.exists(os.path.join(current_dir, "source")):
-        root_dir = current_dir
-        break
-    current_dir = os.path.dirname(current_dir)
-
-if root_dir is None:
-    # フォールバック (7個上に遡る)
-    root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../../../"))
-
-ROOT_DIR = root_dir
-HEIGHTMAP_DIR = os.path.join(ROOT_DIR, "deploy/robots/go2/unitree_go2_locomotion_heightmap")
-sys.path.append(HEIGHTMAP_DIR)
-
-from lidar_processor import HeightmapProcessor
-import lidar_processor as lp
-
-YAML_PATH = os.path.join(HEIGHTMAP_DIR, "heightmap_spec.yaml")
-lidar_processor = HeightmapProcessor(config_yaml_path=YAML_PATH, device="cuda:0")
-
-class LidarRotaryFilter:
-    def __init__(self, spin_freq: float = 10.0, num_layers: int = 28, phase_shift_per_cycle: float = 3.214):
-        self.spin_freq = spin_freq                # 回転速度 (Hz)
-        self.num_layers = num_layers              # 1回転あたりのレイヤ数
-        self.angle_step_rad = 2.0 * math.pi / num_layers # レイヤ間の角度間隔 (rad)
-        self.phase_shift_rad = math.radians(phase_shift_per_cycle) # 周回ごとの位相シフト量 (rad)
-        self.epsilon_rad = math.radians(1.5)      # 検出漏れを防ぐためのサンプリング角度許容誤差 (rad)
-
-    def filter_points(self, pos_w: torch.Tensor, sensor_pos_w: torch.Tensor, current_time: torch.Tensor) -> torch.Tensor:
-        N, R, _ = pos_w.shape
-        device = pos_w.device
-        pos_rel = pos_w - sensor_pos_w.unsqueeze(1)
-        yaw_points = torch.atan2(pos_rel[..., 1], pos_rel[..., 0]) # [N, R]
-        total_rotations = current_time * self.spin_freq # [N]
-        base_angle = (total_rotations * 2.0 * math.pi) % (2.0 * math.pi) # [N]
-        cycle_idx = total_rotations.long() # [N]
-        phase_offset = (cycle_idx.float() * self.phase_shift_rad) % self.angle_step_rad # [N]
-        
-        layer_indices = torch.arange(self.num_layers, device=device).float() # [num_layers]
-        valid_angles = layer_indices.view(1, -1) * self.angle_step_rad + base_angle.unsqueeze(1) + phase_offset.unsqueeze(1) # [N, num_layers]
-        valid_angles = torch.atan2(torch.sin(valid_angles), torch.cos(valid_angles)) # [N, num_layers]
-        
-        # 巨大テンソルの生成を回避するため、レイヤ数 (28) のループで比較を行ってメモリ使用量を激減させる (2.7GB -> 98MB)
-        mask = torch.zeros((N, R), dtype=torch.bool, device=device)
-        for i in range(self.num_layers):
-            angle = valid_angles[:, i].unsqueeze(1) # [N, 1]
-            diff = torch.abs(yaw_points - angle)    # [N, R]
-            diff = torch.minimum(diff, 2.0 * math.pi - diff)
-            mask |= (diff < self.epsilon_rad)
-        
-        filtered_pos_w = pos_w.clone()
-        filtered_pos_w[..., 2] = torch.where(mask, filtered_pos_w[..., 2], torch.tensor(-1e9, device=device))
-        return filtered_pos_w
-
-lidar_filter = LidarRotaryFilter()
-
-def go2_lidar_heightmap(env, randomize: bool = False):
-    """毎ステップ呼び出されるLiDAR観測関数"""
-    current_time = env.episode_length_buf.float() * (env.cfg.sim.dt * env.cfg.decimation)
-    filtered_pos_w = lidar_filter.filter_points(
-        pos_w=env.scene["height_scanner"].data.ray_hits_w,
-        sensor_pos_w=env.scene["height_scanner"].data.pos_w,
-        current_time=current_time
-    )
-    heightmap = lidar_processor.process(
-        pos_w=filtered_pos_w,
-        root_pos_w=env.scene["robot"].data.root_pos_w,
-        root_quat_w=env.scene["robot"].data.root_quat_w,
-        randomize=randomize
-    )
-    if env.num_envs <= 8:
-        visualize_heightmap(env, heightmap, lidar_processor)
-    return heightmap
-
 POLICY_HISTORY_LENGTH = 3
 CRITIC_HISTORY_LENGTH = 3
 
-# Must match RobotSceneCfg.height_scanner.pattern_cfg (velocity_env_cfg.py):
-# patterns.GridPatternCfg(resolution=HEIGHT_SCAN_RESOLUTION, size=HEIGHT_SCAN_SIZE).
-HEIGHT_SCAN_RESOLUTION = 0.1
-HEIGHT_SCAN_SIZE = (1.6, 1.0)
+# Applied to RobotSceneCfg.height_scanner.pattern_cfg in RobotEnvCfgGo2.__post_init__.
+# X is 1.4 m (+0.20 m front and back over a plain 1.0 m square) so the body-centered grid
+# reaches further past the robot's own front/rear footprint.
+# HEIGHT_SCAN_RESOLUTION / HEIGHT_SCAN_SIZE come from velocity_env_cfg, which declares
+# the scanner built on them; imported above and re-exported here so the many modules
+# that already reach for them through this one keep working.
+# Body-footprint exclusion rectangle: 60 cm x 40 cm (half extents below).
+GO2_BODY_HALF_EXTENT_X = 0.30
+GO2_BODY_HALF_EXTENT_Y = 0.20
 
 
-def _grid_pattern_num_points(resolution: float, size: tuple[float, float]) -> int:
-    """Ray count produced by isaaclab.sensors.ray_caster.patterns.GridPatternCfg.
-
-    Mirrors isaaclab's grid_pattern(): arange(-size/2, size/2 + eps, resolution) includes both
-    endpoints, so each axis has round(size / resolution) + 1 points, not size / resolution.
-    """
+def _cropped_grid_pattern_num_points(
+    resolution: float,
+    size: tuple[float, float],
+    scanner_offset_xy: tuple[float, float],
+    exclude_half_extent_xy: tuple[float, float],
+) -> int:
+    """Grid ray count after removing the fixed body-footprint rectangle."""
     num_x = round(size[0] / resolution) + 1
     num_y = round(size[1] / resolution) + 1
-    return num_x * num_y
+    eps = resolution * 1.0e-4
+    removed_x = sum(
+        abs(-size[0] / 2 + i * resolution + scanner_offset_xy[0])
+        <= exclude_half_extent_xy[0] + eps
+        for i in range(num_x)
+    )
+    removed_y = sum(
+        abs(-size[1] / 2 + i * resolution + scanner_offset_xy[1])
+        <= exclude_half_extent_xy[1] + eps
+        for i in range(num_y)
+    )
+    return num_x * num_y - removed_x * removed_y
 
 
-# LiDAR mount in base frame (LiDAR -> base translation). Matches deploy height_scan_pipeline.
+# LiDAR mount in base frame (LiDAR -> base translation). Only GO2_LIDAR_OFFSET_Z still feeds
+# GO2_HEIGHT_SCAN_OFFSET below; X/Y are no longer used to place the height-scan grid (see
+# GO2_HEIGHT_SCAN_CENTER_X/Y) since a LiDAR-mount-centered grid barely reached behind the robot.
 GO2_LIDAR_OFFSET_X = 0.28945  # m, forward from base
 GO2_LIDAR_OFFSET_Y = 0.0
 GO2_LIDAR_OFFSET_Z = -0.046825  # m
@@ -131,26 +70,75 @@ GO2_NOMINAL_BASE_Z = 0.32  # m
 # Isaac mdp.height_scan offset: ground-to-sensor height at nominal stance (flat terrain -> ~0).
 GO2_HEIGHT_SCAN_OFFSET = GO2_NOMINAL_BASE_Z + GO2_LIDAR_OFFSET_Z  # 0.273175 m
 
-# RayCaster grid xy origin at LiDAR mount (matches unitree_mujoco utlidar site on base_link).
-# Wired into RobotSceneCfg.height_scanner.offset in RobotEnvCfgGo2.__post_init__ below (z there
-# is a fixed ray-start height for raycasting, unrelated to GO2_LIDAR_OFFSET_Z).
-GO2_HEIGHT_SCANNER_OFFSET = (
-    GO2_LIDAR_OFFSET_X,
-    GO2_LIDAR_OFFSET_Y,
-    GO2_LIDAR_OFFSET_Z,
-)
+# RayCaster grid xy origin at the body center (not the LiDAR mount), so the scan reaches equally
+# far in front of and behind the robot. Wired into RobotSceneCfg.height_scanner.offset in
+# RobotEnvCfgGo2.__post_init__ below (z there is a fixed ray-start height for raycasting, unrelated
+# to GO2_LIDAR_OFFSET_Z). Any real/mujoco height-map publisher for deploy HeightScanUpdater must
+# sample its grid centered the same way (base-centered, not LiDAR-mount-centered) to match.
+GO2_HEIGHT_SCAN_CENTER_X = 0.0
+GO2_HEIGHT_SCAN_CENTER_Y = 0.0
 
+# 29×21 grid with the 13×9 body region removed: 609 - 117 = 492 points.
 POLICY_HEIGHT_SCAN_CFG = ObsTerm(
-    func=go2_lidar_heightmap,
-    params={"randomize": True},
+    func=height_scan_excluding_body,
+    params={
+        "sensor_cfg": SceneEntityCfg("height_scanner"),
+        "offset": GO2_HEIGHT_SCAN_OFFSET,
+        "resolution": HEIGHT_SCAN_RESOLUTION,
+        "size": HEIGHT_SCAN_SIZE,
+        "scanner_offset_xy": (GO2_HEIGHT_SCAN_CENTER_X, GO2_HEIGHT_SCAN_CENTER_Y),
+        # Remove points under the body footprint (in base xy, meters).
+        "exclude_half_extent_x": GO2_BODY_HALF_EXTENT_X,
+        "exclude_half_extent_y": GO2_BODY_HALF_EXTENT_Y,
+        # Overlay excluded cells in magenta for the first environment.
+        "debug_vis_excluded_body": True,
+        "debug_vis_env_index": 0,
+    },
     clip=(-1.0, 5.0),
+    # Gaussian, not uniform -- matches "Learning robust perceptive locomotion
+    # for quadrupedal robots in the wild" (height-sample noise sampled from a
+    # Gaussian, not a bounded uniform distribution), and structured the same
+    # way as the paper's per-scan-point + per-episode terms (Eq. 2, S8):
+    #   - per-step noise: resampled every control step, one draw per cell --
+    #     matches the paper's eps_pz ~ N(0, z1), z1_nominal = 0.005 (variance)
+    #     -> std = sqrt(0.005) ~= 0.071.
+    #   - bias_noise_cfg: one shared scalar drawn on every episode reset and
+    #     held constant for the whole episode -- matches the paper's w_z
+    #     (per-foot, per-episode height offset from pose-estimation drift /
+    #     deformable terrain). Our height_scan isn't organized per-foot like
+    #     the paper's, so this applies as one shared offset across the whole
+    #     scan instead of per-foot (sample_bias_per_component=False).
+    #     NOTE: the paper's published z-vector for this condition lists only
+    #     7 values for 8 named parameters (z0..z7) -- one entry (almost
+    #     certainly the last, z6 or z7) didn't survive PDF->markdown
+    #     extraction, so the exact w_z magnitude isn't recoverable from
+    #     doc/papers/. std=0.05 here is a reasonable same-order-of-magnitude
+    #     placeholder, not a literal paper value.
+    # Per-foot noise and intermittent outlier injection (also in the paper)
+    # aren't included -- both are structurally tied to per-foot height
+    # samples, which this body-centered grid doesn't have.
+    # noise=NoiseModelWithAdditiveBiasCfg(
+    #     noise_cfg=GaussianNoiseCfg(mean=0.0, std=0.071),
+    #     bias_noise_cfg=GaussianNoiseCfg(mean=0.0, std=0.05),
+    #     sample_bias_per_component=False,
+    # ),
+    history_length=0,
 )
 
-# Height scan grid matches RobotSceneCfgGo2V2.height_scanner (LiDAR origin, 17×11 @ 0.1 m).
+# Critic uses the same cropped grid and ordering as the policy.
 CRITIC_HEIGHT_SCAN_CFG = ObsTerm(
-    func=go2_lidar_heightmap,
-    params={"randomize": False},
+    func=height_scan_excluding_body,
+    params={
+        "sensor_cfg": SceneEntityCfg("height_scanner"),
+        "offset": GO2_HEIGHT_SCAN_OFFSET,
+        "resolution": HEIGHT_SCAN_RESOLUTION,
+        "size": HEIGHT_SCAN_SIZE,
+        "scanner_offset_xy": (GO2_HEIGHT_SCAN_CENTER_X, GO2_HEIGHT_SCAN_CENTER_Y),
+        "exclude_half_extent_x": GO2_BODY_HALF_EXTENT_X,
+        "exclude_half_extent_y": GO2_BODY_HALF_EXTENT_Y,
+    },
     clip=(-1.0, 5.0),
+    history_length=0,
 )
 
 
@@ -245,32 +233,23 @@ class RewardsCfgGo2(RewardsCfg):
 class RobotEnvCfgGo2(RobotEnvCfg):
     """Shared Go2 v1 MDP settings."""
 
-    # Heightmap usage flag
-    use_heightmap: bool = True
-
     observations: ObservationsCfgGo2 = ObservationsCfgGo2()
     commands: CommandsCfgGo2 = CommandsCfgGo2()
     rewards: RewardsCfgGo2 = RewardsCfgGo2()
 
     def __post_init__(self):
         super().__post_init__()
-        
-        # use_heightmap が False の場合はハイトマップ観測とLiDARセンサーを無効化
-        if not self.use_heightmap:
-            if hasattr(self.observations.policy, "height_scan"):
-                delattr(self.observations.policy, "height_scan")
-            if hasattr(self.observations.critic, "height_scan"):
-                delattr(self.observations.critic, "height_scan")
-            if hasattr(self.scene, "height_scanner"):
-                delattr(self.scene, "height_scanner")
-        else:
-            # 報酬関数や他モジュールからの参照名 "height_scanner" を維持したまま、
-            # 中身を L1 LiDAR センサーの RayCasterCfg に置き換える
-            self.scene.height_scanner = get_go2_lidar_cfg(
-                prim_path="{ENV_REGEX_NS}/Robot/base",
-                config_yaml_path=YAML_PATH
-            )
-            self.scene.height_scanner.update_period = self.decimation * self.sim.dt
+        # Show height-scan rays/hits in Isaac Sim GUI for Go2 tasks.
+        self.scene.height_scanner.debug_vis = True
+        # Center the grid on the body origin (z is just a fixed ray-start height for raycasting,
+        # unrelated to GO2_LIDAR_OFFSET_Z); matches deploy HeightScanUpdater.
+        _, _, z = self.scene.height_scanner.offset.pos
+        self.scene.height_scanner.offset.pos = (GO2_HEIGHT_SCAN_CENTER_X, GO2_HEIGHT_SCAN_CENTER_Y, z)
+        self.scene.height_scanner.pattern_cfg.resolution = HEIGHT_SCAN_RESOLUTION
+        self.scene.height_scanner.pattern_cfg.size = HEIGHT_SCAN_SIZE
+        # ordering="yx": inner loop over y, outer loop over x (idx = ix * Ny + iy), matching the
+        # flatten order used by unitree_mujoco height_map_simulator and deploy HeightScanUpdater.
+        self.scene.height_scanner.pattern_cfg.ordering = "yx"
 
 
 def _go2_obs_block_dims() -> tuple[int, int, int]:
@@ -282,7 +261,12 @@ def _go2_obs_block_dims() -> tuple[int, int, int]:
       priv:    critic-only base_lin_vel(3)+joint_effort(12)
     """
     proprio = 3 + 3 + 3 + 12 * POLICY_HISTORY_LENGTH * 3
-    extero = _grid_pattern_num_points(HEIGHT_SCAN_RESOLUTION, HEIGHT_SCAN_SIZE)
+    extero = _cropped_grid_pattern_num_points(
+        HEIGHT_SCAN_RESOLUTION,
+        HEIGHT_SCAN_SIZE,
+        (GO2_HEIGHT_SCAN_CENTER_X, GO2_HEIGHT_SCAN_CENTER_Y),
+        (GO2_BODY_HALF_EXTENT_X, GO2_BODY_HALF_EXTENT_Y),
+    )
     priv = 3 + 12
     return proprio, extero, priv
 
@@ -302,19 +286,3 @@ class TeacherPPORunnerCfg(BasePPORunnerCfg):
         self.policy.priv_obs_dim = priv
 
 
-@configclass
-class StudentDistillationRunnerCfg(BeliefDistillationRunnerCfg):
-    """Belief-encoder student distillation (BC + height-map reconstruction)."""
-
-    def __post_init__(self):
-        # Ensure class symbol is imported for config serialization/debug.
-        _ = StudentTeacher
-        proprio, extero, priv = _go2_obs_block_dims()
-        self.policy.proprio_obs_dim = proprio
-        self.policy.extero_obs_dim = extero
-        # TeacherポリシーはPreveledgedInfoを使っていないが、ゼロ埋めしている。
-        # そのため、Studentポリシーも同じゼロ埋めを行う必要がある。
-        self.policy.priv_obs_dim = priv
-
-        # TeacherポリシーのExteroceptiveEncoderをStudentポリシーに転送しない。
-        # self.policy.transfer_extero_encoder_from_teacher = False

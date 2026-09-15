@@ -64,6 +64,11 @@ def ang_vel_cmd_levels(
     return torch.tensor(ranges.ang_vel_z[1], device=env.device)
 
 
+def height_scan_noise_level(env: ManagerBasedRLEnv, env_ids: Sequence[int]) -> torch.Tensor:
+    """Log the height-scan noise curriculum factor set by ``HeightScanExcludingBodyNoisy``."""
+    return torch.tensor(getattr(env, "height_scan_noise_level", 0.0), device=env.device)
+
+
 def custom_terrain_levels_climb(
     env: ManagerBasedRLEnv,
     env_ids: Sequence[int] | slice,

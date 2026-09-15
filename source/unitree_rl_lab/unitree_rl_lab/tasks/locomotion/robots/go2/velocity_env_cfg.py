@@ -18,7 +18,7 @@ from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
-from unitree_rl_lab.assets.robots.unitree import UNITREE_GO2_CFG as ROBOT_CFG
+from unitree_rl_lab.assets.robots.unitree import GO2_CORRECTED_ACTUATOR_CFG
 from unitree_rl_lab.tasks.locomotion import mdp
 
 COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
@@ -65,6 +65,13 @@ COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
 )
 
 
+# The one height-scan grid. Declared here rather than in velocity_env_cfg_go2 because
+# the sensor below is defined against it and that module imports this one, not the
+# other way round; go2 re-exports both names so existing imports keep working.
+HEIGHT_SCAN_RESOLUTION = 0.05
+HEIGHT_SCAN_SIZE = (1.4, 1.0)
+
+
 @configclass
 class RobotSceneCfg(InteractiveSceneCfg):
     """Configuration for the terrain scene with a legged robot."""
@@ -90,14 +97,26 @@ class RobotSceneCfg(InteractiveSceneCfg):
         debug_vis=False,
     )
     # robots
-    robot: ArticulationCfg = ROBOT_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+    robot: ArticulationCfg = GO2_CORRECTED_ACTUATOR_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
     # sensors
+    # 5 cm over 1.4 x 1.0 m: 29 x 21 = 609 rays, the same grid the LiDAR fan bins into.
+    # It used to be 10 cm over 1.6 x 1.0 (17 x 11 = 187) because nothing in the blind
+    # lineage read a fine grid -- the policy was blind and the critic had been cut back
+    # to foot-local terms -- and the reward terms that do read it only look up a nearest
+    # ray. Two scanners at different resolutions is a trap this codebase has already
+    # sprung once (a target came back 187 wide where 609 was expected), so there is one,
+    # and it is the one everything else is defined against.
+    #
+    # ordering="yx" (idx = ix * num_y + iy) to match _height_scan_indices and the LiDAR
+    # term; without it "row" and "column" mean different things to different consumers.
     height_scanner = RayCasterCfg(
         prim_path="{ENV_REGEX_NS}/Robot/base",
         offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
         ray_alignment="yaw",
-        pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[1.6, 1.0]),
+        pattern_cfg=patterns.GridPatternCfg(
+            resolution=HEIGHT_SCAN_RESOLUTION, size=list(HEIGHT_SCAN_SIZE), ordering="yx"
+        ),
         debug_vis=False,
         mesh_prim_paths=["/World/ground"],
     )
