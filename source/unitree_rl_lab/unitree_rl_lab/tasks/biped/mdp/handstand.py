@@ -77,7 +77,7 @@ class HandstandCommand(CommandTerm):
         # Split by stance, because the population mean cannot distinguish "both stances work" from
         # "one works and the other never leaves the floor" -- and collapsing onto a single stance is
         # the specific way the unified task is expected to fail if it fails.
-        for name in ("success_front", "success_hind", "share_front"):
+        for name in ("success_front", "success_hind", "share_front", "descent_success"):
             self.metrics[name] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["takeoff_speed_limit"] = torch.zeros(self.num_envs, device=self.device)
 
@@ -86,6 +86,10 @@ class HandstandCommand(CommandTerm):
         # because a window that ends counts as a success if the robot ever got up in it -- reading
         # `success` at the closing step would only ever catch the ones still holding it.
         self._achieved = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        # Whether the robot got back down after the stance was released, latched for the same
+        # reason: the descent is a transient, and reading it at the instant the episode happens to
+        # reset would only ever catch the ones still standing there.
+        self._recovered = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.attempts = 0
         self.successes = 0
         self.takeoff_speed_limit = float(cfg.initial_takeoff_speed_limit)
@@ -116,6 +120,75 @@ class HandstandCommand(CommandTerm):
             self.trigger_step >= 0,
             elapsed_steps.float() * self._env.step_dt,
             torch.zeros(self.num_envs, device=self.device),
+        )
+
+    @property
+    def since_release(self) -> torch.Tensor:
+        """Seconds since the stance was released; negative while it is still held.
+
+        ``hold_duration`` is ``inf`` when the stance is pinned, so this is ``-inf`` there and every
+        descent-related quantity below reads false -- which is correct: a pinned stance is never
+        released.
+        """
+        return self.elapsed_since_trigger - self.hold_duration
+
+    @property
+    def descending(self) -> torch.Tensor:
+        """Whether the robot is inside the grace that follows a released stance.
+
+        The stance is a mode with three parts -- rise, hold, descent -- and until this existed the
+        environment only described two of them. ``enabled`` goes false at the end of the hold while
+        the robot is still pitched some 75 degrees, and the locomotion termination it hands back to
+        fires at 45.8 degrees, so the episode ended on the step after the release: measured, all 16
+        bipedal environments terminated at exactly ``release + 0.02 s``. Not a fall -- the limit.
+        The descent was therefore never *reached*, let alone learned, and the note on
+        ``_biped_window`` claiming the returning locomotion rewards were the pressure to come down
+        was describing something that had no time to apply.
+
+        This is the span in which the robot is allowed to be tilted without being commanded to be:
+        :func:`~...multitask.mdp.gating.gate_mask` suppresses the orientation limit over it, and
+        the limit returns at the end of it, so a robot still on its nose 1.5 s after the release
+        ends its episode exactly as a failed flip does. What is *not* suppressed at any point is
+        ``base_contact`` -- putting the trunk on the floor on the way down is a failed descent and
+        still ends the episode.
+
+        Nothing pays for the descent directly. The pressure is the locomotion rewards returning at
+        the release and the rest of the episode being worth collecting; see ``BIPED_TRIGGER_RANGE``
+        in ``multitask_env_cfg_moe_v2`` for the arithmetic that rests on, and what to reach for
+        first if the policy comes down badly rather than not at all.
+        """
+        if self.cfg.release_grace_s <= 0.0:
+            return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        since = self.since_release
+        return (
+            (self.trigger_step >= 0) & ~self.enabled & (since >= 0.0) & (since < self.cfg.release_grace_s)
+        )
+
+    @property
+    def is_quadruped(self) -> torch.Tensor:
+        """Back down: level, carrying itself, and standing on the end it had lifted.
+
+        All three conditions are load-bearing. Level alone is satisfied by a robot lying on its
+        belly and by one upside down (``projected_gravity`` reads the same planar magnitude either
+        way), which is why the tilt is taken as the same angle ``bad_orientation`` measures rather
+        than as a planar norm. The height floor separates standing from resting on the floor, and
+        sits below the 0.32 m quadruped stance so a low crouch on the way out still counts. The
+        lifted end touching the ground is what says the *stance* ended rather than the robot simply
+        being level -- it is the one contact the descent has to produce.
+
+        Written as the lifted pair and not all four feet, which is how it read first and measured
+        0.000 for 2601 straight iterations. Four feet simultaneously above the contact threshold is
+        a condition only a standing robot meets: the descent hands back to a velocity command that
+        is non-zero in 90% of environments, so the robot trots away and never has more than two
+        feet down at any one instant. The quantity was unsatisfiable rather than unsatisfied, and
+        it is the reason this is latched over the grace instead of sampled -- one stride is enough
+        for the pair to touch, and a stride is not instantaneous.
+        """
+        tilt = torch.acos(-self.robot.data.projected_gravity_b[:, 2].clamp(-1.0, 1.0))
+        return (
+            (tilt < self.cfg.recovered_tilt_angle)
+            & (self.lifted_contact > 0.0)
+            & (self.robot.data.root_pos_w[:, 2] > self.cfg.recovered_height)
         )
 
     @property
@@ -279,6 +352,7 @@ class HandstandCommand(CommandTerm):
                 self.scheduled_trigger_time[env_ids],
             )
         self._achieved[env_ids] = False
+        self._recovered[env_ids] = False
 
     def _update_command(self):
         if self.cfg.pinned:
@@ -301,6 +375,12 @@ class HandstandCommand(CommandTerm):
         if torch.any(starting):
             self.enabled[starting] = True
             self.trigger_step[starting] = self._env.episode_length_buf[starting]
+        # Guarded the same way `starting` and `ending` are: `is_quadruped` reads the contact
+        # sensor and the root pose, and no environment in a task that never releases a stance --
+        # v1, the two experts -- would ever use the answer.
+        descending = self.descending
+        if torch.any(descending):
+            self._recovered |= descending & self.is_quadruped
         ending = self.enabled & (self.elapsed_since_trigger >= self.hold_duration)
         if torch.any(ending):
             self.enabled[ending] = False
@@ -324,6 +404,16 @@ class HandstandCommand(CommandTerm):
         self.metrics["share_front"][:] = front.float().mean()
         for name, mask in (("success_front", front), ("success_hind", ~front)):
             self.metrics[name][:] = success[mask].mean() if bool(mask.any()) else 0.0
+
+        # The descent, on the same conditional-mean pattern and conditioned on the stance having
+        # been released: a population mean over every environment cannot tell "the descent fails"
+        # from "most of these were never up". Reads as the share of released stances that reached a
+        # level four-footed stance inside the grace, and is 0 on the expert tasks, which pin the
+        # stance on and never release it.
+        released = (self.trigger_step >= 0) & ~self.enabled
+        self.metrics["descent_success"][:] = (
+            self._recovered[released].float().mean() if bool(released.any()) else 0.0
+        )
 
     def _set_debug_vis_impl(self, debug_vis: bool):
         pass
@@ -387,6 +477,40 @@ class HandstandCommandCfg(CommandTermCfg):
     trigger_time_range: tuple[float, float] = (2.0, 6.0)
     hold_duration_range: tuple[float, float] = (6.0, 12.0)
     """When ``pinned`` is off: when the stance starts, and how long it is held. Unused otherwise."""
+
+    release_grace_s: float = 1.5
+    """How long after the stance is released the robot counts as still coming down.
+
+    The descent needs a span in which being tilted is not yet a failure, because the posture the
+    stance ends in is 75 degrees from level and the orientation limit it hands back to is 45.8. Set
+    at 1.5 s for the same reason the acrobatics window is: it has to cover the whole transient --
+    pitching down, catching the fall on the lifted pair, and settling -- and 1.5 s is what that
+    measured for a flip, which has less far to come than a stance does.
+
+    Longer than the deploy controller's ``stance_settle_s`` (1.0 s in
+    ``deploy/robots/go2/config/config.yaml``), deliberately: that one suppresses a *fall guard* on
+    hardware, so it wants to be no longer than necessary, while this one decides how long the
+    policy is given to produce the behaviour in the first place.
+
+    Zero switches the grace off entirely and restores the pre-descent behaviour, in which the
+    episode ends on the step after the release.
+    """
+
+    recovered_tilt_angle: float = 0.4
+    """Tilt under which the robot counts as back down, in radians.
+
+    Half the ``bad_orientation`` limit (0.8 rad) the descent is racing, so "recovered" is a state
+    the robot is comfortably inside rather than one it is marginally on the right side of. Measured
+    as the angle between the trunk's up-axis and world up -- the same quantity the termination
+    uses -- rather than as a planar gravity magnitude, which cannot tell level from inverted.
+    """
+
+    recovered_height: float = 0.25
+    """Root height above which the robot counts as carrying itself, in metres.
+
+    Below the 0.32 m quadruped stance rather than at it, so a low crouch on the way out of the
+    descent still counts. Its job is only to separate standing from lying on the floor.
+    """
 
     success_alignment: float = 0.93
     """``pitch_alignment`` at which the stance counts as achieved -- about 68 degrees of pitch, just

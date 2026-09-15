@@ -69,6 +69,7 @@ def gated_termination(
     gate_command_name: str = "jump",
     gate_window_s: float = 1.5,
     gate_standing_speed: float = 0.1,
+    gate_biped_descent_grace: bool = True,
 ) -> torch.Tensor:
     """Suppress a termination outside its gate. Same wrapping contract as :func:`gated`.
 
@@ -78,9 +79,27 @@ def gated_termination(
     Note what this gives for free: a flip that has *failed* is still inverted when the window
     closes, at which point the orientation limit comes back and ends the episode. No separate
     "failed the commanded move" detector is needed.
+
+    ``gate_biped_descent_grace`` is where that free failure detector needed an exception, and it is
+    on by default. A released stance is not a failed move: the robot is 75 degrees from level
+    because it was told to be until the step before, and the descent out of that takes about a
+    second. Thresholding the gate on ``enabled`` therefore ended every bipedal episode 0.02 s after
+    the release -- measured, all 16 replicas, which is a step function and not a fall -- so the
+    descent could not be performed, and the reward design written around it -- the faded hand-back
+    in :func:`~.gating._biped_window` -- never applied to anything.
+    Holding the suppression over ``HandstandCommand.descending`` gives the descent its 1.5 s and
+    then ends the episode of a robot that is still down there, which is the same "failed and stayed
+    inverted" detector one level out. ``base_contact`` is untouched throughout and stays the
+    immediate failure: the grace permits a descent, not a face-plant.
     """
     mask = gate_mask(
-        env, gate, gate_command_name, gate_window_s, crossfade_s=0.0, standing_speed=gate_standing_speed
+        env,
+        gate,
+        gate_command_name,
+        gate_window_s,
+        crossfade_s=0.0,
+        standing_speed=gate_standing_speed,
+        biped_descent_grace=gate_biped_descent_grace,
     )
     return term(env, **(term_params or {})) & (mask > 0.5)
 

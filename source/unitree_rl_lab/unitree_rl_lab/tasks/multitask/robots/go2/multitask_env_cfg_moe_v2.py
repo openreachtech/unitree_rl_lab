@@ -10,7 +10,14 @@ running, 0.000 inside an acrobatic window, and 0.001 in the hand-back bin where 
 contribute. `Go2-Multitask-Biped` takes the slot, and every expert now starts from a trained policy.
 
 *The bipedal stance is commanded.* Once per episode in a share of them, held for ten seconds, with
-the stance chosen by the commanded heading.
+the stance chosen by the commanded heading -- and, since the descent fix, released and come down
+from within the same episode. The release used to end the episode 0.02 s later: the orientation
+limit is gated on the stance being commanded and came back as a step function at a robot still
+pitched 75 degrees, so every part of this file written about the descent -- the trigger range, the
+faded hand-back, the claim that the returning locomotion rewards were the pressure to come down --
+was describing a state the policy was never in. ``HandstandCommand.descending`` is now that state
+and ``gated_termination`` suppresses the limit over it, so the descent gets the 1.5 s it takes and
+the locomotion rewards waiting on the other side are something the policy can actually reach.
 """
 
 from __future__ import annotations
@@ -47,6 +54,13 @@ a settled state rather than from the spawn transient. The upper bound leaves at 
 of quadruped afterwards, which is what makes the descent learnable at all: the bipedal expert has
 never come down -- its own episodes end with it still up -- so the only pressure is the locomotion
 rewards returning when the window closes.
+
+That is now the whole of it, and it is worth being explicit about what it leaves open. Those two
+seconds are the *only* thing making a descent worth more than ending the episode there, and at the
+top of this range they are the whole remainder: an episode whose stance starts at 8 s ends its hold
+at 18 s with about 4 units of tracking reward left to play for. If the policy comes down by putting
+its trunk on the floor rather than on its feet, that is the first number to move -- either this
+bound, or a positive term paid for arriving back on four feet.
 """
 
 BIPED_EPISODE_SHARE = 0.5
@@ -81,6 +95,10 @@ class MoeV2CommandsCfg(MoeCommandsCfg):
         # Offered only below a speed the curriculum raises. The expert has only ever risen from
         # rest, so a stance commanded at the full ceiling is a state it has never seen.
         initial_takeoff_speed_limit=0.3,
+        # The descent. Held at the default, and named here because this is the only task where it
+        # does anything -- the two expert tasks pin the stance on, so it is never released there.
+        # See `HandstandCommand.descending` for what the 1.5 s covers and what it cost to leave out.
+        release_grace_s=1.5,
         debug_vis=False,
     )
 

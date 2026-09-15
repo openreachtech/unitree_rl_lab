@@ -166,6 +166,19 @@ def main():
     margin = {name: torch.zeros(steps, num_envs, device=device) for name in joint_groups}
     position = {name: torch.zeros(steps, num_envs, device=device) for name in joint_groups}
     alive = torch.zeros(steps, num_envs, dtype=torch.bool, device=device)
+    # The descent: the part of the stance the merged task only started performing once the
+    # orientation limit stopped ending the episode at the release. Recorded here because it cannot
+    # be read off anything else the script collects -- an episode that ends the instant the stance
+    # is released and one that comes down cleanly and keeps running produce the same pitch, height
+    # and contact traces right up to the release.
+    descending = torch.zeros(steps, num_envs, dtype=torch.bool, device=device)
+    back_down = torch.zeros(steps, num_envs, dtype=torch.bool, device=device)
+    # The rise, on the same footing as the descent. `handstand/success` in the training log is a
+    # population mean sampled at one instant per iteration and mixes the environments that were
+    # never commanded into a stance with the ones that were; per window it is a rate, which is what
+    # a comparison against another checkpoint needs.
+    stance_on = torch.zeros(steps, num_envs, dtype=torch.bool, device=device)
+    stance_ok = torch.zeros(steps, num_envs, dtype=torch.bool, device=device)
     ended = torch.zeros(num_envs, dtype=torch.bool, device=device)
 
     obs = env.get_observations()
@@ -184,6 +197,10 @@ def main():
         hip_z[step] = robot.data.body_pos_w[:, stance_hip_ids, 2].mean(dim=-1)
         head_z[step] = robot.data.body_pos_w[:, head_ids, 2].amin(dim=-1)
         link_force[step] = torch.linalg.norm(sensor.data.net_forces_w[:, watch_ids, :], dim=-1)
+        descending[step] = command.descending
+        back_down[step] = command.descending & command.is_quadruped
+        stance_on[step] = command.enabled
+        stance_ok[step] = command.success
         head_force[step] = torch.linalg.norm(
             env.unwrapped.scene.sensors["contact_forces"].data.net_forces_w[:, head_sensor_ids, :], dim=-1
         ).amax(dim=-1)
@@ -237,6 +254,32 @@ def main():
           f"   delay {'per-env 0-6' if args_cli.delay is None else args_cli.delay} steps")
     print(f"fell before the end: {int((~live).sum() + (counts < steps).sum() - (~live).sum())} / {num_envs}"
           f"   (episodes that reset early)")
+    print()
+    attempted = (stance_on & alive).any(dim=0) & live
+    if int(attempted.sum()) > 0:
+        reached = (stance_ok & alive).any(dim=0) & attempted
+        on_steps = (stance_on & alive).sum(dim=0).clamp(min=1)
+        held = (stance_ok & alive).sum(dim=0).float() / on_steps.float()
+        print(f"  stance:  {int(reached.sum())} / {int(attempted.sum())} commanded windows reached the"
+              f" stance (upright with the lifted end clear)")
+        print(f"  held, fraction of the window        {quantiles(held[reached])}")
+    else:
+        print("  stance:  no stance was commanded in this run")
+    # Reported over the environments whose stance was actually released inside the recorded window,
+    # which is none of them on the two expert tasks -- those pin the stance on for the episode.
+    released = (descending & alive).any(dim=0) & live
+    if int(released.sum()) == 0:
+        print("  descent: no stance was released in this window (pinned task, or the run is too short)")
+    else:
+        recovered = (back_down & alive).any(dim=0) & released
+
+        def first_step(series: torch.Tensor) -> torch.Tensor:
+            return series.float().argmax(dim=0)
+
+        delay = (first_step(back_down) - first_step(descending)).float() * step_dt
+        print(f"  descent: {int(recovered.sum())} / {int(released.sum())} released stances came back down"
+              f" to a level four-footed stance inside the grace")
+        print(f"  time from release to back down (s)  {quantiles(delay[recovered])}")
     print()
     print("  quantity                        distribution across environments")
     print(f"  sagittal pitch, peak    (deg)   {quantiles(peak(pitch))}")

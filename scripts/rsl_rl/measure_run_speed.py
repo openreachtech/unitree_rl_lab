@@ -42,6 +42,7 @@ Example
 """
 
 import argparse
+import os
 import sys
 
 from isaaclab.app import AppLauncher
@@ -211,9 +212,12 @@ def main() -> None:
     if args_cli.checkpoint:
         resume_path = retrieve_file_path(args_cli.checkpoint)
     else:
-        resume_path = get_checkpoint_path(
-            f"logs/rsl_rl/{agent_cfg.experiment_name}", agent_cfg.load_run, agent_cfg.load_checkpoint
-        )
+        # Absolute, as `measure_stance` and `measure_motion` both resolve it. Relative, the run
+        # directory `get_checkpoint_path` resolves gets joined onto the root a second time and the
+        # lookup fails on a doubled path -- only when `--checkpoint` is not given, which is why it
+        # survived this long.
+        root = os.path.abspath(os.path.join("logs", "rsl_rl", agent_cfg.experiment_name))
+        resume_path = get_checkpoint_path(root, agent_cfg.load_run, agent_cfg.load_checkpoint)
     print(f"[INFO] checkpoint: {resume_path}")
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
     runner.load(resume_path)
