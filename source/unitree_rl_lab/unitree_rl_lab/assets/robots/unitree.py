@@ -18,7 +18,7 @@ from isaaclab.utils import configclass
 from unitree_rl_lab.assets.robots import unitree_actuators
 
 UNITREE_MODEL_DIR = "/home/tak/unitree/unitree_model"  # Replace with the actual path to your unitree_model directory
-UNITREE_ROS_DIR = "path/to/unitree_ros"  # Replace with the actual path to your unitree_ros package
+UNITREE_ROS_DIR = "/home/tak/unitree/unitree_ros"  # Replace with the actual path to your unitree_ros package
 
 
 @configclass
@@ -173,6 +173,173 @@ GO2_CORRECTED_ACTUATOR_CFG = UNITREE_GO2_CFG.replace(
         ),
     },
 )
+
+# ===========================================================================
+# A2: Unitree's large quadruped, the same leg topology as Go2 one size up.
+#
+# Built from the URDF rather than a USD because there is no A2 under
+# ``UNITREE_MODEL_DIR`` -- unitree_ros ships ``a2_description``, and it already has
+# what this repo's task configs need: ``FL/FR/RL/RR_foot`` links carried by fixed
+# joints marked ``dont_collapse="true"`` (so the URDF importer keeps them and every
+# ``.*_foot`` body regex resolves), and Go2's exact joint names and sign conventions
+# (abduction about X, thigh/calf about Y, calf negative).
+#
+# Two places where A2 differs from Go2 structurally, both handled by the task configs
+# rather than here:
+#   * the trunk link is ``base_link``, not ``base``.
+#   * there are no ``Head_*`` links, and ``*_hip`` carries no collision geometry at
+#     all -- so no contact term can ever fire on a hip.
+#
+# Dimensions against Go2, the numbers every scaled quantity in the A2 tasks derives
+# from:
+#                       Go2      A2      ratio
+#   total mass         16.087   40.071    2.49
+#   trunk mass          6.921   19.651    2.84
+#   thigh / calf        0.213   0.275     1.29
+#   hip offset x        0.1934  0.25944   1.34
+#   foot radius         0.022   0.032     1.45
+#   nominal base z      0.32    0.43      1.34
+#   effort hip/calf     23.7/45.43  120/180
+# ===========================================================================
+# Torque-speed curve points, derived in the actuator comment inside UNITREE_A2_CFG below.
+# Y2/X2 are a2_description's own effort/velocity limits; Y1/X1 apply Go2's two
+# GO-M8010-6 datasheet ratios (Y1/Y2 = 0.8633, X1/X2 = 0.45) to them.
+A2_PEAK_TORQUE_HIP = 120.0
+A2_PEAK_TORQUE_CALF = 180.0
+A2_PUSH_TORQUE_HIP = 103.59
+A2_PUSH_TORQUE_CALF = 155.38
+A2_NO_LOAD_SPEED_HIP = 22.0
+A2_NO_LOAD_SPEED_CALF = 14.6667
+A2_KNEE_SPEED_HIP = 9.9
+A2_KNEE_SPEED_CALF = 6.6
+
+UNITREE_A2_CFG = UnitreeArticulationCfg(
+    spawn=UnitreeUrdfFileCfg(
+        asset_path=f"{UNITREE_ROS_DIR}/robots/a2_description/urdf/a2.urdf",
+        # The mesh references are "../meshes/*.STL" relative to the URDF, so the file is
+        # read where it lives rather than through UnitreeUrdfFileCfg.replace_asset(),
+        # which flattens the URDF and its meshes into one /tmp directory and would break
+        # that relative path. Nothing here modifies the collisions, so there is no reason
+        # to copy it.
+        #
+        # Capsule replacement off: A2's only cylinder is the 0.048 m x 0.12 m collar at
+        # the top of each thigh, and a capsule keeps the radius while adding a hemisphere
+        # at each end -- 4.8 cm of new geometry pushing into the hip it rotates against,
+        # with self-collisions enabled.
+        replace_cylinders_with_capsules=False,
+    ),
+    init_state=ArticulationCfg.InitialStateCfg(
+        # 12 cm above the 0.43 m stance, matching the 8 cm Go2 spawns above its own 0.32.
+        pos=(0.0, 0.0, 0.55),
+        # Identical to Go2's: the leg is geometrically similar (equal-length links, same
+        # joint axes and signs), so the same angles give the same stance shape one size
+        # up. All four are well inside A2's limits -- hip +-1.01, front thigh
+        # (-2.34, 3.15), rear thigh (-1.56, 3.94), calf (-2.77, -0.54).
+        joint_pos={
+            ".*R_hip_joint": -0.1,
+            ".*L_hip_joint": 0.1,
+            "F[L,R]_thigh_joint": 0.8,
+            "R[L,R]_thigh_joint": 1.0,
+            ".*_calf_joint": -1.5,
+        },
+        joint_vel={".*": 0.0},
+    ),
+    # ---------------------------------------------------------------------------
+    # Actuators, reconstructed the same way Go2's were rather than guessed.
+    #
+    # Working out where GO2_CORRECTED_ACTUATOR_CFG's numbers come from makes the whole
+    # curve recoverable for A2, because a2_description encodes its limits the same way
+    # go2_description does -- effort x velocity is one constant across all three joints
+    # (713 W on Go2, 2640 W on A2), i.e. the URDF states the two ends of the motor's
+    # torque-speed line, not an arbitrary cap:
+    #
+    #   Go2 cfg   URDF                        -> what the URDF field actually is
+    #   Y2 23.4   effort   23.7 (hip/thigh)      peak torque, torque opposing velocity
+    #   Y2 45.43  effort   45.43 (calf)          exact match
+    #   X2 30.0   velocity 30.1 (hip/thigh)      no-load speed
+    #
+    # That leaves two ratios, both from the GO-M8010-6 datasheet and both identical
+    # across Go2's hip/thigh and calf, so they are properties of the motor family rather
+    # than of one joint:
+    #
+    #   Y1/Y2 = 20.2/23.4 = 39.22/45.43 = 0.8633   push torque against peak torque
+    #   X1/X2 = 13.5/30.0                = 0.45    knee point against no-load speed
+    #
+    # Applied to A2's own URDF limits (120/180 Nm, 22.0/14.667 rad/s) that gives the
+    # numbers below. Y2 and X2 are A2 data; Y1 and X1 carry Go2's two datasheet ratios
+    # across, which is the one assumption here and the thing to replace if A2's own
+    # datasheet ever turns up.
+    #
+    # Fs, Fd and armature are read straight out of a2.xml's joint defaults, exactly as
+    # Go2's Fs 0.2 / Fd 0.1 / armature 0.01 are read out of go2.xml. A2's are much
+    # larger, and the calf's larger still -- a2.xml gives frictionloss 1.0/1.0/3.0 and
+    # damping 0.2/0.2/1.0 against go2.xml's flat 0.2 and 0.1. PhysX-side ``friction``
+    # stays 0 so the dry term is not counted twice.
+    #
+    # Stiffness and damping are the only pair with no source anywhere: a MuJoCo model is
+    # torque-controlled, so neither a2.xml nor go2.xml carries a gain. These are Go2's
+    # 25 / 0.5 scaled by m*g*L, 16.087 x 0.213 -> 40.071 x 0.275, a factor of 3.22. The
+    # values below were set from 3.44, an earlier figure taken from go2.xml's 15.2 kg
+    # rather than go2_description's 16.087 kg; they are 7% stiffer than 3.22 asks for and
+    # are kept because the stance measurement below, not the ratio, is what settles them.
+    # Measured
+    # against Go2 rather than asserted: released at its default angles on flat ground and
+    # left for 120 control steps, A2 settles at 0.360 m against the 0.428 m those angles
+    # describe -- a 15.8% squat, where Go2 settles at 0.277 against 0.329, 15.6%. The two
+    # robots sag by the same fraction, which is what the scaling was trying to buy.
+    #
+    # Note for anyone reading Go2's block above: its calf X1/X2 stay at the hip/thigh
+    # motor's 13.5/30.0 while its calf Y1/Y2 were scaled through the 1.94:1 calf gearbox.
+    # A gearbox divides speed by the same ratio it multiplies torque, and go2_description
+    # agrees (calf velocity 15.7, not 30.1), so Go2's calf is modelled about twice as
+    # fast as its own URDF says. Left alone -- that lineage's checkpoints were trained
+    # against it -- but not reproduced here: A2's X2 comes from A2's URDF per joint.
+    # ---------------------------------------------------------------------------
+    actuators={
+        "A2": unitree_actuators.UnitreeActuatorCfg(
+            joint_names_expr=[".*"],
+            stiffness=86.0,
+            damping=1.72,
+            friction=0.0,
+            Y1={
+                ".*_hip_joint": A2_PUSH_TORQUE_HIP,
+                ".*_thigh_joint": A2_PUSH_TORQUE_HIP,
+                ".*_calf_joint": A2_PUSH_TORQUE_CALF,
+            },
+            Y2={
+                ".*_hip_joint": A2_PEAK_TORQUE_HIP,
+                ".*_thigh_joint": A2_PEAK_TORQUE_HIP,
+                ".*_calf_joint": A2_PEAK_TORQUE_CALF,
+            },
+            X1={
+                ".*_hip_joint": A2_KNEE_SPEED_HIP,
+                ".*_thigh_joint": A2_KNEE_SPEED_HIP,
+                ".*_calf_joint": A2_KNEE_SPEED_CALF,
+            },
+            X2={
+                ".*_hip_joint": A2_NO_LOAD_SPEED_HIP,
+                ".*_thigh_joint": A2_NO_LOAD_SPEED_HIP,
+                ".*_calf_joint": A2_NO_LOAD_SPEED_CALF,
+            },
+            # a2.xml <default class="*_joint">: frictionloss -> Fs, damping -> Fd.
+            Fs={
+                ".*_hip_joint": 1.0,
+                ".*_thigh_joint": 1.0,
+                ".*_calf_joint": 3.0,
+            },
+            Fd={
+                ".*_hip_joint": 0.2,
+                ".*_thigh_joint": 0.2,
+                ".*_calf_joint": 1.0,
+            },
+            # a2.xml gives all twelve joints armature 0.03.
+            armature=0.03,
+        ),
+    },
+    # A2's twelve joints carry Go2's names, so the SDK ordering is Go2's.
+    joint_sdk_names=UNITREE_GO2_CFG.joint_sdk_names.copy(),
+)
+
 
 UNITREE_GO2W_CFG = UnitreeArticulationCfg(
     # spawn=UnitreeUrdfFileCfg(
