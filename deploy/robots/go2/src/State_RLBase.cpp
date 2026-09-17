@@ -115,7 +115,7 @@ REGISTER_OBSERVATION(keyboard_base_height_command)
     const float h_max = ranges[1].as<float>();
     const float h_mid = 0.5f * (h_min + h_max);
 
-    static float cmd = h_max; // start standing
+    static float cmd = h_mid; // start at middle (m), not stand (t)
 
     if (keyboard->consume("t"))
     {
