@@ -290,15 +290,16 @@ gym.register(
 # ===========================================================================
 # Experimental: Go2-Blind-GRU-Phase4 plus a Livox MID-360, consuming the real scan
 # sequence at the hardware's rate (4,000 rows/step = 200k pts/s at 50 Hz, of which
-# every 4th is cast) and blocked by the robot's own collision geometry. Display-only
+# every 4th is cast). The body is transparent, matching the self-filtered cloud the
+# deployed publisher produces. Display-only
 # observation group; policy inputs unchanged, so Go2-Blind-GRU-Phase4 checkpoints
 # still load. There is no mid360 experiment folder, so play needs that checkpoint
 # passed explicitly:
 #   python scripts/rsl_rl/play.py --task Go2-Blind-GRU-Mid360-Phase4 --num_envs 4 \
 #       --checkpoint logs/rsl_rl/go2_blind_gru_phase4/<run>/model_7300.pt
-# Green cells are measured this step, red are held from an earlier one; the legs
-# should sweep red streaks through the map. Flip MID360_DYNAMIC_MESH in
-# velocity_env_cfg_mid360.py to see the same run with the body transparent.
+# Green cells are measured this step, red are held from an earlier one. Flip
+# MID360_DYNAMIC_MESH in velocity_env_cfg_mid360.py to make the body opaque and
+# see the legs sweep streaks through the map.
 # ===========================================================================
 gym.register(
     id="Go2-Blind-GRU-Mid360-Phase4",

@@ -75,13 +75,17 @@ every ray keeps its elevation exactly and the band never moves.
 
 Self-occlusion
 --------------
-The robot blocks its own rays, which the stock IsaacLab ``RayCaster`` cannot do -- it casts
-against one static mesh with its transform baked at init, so the body is transparent and a
-ray fired past a leg still reports the ground behind it. ``MID360_DYNAMIC_MESH`` (on by
-default) swaps in ``OccludedRollingLivoxSensor``, which carries the robot's collision
-geometry as a second warp mesh moving with the bodies and drops any ray the body catches. In
-play that shows up as red (held) cells sweeping with the gait where a leg crosses the field
-of view. See ``sensors/robot_occluder.py`` and ``MID360_DYNAMIC_MESH`` for what it costs.
+The stock IsaacLab ``RayCaster`` cannot model it -- it casts against one static mesh with
+its transform baked at init, so the body is transparent and a ray fired past a leg still
+reports the ground behind it. ``MID360_DYNAMIC_MESH`` swaps in
+``OccludedRollingLivoxSensor``, which carries the robot's collision geometry as a second warp
+mesh moving with the bodies, so the body catches the rays it should.
+
+**Off by default**, because the deployed stack removes the robot's own returns before the
+height map is built -- it knows where its links are from forward kinematics and deletes the
+points inside them. Train against a transparent body and sim matches that filtered cloud;
+model the occlusion and sim carries self-hits the hardware never delivers. See
+``MID360_DYNAMIC_MESH`` for the argument the other way and what it costs.
 
 Note this is the *sensor's own* robot only. Other robots and any other dynamic object are
 still invisible -- at ``env_spacing`` 2.5 m against a 1.4 x 1.0 m map window that does not
@@ -138,7 +142,8 @@ hardware's rate, so the 0.1 s elevation sweep is untouched -- measured against t
 tenths of a degree and a few cm. Set to 1 for the sensor's full point rate."""
 
 MID360_OCCLUDER_MODE = "hit"
-"""What a ray that lands on the robot reports. Needs ``MID360_DYNAMIC_MESH``.
+"""What a ray that lands on the robot reports. Inert unless ``MID360_DYNAMIC_MESH`` is on,
+which by default it is not -- the body is transparent and no ray lands on the robot at all.
 
 ``"hit"`` returns the point on the robot's own surface, so the leg or belly the beam
 actually struck appears in the height map as if it were terrain. That is what the raw point
@@ -164,30 +169,42 @@ The near field is where it lands, because that is where the robot's own body is.
 taller than any Phase 4 wall, and it moves with the gait.
 """
 
-MID360_DYNAMIC_MESH = True
+MID360_DYNAMIC_MESH = False
 """Whether the robot's own body blocks its rays -- see ``sensors/robot_occluder.py``.
 
-On, the sensor is ``OccludedRollingLivoxSensor``: the robot's collision geometry becomes a
-second warp mesh that moves with the bodies each step, and a ray that would have gone through
-a leg is dropped rather than reporting the ground behind it. Off, it is the plain
-``RollingLivoxSensor`` and the robot is transparent, which is what the stock IsaacLab
-``RayCaster`` gives you and what every other LiDAR task in this repo still does.
+Off, the sensor is the plain ``RollingLivoxSensor``: the robot is transparent, a ray fired
+past a leg reports the ground behind it, and the map has no self-hits in it. That is what the
+stock IsaacLab ``RayCaster`` gives you and what every other LiDAR task in this repo does.
 
-Default on because transparency is not a small error here. The L1 sits at the nose and looks
-down and back; the front hips are 9.6 cm behind it, so much of the map's rear half is reached
-by rays that pass right by a leg. Left transparent, those cells come back *measured* and
-correct where the hardware would have no data at all -- so the map's unobserved pattern is
-wrong, and wrong in a gait-correlated way, which is exactly the structure a height-map
-encoder would otherwise learn to rely on. Measured standing still on flat ground, the body
-takes 5.1 percentage points of the returns (1,000 rays -> about 51 blocked per step); walking
-and stepping over Phase 4's walls swings the legs further and takes more.
+On, it is ``OccludedRollingLivoxSensor``: the robot's collision geometry becomes a second warp
+mesh that moves with the bodies each step, and a ray the body catches reports the body
+(``MID360_OCCLUDER_MODE = "hit"``) or nothing at all (``"drop"``).
 
-The cost is real: at 4,096 environments the occluder mesh is 18 bodies x 4,096 = 2.66M
+**Default off because the real robot does not deliver self-hits either.** The deployed
+height-map publisher computes its own link poses and deletes the points that fall inside them
+before anything downstream sees the cloud, so what the policy is trained on should be the
+filtered cloud -- and a transparent body produces exactly that, for free. Modelling the
+occlusion and leaving it on would put returns off the robot's own legs into the map that
+hardware never produces, and ``"hit"`` puts them there large: measured walking at 0.6 m/s with
+noise off, 48.6% of cells within 0.14 m of the L1 sit more than 5 cm above true ground, up to
+43 cm -- taller than any Phase 4 wall, and moving with the gait.
+
+The argument for turning it on is the *unobserved* pattern rather than the values. The L1 sits
+at the nose looking down and back; the front hips are 9.6 cm behind it, so much of the map's
+rear half is reached by rays that graze a leg. Transparent, those cells come back measured and
+correct where hardware -- after its self-filter -- would have no data at all, so sim's holes
+are in the wrong places, in a gait-correlated way. Standing still on flat ground the body
+accounts for 5.1% of the returns (about 51 of 1,000 rays per step); walking swings the legs
+further and takes more. ``MID360_OCCLUDER_MODE = "drop"`` is the setting that reproduces that
+hole pattern without inventing the self-hits; turn both on if the deploy-side filter turns out
+to punch the same holes.
+
+The cost, if you do: at 4,096 environments the occluder mesh is 18 bodies x 4,096 = 2.66M
 vertices and 4.90M triangles, whose BVH is refit every step. Measured against the same task
 without it, a training iteration goes 1.479 s -> 1.852 s (+25%), of which the dynamic mesh is
-+0.365 s -- about twice what the MID-360's own raycast costs. Narrow
-``occluder_body_names`` to buy some back: ``["base", "F[LR]_.*"]`` keeps the parts that
-actually shadow a forward-looking mount and roughly halves the triangle count."""
++0.365 s -- about twice what the MID-360's own raycast costs. Narrow ``occluder_body_names``
+to buy some back: ``["base", "F[LR]_.*"]`` keeps the parts that actually shadow a
+forward-looking mount and roughly halves the triangle count."""
 
 # ---------------------------------------------------------------------------
 # Mount: the real L1 (utlidar) pose from go2_description.urdf's ``radar_joint``,
@@ -296,8 +313,9 @@ Deliberately **not** modelled, and worth knowing before trusting a sim-to-real n
   * *Motion distortion.* A frame's points are acquired over 20 ms while the body moves,
     but every ray here is cast from one pose.
 
-Self-occlusion used to be on this list and no longer is: ``MID360_DYNAMIC_MESH`` puts the
-robot's own collision geometry in the way of its rays.
+Self-occlusion is deliberately *not* on this list. The body is transparent by default and
+that is the intended match to hardware, whose publisher filters its own points out; see
+``MID360_DYNAMIC_MESH`` for the switch and the reasoning.
 
 **Outliers are mis-scaled for this sensor, and it shows in play.** ``outlier_range`` is
 0.15 / 0.30 / 0.60 m, but this mount's ground returns run 0.15..1.6 m with a median near
@@ -406,10 +424,11 @@ def _attach_mid360(
     with, so it is a no-op there.
 
     ``dynamic_mesh`` decides whether the robot blocks its own rays; see
-    ``MID360_DYNAMIC_MESH`` for what it costs and why it defaults on. In play it is the one
-    switch worth flipping back and forth: with it on, a leg crossing the field of view leaves
-    a red (held) streak in the map that sweeps with the gait; with it off that same streak is
-    green and confidently wrong.
+    ``MID360_DYNAMIC_MESH`` for what it costs and why it defaults off. In play it is the one
+    switch worth flipping back and forth: off, the map under the robot is green everywhere,
+    matching the self-filtered cloud the hardware publishes; on, a leg crossing the field of
+    view leaves a streak that sweeps with the gait -- raised cells under ``"hit"``, red (held)
+    ones under ``"drop"``.
     """
     cfg.scene.mid360_scanner = _mid360_scanner_cfg(
         debug_vis=show_raw_points, dynamic_mesh=dynamic_mesh
