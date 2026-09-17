@@ -19,7 +19,7 @@ sys.path.pop(0)
 
 tasks = []
 for task_spec in gym.registry.values():
-    if task_spec.kwargs.get("env_cfg_entry_point", "").startswith(("locomotion.", "mimic.")):
+    if task_spec.kwargs.get("env_cfg_entry_point", "").startswith(("locomotion.", "mimic.", "dynamic.")):
         tasks.append(task_spec.id)
 
 import argparse
