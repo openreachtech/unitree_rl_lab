@@ -472,7 +472,9 @@ class LidarElevationMap(ManagerTermBase):
         self._prev_z = root_z.clone()
         self._pose_valid = torch.ones_like(self._pose_valid)
 
-    def _perturb(self, rel: torch.Tensor, finite: torch.Tensor, level: float) -> torch.Tensor:
+    def _perturb(
+        self, rel: torch.Tensor, finite: torch.Tensor, level: float, min_range: float
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Apply the paper's Position, Outliers and Tilt to the returns, per ray.
 
         ``rel`` is each hit relative to the sensor origin, so distance and direction are
@@ -480,6 +482,20 @@ class LidarElevationMap(ManagerTermBase):
         the distance moves the point along its own ray, so a shallow beam's 2 cm error
         lands 6 cm away across the ground, exactly as the sensor would. Adding the same
         error to a finished height grid could only ever move it vertically.
+
+        Returns the perturbed points *and* a narrowed validity mask. A ray whose perturbed
+        range falls below ``min_range`` is reported as a non-return rather than as a point
+        somewhere between the ground and the mount: no LiDAR reports a range shorter than
+        its own minimum.
+
+        What it replaces was never a negative range -- ``clamp(min=0.0)`` floored those at
+        zero, which is worse than it sounds. A range of zero is a point sitting exactly on
+        the sensor origin, and since these heights are inverted and the map takes an
+        ``amin``, such a point wins its cell outright and the blind disc around the mount
+        never refreshes to clear it. That is what the near-face conical spray was.
+
+        ``min_range=0.0`` disables the dropout entirely and leaves the clamp as the only
+        thing acting, which is the behaviour the Go2-HM-* fan lineage was measured against.
         """
         cond = self._condition
         distance = rel.norm(dim=-1, keepdim=True)
@@ -495,7 +511,16 @@ class LidarElevationMap(ManagerTermBase):
         is_outlier = torch.rand_like(distance) < self._outlier_prob[cond].view(-1, 1, 1)
         outlier = (torch.rand_like(distance) * 2.0 - 1.0) * outlier_mag
         error = torch.where(is_outlier, outlier, error)
-        rel = direction * (distance + error).clamp(min=0.0)
+        new_distance = distance + error
+        # A return shorter than the sensor's own minimum is not a point, it is a dropout.
+        # Gated on > 0 rather than applied unconditionally: at min_range=0.0 this must be an
+        # exact no-op, because the clamp below is then the only thing that acts and that is
+        # the behaviour the Go2-HM-* lineage was measured against. Without the gate, 0.0
+        # would still drop every ray whose perturbed range went negative -- a real change to
+        # a config that is meant to be pinned.
+        if min_range > 0.0:
+            finite = finite & (new_distance.squeeze(-1) >= min_range)
+        rel = direction * new_distance.clamp(min=0.0)
 
         # Tilt: rotate the returns about the sensor origin. Per-step stands in for the
         # IMU's gravity-direction error, which is what fixes "up" for the height values;
@@ -507,7 +532,7 @@ class LidarElevationMap(ManagerTermBase):
             torch.stack([tilt[:, 0], tilt[:, 1], torch.zeros_like(angle)], dim=-1), dim=-1, eps=1.0e-9
         )
         rot = matrix_from_quat(quat_from_angle_axis(angle, axis))
-        return torch.einsum("nij,nrj->nri", rot, rel)
+        return torch.einsum("nij,nrj->nri", rot, rel), finite
 
     def __call__(
         self,
@@ -524,6 +549,7 @@ class LidarElevationMap(ManagerTermBase):
         horizontal_fov: tuple[float, float] = (-180.0, 180.0),
         flat_fill: float = 0.0,
         noise: LidarNoiseCfg | None = None,
+        min_range: float = 0.0,
         motion_compensation: bool = True,
         debug_vis: bool = False,
         debug_vis_env_index: int | None = 0,
@@ -544,7 +570,9 @@ class LidarElevationMap(ManagerTermBase):
                 # Every ray leaves one point in the fan, so perturb them relative to that
                 # origin. ray_starts carries the mount offset in the sensor frame.
                 origin = sensor.data.pos_w + quat_apply(sensor.data.quat_w, sensor.ray_starts[:, 0])
-                perturbed = self._perturb(hits_w - origin.unsqueeze(1), finite, level)
+                perturbed, finite = self._perturb(
+                    hits_w - origin.unsqueeze(1), finite, level, min_range
+                )
                 hits_w = origin.unsqueeze(1) + perturbed
 
         # Carry the held map onto this step's pose before anything new is merged into it,

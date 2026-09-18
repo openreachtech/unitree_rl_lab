@@ -108,7 +108,10 @@ from unitree_rl_lab.sensors import (
     RollingLivoxSensorCfg,
 )
 from unitree_rl_lab.tasks.locomotion import mdp
-from unitree_rl_lab.tasks.locomotion.mdp.lidar_elevation_map import LidarNoiseCfg
+from unitree_rl_lab.tasks.locomotion.mdp.lidar_elevation_map import (
+    LidarNoiseCfg,
+    LidarNoiseConditionCfg,
+)
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_blind_phase4 import (
     RobotEnvCfgPhase4,
     RobotPlayEnvCfgPhase4,
@@ -133,13 +136,29 @@ MID360_SAMPLES_PER_STEP = 4000
 the 800,000-point file in 200 steps and repeats every 4 s. Change it and the elevation
 sweep changes period with it."""
 
-MID360_RAY_DOWNSAMPLE = 4
-"""Cast every n-th point of the window: 4,000 / 4 = 1,000 rays per step, 50k points/s.
+MID360_RAY_DOWNSAMPLE = 2
+"""Cast every n-th point of the window: 4,000 / 2 = 2,000 rays per step, 100k points/s.
 
 Thinning here rather than by shrinking ``samples`` keeps the window advancing at the
 hardware's rate, so the 0.1 s elevation sweep is untouched -- measured against the full
 4,000, each step's elevation band and median ground reach are the same to within a few
-tenths of a degree and a few cm. Set to 1 for the sensor's full point rate."""
+tenths of a degree and a few cm. Set to 1 for the sensor's full point rate.
+
+Raised 4 -> 2 on 2026-09-18, to put the point budget on the same footing as the deployed
+pipeline. That pipeline builds each map from **one 10 Hz scan with no accumulation**
+(~20,000 points) -- deliberately, because what accumulation buys on this sensor is RKO-LIO
+pose error, which costs the map more than the extra density gains it. This map refreshes at
+50 Hz and holds cells no beam reached, so five steps span the same 0.1 s: 5 x 2,000 = 10,000
+rays against the hardware's ~20,000, where a downsample of 4 gave only 5,000.
+
+Cost, estimated rather than re-measured: the 4,096-env benchmark put this sensor's own
+raycast at +0.173 s per iteration over the top-down baseline at 1,000 rays, so doubling the
+rays should add about that much again (~12% of an iteration)."""
+
+MID360_MIN_RANGE = 0.2
+"""Closest range the sensor reports (m). Fed to the scanner and to the height map's
+noise model, which drops a perturbed return shorter than this as a non-return rather
+than placing it on the mount -- see ``MID360_NOISE_CFG``."""
 
 MID360_OCCLUDER_MODE = "hit"
 """What a ray that lands on the robot reports. Inert unless ``MID360_DYNAMIC_MESH`` is on,
@@ -249,7 +268,7 @@ def _mid360_scanner_cfg(
         **occluder_kwargs,
         mesh_prim_paths=["/World/ground"],
         max_distance=20.0,
-        min_range=0.2,
+        min_range=MID360_MIN_RANGE,
         return_pointcloud=False,
         pointcloud_in_world_frame=False,
         enable_sensor_noise=False,
@@ -280,21 +299,137 @@ MID360_MAP_CELLS = (round(HEIGHT_SCAN_SIZE[0] / HEIGHT_SCAN_RESOLUTION) + 1) * (
 )
 """609: the full 29 x 21 grid, nothing excluded."""
 
-MID360_NOISE_CFG = LidarNoiseCfg()
-"""Measurement noise. Same magnitudes and the same weak/nominal/strong 60/30/10 draw as
-the fan's ``GO2_LIDAR_NOISE_CFG``, but a separate instance so tuning one does not move the
-other. The ramp fields are inert at their defaults (``start_iteration == full_iteration``
-means full magnitude from step 0), matching every other task in the repo; set them to fade
-the noise in over training. ``scale=0.0`` gives a clean reference run.
+MID360_NOISE_CFG = LidarNoiseCfg(
+    weak=LidarNoiseConditionCfg(
+        probability=0.60, range_std=0.005, tilt_step_std=0.25, tilt_episode_std=0.125,
+        outlier_prob=0.0025, outlier_range=0.075,
+        odom_xy_step_std=0.005, odom_xy_bias_std=0.005,
+        odom_yaw_step_std=0.25, odom_yaw_bias_std=0.25,
+    ),
+    nominal=LidarNoiseConditionCfg(
+        probability=0.30, range_std=0.01, tilt_step_std=0.5, tilt_episode_std=0.25,
+        outlier_prob=0.005, outlier_range=0.15,
+        odom_xy_step_std=0.01, odom_xy_bias_std=0.01,
+        odom_yaw_step_std=0.5, odom_yaw_bias_std=0.5,
+    ),
+    strong=LidarNoiseConditionCfg(
+        probability=0.10, range_std=0.02, tilt_step_std=1.0, tilt_episode_std=0.5,
+        outlier_prob=0.015, outlier_range=0.30,
+        odom_xy_step_std=0.025, odom_xy_bias_std=0.025,
+        odom_yaw_step_std=1.5, odom_yaw_bias_std=1.5,
+    ),
+)
+"""Measurement noise, weak/nominal/strong drawn 60/30/10 per episode. A separate instance
+from the fan's ``GO2_LIDAR_NOISE_CFG``, which still carries ``LidarNoiseCfg``'s class
+defaults -- the magnitudes above override them and move this sensor only. The ramp fields
+are inert at their defaults (``start_iteration == full_iteration`` means full magnitude from
+step 0); ``scale=0.0`` gives a clean reference run.
 
-The nominal ``range_std`` of 2 cm happens to sit right on the MID-360's own range
-precision, so the Position term is roughly calibrated for this sensor -- confirm against
-the datasheet before leaning on it.
+Halved 2026-09-18: every magnitude in all three conditions is exactly half what it was, and
+the mix stays 60/30/10. This is a training decision, not a calibration -- see below for what
+the hardware actually measures, which is lower still. Noise here is a robustness budget; the
+policy should not be tuned to the one unit, one surface and one posture that got measured.
+
+What the hardware measures
+==========================
+A stationary Go2 on flat ground, 299 s of rosbag (``bag_sport_0910_2012``) through the
+deployed MID-360 + RKO-LIO + ``heightmap_generator`` stack, 2,941 published maps. The robot
+does not move, so each cell's variation over time *is* the pipeline's noise, measured where
+it matters -- at the map the policy reads, not at the raw range:
+
+    per-cell std          2.12 mm mean, 2.00 mm median, 4.33 mm worst
+    per-cell peak-to-peak 19.9 mm mean
+    valid_ratio           ~1.0 on all 170 cells outside the self-crop
+    distance dependence   weak; 1.5-3 mm across the whole 1.6 x 1.0 m grid
+
+Two things to carry away from that. First, **the delivered map is very quiet** -- quieter
+than any condition here, including weak. Second, that is an aggregation result rather than a
+clean sensor: the deployed stack voxel-filters at 3 cm into 10 cm cells and averages roughly
+a hundred points per cell, which is how a ~2 cm per-point range error becomes a 2 mm cell.
+This map bins ~2,000 rays into 609 cells at 5 cm and takes an ``amin``, so most cells see one
+to three returns, the per-ray error passes through nearly intact, and ``amin`` over a couple
+of noisy samples is biased on top. The same per-ray number therefore lands very differently
+in the two pipelines, and the magnitudes here have to be read as *map* noise, not as the
+sensor's per-point precision.
+
+Which terms that measurement can and cannot constrain:
+
+  * ``range_std`` and ``tilt_step_std`` -- constrained, and both sit above what it found.
+    Deliberately: a tilt about the mount lifts a cell by ``r sin(theta)``, so at this grid's
+    0.7 m reach nominal's 0.5 deg is 6 mm, three times the measured mean. The bag is
+    stationary and RKO-LIO's gravity direction is best observed exactly then, so nothing in
+    it covers the walking case.
+  * ``outlier_prob`` / ``outlier_range`` -- the measurement says nothing gross ever reaches
+    the deployed map: across ~500k cell observations the largest excursion any cell made was
+    20 mm. Kept anyway, at half the old rate, because the term models an equipment fault
+    rather than the sensor's noise floor, and one 300 s bag from a healthy unit cannot bound
+    how often a faulty one misbehaves. Making the magnitude proportional to range was
+    considered for this and **rejected**: a wild reading from a broken unit does not know how
+    far the target was.
+  * ``tilt_episode_std`` -- not constrained. A fixed mounting error is constant in time and
+    contributes exactly zero to a temporal std; this bag cannot see it at all.
+  * ``odom_*`` -- not constrained. ``_corrupt_odometry`` scales with distance travelled and
+    the robot was stationary, so none of these terms were active during the measurement.
+
+The near-face spray, and why the legs were never the cause
+==========================================================
+``_perturb`` used to write ``(distance + error).clamp(min=0.0)``, so a short outlier landed
+between the ground and the sensor -- at the limit exactly on the mount. Every ray leaves the
+L1 at the nose and the map keeps the highest return per cell (an ``amin`` on these inverted
+heights), so those always won their cell, and the blind disc inside 0.143 m is never
+refreshed, so nothing cleared them: a one-sided cone of raised cells with its apex at the
+robot's face. It now takes ``min_range`` (``MID360_MIN_RANGE``) and reports such a ray as a
+non-return instead, which is what the hardware does -- no LiDAR publishes a range below its
+own minimum.
+
+This is worth stating plainly because it is easy to attribute to self-occlusion and it is
+not: measured cell-for-cell against true terrain, the innermost band ran 46.3% of cells more
+than 5 cm high *with* noise and 4.5% without, and turning the occluder on *reduced* the
+overall rate (7.1% against 9.1%) rather than causing it. Making the body transparent does
+nothing to the cone either way. Outliers are kept at a rate that still produces it -- half
+the old one -- so the ``min_range`` dropout is the only thing holding it down.
+
+Both halves checked back in sim, same protocol as the bag
+=========================================================
+Standing still on a flat *generated* tile, trained Phase 4 policy, 8 envs x 500 steps (10 s),
+per-cell std over the frames a beam actually landed in that cell. Left column is this config;
+right is the same run with the ``min_range`` dropout disabled, i.e. the old clamp:
+
+                                    min_range 0.2    old clamp     bag
+    per-cell std, mean                   4.96 mm       6.47 mm    2.12 mm
+    per-cell std, median                 4.11          4.13       2.00
+    per-cell std, p95                    9.34         19.29          -
+    per-cell peak-to-peak, mean         35.4          46.5       19.9
+
+    near-face spray, cells reading >5 cm above the true flat ground
+      0.000-0.143 m (the blind disc)     3.45%        13.16%
+      0.143-0.30 m                       2.20%         5.58%
+      overall                            0.61%         1.58%
+    same, >15 cm
+      0.000-0.143 m                      0.00%         6.01%
+      overall                            0.00%         0.29%
+
+So the cone is a 13% effect in the blind disc even at these halved magnitudes, and the
+dropout takes it to 3.5% and removes every spike over 15 cm. Note the median std barely
+moves between the two columns -- the fix is entirely in the tail, which is what an outlier
+artifact should look like. Against the bag, this config sits at about 2x the delivered
+hardware noise, which is the intended margin.
+
+Two measurement notes, both of which cost a run to find:
+
+  * Do **not** use ``terrain_type="plane"`` for anything at this scale. That one enormous
+    quad raycasts in float32 to about a centimetre, and it put +-40 mm of spread on a
+    nominally flat ground -- which reads exactly like sensor noise and is ten times what is
+    being measured. A generated flat tile is a finite mesh and comes out at 1.4 mm.
+  * Compute the statistic over the frames a cell was actually measured. A held cell repeats
+    its last value, and a cell no beam has ever reached holds ``flat_fill``, a convention
+    rather than a measurement; including those frames measures the fill policy. It matters
+    here because only ~25% of cells are measured per step, against the bag's ~100%.
 
 Three of the six augmentations in the reference paper (see ``mdp/lidar_elevation_map.py``)
 stay off because this sensor produces them from geometry rather than from a model:
-*Pruning* -- the 1,000-ray budget over 609 cells, plus the 10 Hz elevation sweep, already
-leaves whole annuli unmeasured for several steps at a time, which is a more realistic
+*Pruning* -- the ray budget over 609 cells, plus the 10 Hz elevation sweep, already leaves
+whole annuli unmeasured for several steps at a time, which is a more realistic
 temporally-correlated dropout than random patch removal; *Height* and *Robot Pose* -- a held
 cell carries whatever the terrain looked like when a beam last landed there, and is
 transported forward on simulated odometry rather than re-measured.
@@ -304,55 +439,17 @@ Deliberately **not** modelled, and worth knowing before trusting a sim-to-real n
   * *Incidence-angle dropout.* The mount is 0.273 m up and rays meet the ground at
     11..62 deg; a real return weakens and vanishes at grazing incidence, while the
     raycast always hits. This is the largest remaining gap, and it correlates with
-    range -- the sim is most optimistic exactly where the map is thinnest.
-  * *Blind zone.* ``min_range`` is a dead field on the ported sensor (only read inside
-    ``_apply_noise``, which is off), and the steepest rays land 0.15 m from the mount --
-    possibly inside the hardware's near cutoff.
+    range -- the sim is most optimistic exactly where the map is thinnest. Note the
+    measurement above found ``valid_ratio`` ~1.0 everywhere outside the self-crop, so on
+    flat ground at rest it costs nothing; a sloped or distant surface is another matter.
   * *Reflectivity dropout.* Dark, wet and specular surfaces return nothing; there is no
     material information in the raycast to key off.
   * *Motion distortion.* A frame's points are acquired over 20 ms while the body moves,
-    but every ray here is cast from one pose.
+    but every ray here is cast from one pose. The deployed stack deskews with RKO-LIO.
 
 Self-occlusion is deliberately *not* on this list. The body is transparent by default and
 that is the intended match to hardware, whose publisher filters its own points out; see
 ``MID360_DYNAMIC_MESH`` for the switch and the reasoning.
-
-**Outliers are mis-scaled for this sensor, and it shows in play.** ``outlier_range`` is
-0.15 / 0.30 / 0.60 m, but this mount's ground returns run 0.15..1.6 m with a median near
-0.4 m, so a strong outlier is larger than the whole measurement. ``_perturb`` moves a point
-along its own ray, and the distance is clamped at zero, so a short outlier lands somewhere
-between the ground and the sensor -- at the limit, on the sensor itself. Every ray leaves
-the L1 at the nose, and the map keeps the *highest* return per cell (an ``amin`` on these
-inverted heights), so the near-side outliers always win their cell and the far-side ones
-never do. The result is a one-sided conical spray of raised cells with its apex at the
-robot's face, held in place by the previous-value fill.
-
-Measured against the true terrain, cell for cell, over 4 environments:
-
-    cells more than 5 cm above ground, by distance from the L1 mount
-    0.00-0.15 m   46.3% with noise, 4.5% without
-    0.15-0.30 m   12.9% / 1.1%
-    0.30-0.45 m    6.9% / 4.6%
-    0.60-0.80 m    2.3% / 1.9%
-
-The radial gradient is entirely the noise: without it the near field is no worse than the
-far field. The innermost band is worst because it is also the blind disc -- the steepest ray
-leaves at -62.3 deg from 0.273 m up, so nothing lands within 0.143 m of the mount and a
-spike there is never overwritten. Self-occlusion is not the cause and in fact reduces it
-(7.1% of cells over 5 cm with the occluder, 9.1% without).
-
-Making the magnitude proportional to the measured distance was considered and **rejected**:
-a wild reading from a faulty unit does not know how far away the target was, and scaling the
-error by range would model only the mixed-pixel half of the phenomenon. The absolute
-magnitude stays.
-
-What that leaves is the near-face spray, which is a real consequence of the model and will
-reappear whenever ``scale`` is non-zero. Two levers that do not touch the absolute-magnitude
-decision: lower ``outlier_range`` / ``outlier_prob``, or stop treating a short outlier as a
-point at the sensor -- ``rel = direction * (distance + error).clamp(min=0.0)`` in ``_perturb``
-puts it exactly on the mount, and no LiDAR reports a range below its own minimum. Dropping
-those as non-returns instead would keep faults arbitrary while removing the one artifact that
-is physically impossible.
 """
 
 
@@ -375,6 +472,7 @@ def _mid360_map_term(debug_vis: bool, debug_vis_env_index: int | None = None) ->
             "horizontal_fov": (-180.0, 180.0),
             "flat_fill": GO2_FLAT_SCAN_VALUE,
             "noise": MID360_NOISE_CFG,
+            "min_range": MID360_MIN_RANGE,
             "debug_vis": debug_vis,
             "debug_vis_env_index": debug_vis_env_index,
         },
