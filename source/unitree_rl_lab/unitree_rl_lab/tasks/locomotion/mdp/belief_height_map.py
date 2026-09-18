@@ -1,9 +1,16 @@
 """The frozen terrain encoder, run as an observation.
 
-One of the four arms in ``sandbox/TERRAIN_ENCODER.md``'s follow-up experiment feeds
-the policy a *denoised* height grid: the LiDAR fan's noisy map passed through the
-belief encoder trained in ``scripts/rsl_rl/train_terrain_encoder.py``, whose weights
-are frozen. This term is where that encoder runs.
+Feeds the policy a *denoised* height grid: a noisy elevation map passed through the
+belief encoder of ``sandbox/TERRAIN_ENCODER.md``, whose weights are frozen. This term
+is where that encoder runs.
+
+Nothing in the repo currently instantiates it. The ``Go2-HM-*`` arms that did, the
+LiDAR fan that fed them and the encoder's own training stage have all been removed;
+this is kept because the encoder earned a small but real gain in terrain level, so it
+is worth being able to put back in front of a map without rebuilding it. What a caller
+has to supply is a ``noisy_map`` term whose width matches
+:data:`BELIEF_CROP_HALF_EXTENT_X` / ``_Y`` below and a ``checkpoint`` --
+:data:`BELIEF_ENCODER_CHECKPOINT` is the one that was adopted.
 
 Why here and not inside the policy network
 ------------------------------------------
@@ -20,9 +27,9 @@ already saves observations, so the update sees exactly the values the rollout di
 
 The awkward part
 ----------------
-The encoder needs the 45-dim proprioceptive vector, and in the perceptive
-environments that vector is the first half of the policy group -- which is the group
-this term's output goes into. A term cannot read the group it is part of, so the
+The encoder needs the 45-dim proprioceptive vector, and in an environment shaped like
+the one it was trained in that vector is the first half of the policy group -- which is
+the group this term's output goes into. A term cannot read the group it is part of, so the
 proprioception is rebuilt here from the same six ``mdp`` functions, in the same order,
 with the same scales, noise and clips, and in the same order the observation manager
 applies them (noise, then clip, then scale).
@@ -71,6 +78,18 @@ GO2_BLIND_PROPRIO_SPEC = (
 ``+-noise_half_width``; 0 means the policy group applies none to that term."""
 
 GO2_BLIND_PROPRIO_DIM = 45
+
+# The crop the encoder was trained against, widened from the top-down tasks' 0.30/0.20
+# because the fan that fed it had a blind cone that size. It lived in the fan's config
+# until that was removed; it is frozen here rather than re-derived, because the
+# checkpoint's input width is 388 cells and only this pair reproduces it.
+BELIEF_CROP_HALF_EXTENT_X = 0.40
+BELIEF_CROP_HALF_EXTENT_Y = 0.30
+
+BELIEF_ENCODER_CHECKPOINT = "logs/terrain_encoder/2026-08-29_22-24-19/encoder_4000.pt"
+"""The adopted terrain encoder: belief architecture, Phase 2 -> 3 -> 4 then extended,
+4000 iterations. Chosen over the convolutional one because accuracy was comparable while
+training was 3.8x faster in a 17.8th of the memory -- see ``sandbox/TERRAIN_ENCODER.md``."""
 
 
 def _blind_proprio(env: ManagerBasedRLEnv) -> torch.Tensor:
@@ -182,17 +201,16 @@ class BeliefHeightMap(ManagerTermBase):
 
 
 def build_terrain_encoder(device: torch.device, belief_latent: int = 96) -> BeliefTerrainEncoder:
-    """An encoder whose grid matches the LiDAR term's, cell for cell.
+    """Miki et al.'s belief encoder, at the width its checkpoints were trained on.
 
-    The encoder frozen in front of the ``Go2-HM-Belief-*`` policies: Miki et al.'s
-    belief encoder, trained by the (since removed) terrain-encoder stage and kept only
-    to be loaded. ``sandbox/TERRAIN_ENCODER.md`` records how it was built and why the
-    convolutional alternative was dropped.
+    Trained by the (since removed) terrain-encoder stage and kept only to be loaded;
+    ``sandbox/TERRAIN_ENCODER.md`` records how it was built and why the convolutional
+    alternative was dropped.
 
-    The crop has to be the LiDAR one (0.40 / 0.30), not the top-down tasks' -- the fan's
-    blind cone is wider, so its grid keeps 388 cells where theirs keeps 492. Taking the
-    indices from the same helper the observation term uses is what holds the flat
-    observation vector and the 29 x 21 image in register.
+    The crop is :data:`BELIEF_CROP_HALF_EXTENT_X` / ``_Y``, not the top-down tasks'
+    0.30 / 0.20 -- that keeps 388 cells where theirs keeps 492, and 388 is what the
+    checkpoint expects. Taking the indices from the same helper the observation term
+    uses is what holds the flat observation vector and the 29 x 21 image in register.
     """
     # Imported inside the function: these live in the go2 task configs, which import the
     # mdp package this module belongs to. At module scope that is a cycle.
@@ -202,10 +220,6 @@ def build_terrain_encoder(device: torch.device, belief_latent: int = 96) -> Beli
         HEIGHT_SCAN_RESOLUTION,
         HEIGHT_SCAN_SIZE,
     )
-    from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_lidar import (
-        GO2_LIDAR_BODY_HALF_EXTENT_X,
-        GO2_LIDAR_BODY_HALF_EXTENT_Y,
-    )
 
     keep_index, _ = _height_scan_indices(
         resolution=HEIGHT_SCAN_RESOLUTION,
@@ -213,8 +227,8 @@ def build_terrain_encoder(device: torch.device, belief_latent: int = 96) -> Beli
         size_y=HEIGHT_SCAN_SIZE[1],
         scanner_offset_x=GO2_HEIGHT_SCAN_CENTER_X,
         scanner_offset_y=GO2_HEIGHT_SCAN_CENTER_Y,
-        exclude_half_extent_x=GO2_LIDAR_BODY_HALF_EXTENT_X,
-        exclude_half_extent_y=GO2_LIDAR_BODY_HALF_EXTENT_Y,
+        exclude_half_extent_x=BELIEF_CROP_HALF_EXTENT_X,
+        exclude_half_extent_y=BELIEF_CROP_HALF_EXTENT_Y,
         device=device,
     )
     num_x = round(HEIGHT_SCAN_SIZE[0] / HEIGHT_SCAN_RESOLUTION) + 1

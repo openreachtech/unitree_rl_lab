@@ -24,11 +24,6 @@ from isaaclab.utils import configclass
 
 from unitree_rl_lab.tasks.locomotion import mdp
 from unitree_rl_lab.tasks.locomotion.mdp.privileged import RingPatternCfg
-from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_lidar import (
-    GO2_LIDAR_SCANNER_CFG,
-    LidarMapObsCfg,
-    PLAY_LIDAR_HEIGHT_SCAN_CFG,
-)
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import (
     CommandsCfg,
     ObservationsCfg,
@@ -168,36 +163,3 @@ class RobotEnvCfgGo2(RobotEnvCfg):
     observations: ObservationsCfgGo2 = ObservationsCfgGo2()
     commands: CommandsCfgGo2 = CommandsCfgGo2()
     rewards: RewardsCfgGo2 = RewardsCfgGo2()
-
-
-# ---------------------------------------------------------------------------
-# Play-only LiDAR view. This whole blind lineage exists to be the frozen controller
-# under which a noisy-LiDAR height-map encoder is trained, so the thing worth watching
-# in play is the fan-built map -- what that encoder will have to work from -- rather
-# than the gait alone.
-#
-# Kept out of the training configs on purpose: the fan is 1080 rays that nothing in
-# training reads, and the policy is blind by design. Attaching the sensor and the
-# display-only observation group only in play keeps training exactly as it was.
-# ---------------------------------------------------------------------------
-@configclass
-class ObservationsCfgGo2LidarView(ObservationsCfgGo2):
-    """Blind policy and privileged critic unchanged, with the fan-built grid alongside.
-
-    Nothing reads ``lidar_map``; the observation manager computing it each step is what
-    gives the term its chance to draw itself. See velocity_env_cfg_lidar.py.
-    """
-
-    lidar_map: LidarMapObsCfg = LidarMapObsCfg()
-
-
-def apply_lidar_view(env_cfg) -> None:
-    """Point a play config's LiDAR group at the visualising variant of the term.
-
-    Call from ``__post_init__`` after ``super()``. The scene still has to declare
-    ``lidar_scanner``; that is a class-level field, so each play config subclasses its
-    phase's scene to add it.
-    """
-    env_cfg.observations.lidar_map.height_scan = PLAY_LIDAR_HEIGHT_SCAN_CFG
-    # Only the fan-built grid on screen: the top-down scanner's own markers off.
-    env_cfg.scene.height_scanner.debug_vis = False

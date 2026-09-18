@@ -70,6 +70,11 @@ GO2_NOMINAL_BASE_Z = 0.32  # m
 # Isaac mdp.height_scan offset: ground-to-sensor height at nominal stance (flat terrain -> ~0).
 GO2_HEIGHT_SCAN_OFFSET = GO2_NOMINAL_BASE_Z + GO2_LIDAR_OFFSET_Z  # 0.273175 m
 
+GO2_FLAT_SCAN_VALUE = GO2_NOMINAL_BASE_Z - GO2_HEIGHT_SCAN_OFFSET
+"""Grid value meaning "flat ground at nominal stance"; what a cell of a LiDAR-built
+elevation map holds before a beam has ever reached it. Non-zero because
+``GO2_HEIGHT_SCAN_OFFSET`` is a ground-to-sensor distance rather than the base height."""
+
 # RayCaster grid xy origin at the body center (not the LiDAR mount), so the scan reaches equally
 # far in front of and behind the robot. Wired into RobotSceneCfg.height_scanner.offset in
 # RobotEnvCfgGo2.__post_init__ below (z there is a fixed ray-start height for raycasting, unrelated

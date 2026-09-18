@@ -1,7 +1,6 @@
 import copy
 
 import isaaclab.terrains as terrain_gen
-from isaaclab.sensors import RayCasterCfg
 from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
@@ -9,15 +8,6 @@ from isaaclab.utils import configclass
 
 from unitree_rl_lab.tasks.locomotion import mdp, terrains
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import CurriculumCfg, TerminationsCfg
-from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_lidar import (
-    lidar_noise_only,
-    play_lidar_height_scan,
-)
-from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_blind import (
-    GO2_LIDAR_SCANNER_CFG,
-    ObservationsCfgGo2LidarView,
-    apply_lidar_view,
-)
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_blind import RewardsCfgGo2
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_blind_phase2 import (
     CommandsCfgPhase2,
@@ -378,16 +368,8 @@ PLAY_TERRAIN_CFG_PHASE3 = PHASE3_TERRAIN_CFG_VARIABLE_WIDTH.replace(
 
 
 @configclass
-class RobotSceneCfgPlayPhase3(RobotSceneCfgPhase3Balance):
-    """The Phase 3 default's scene plus the LiDAR fan, on the stepped play terrain."""
-
-    lidar_scanner: RayCasterCfg = GO2_LIDAR_SCANNER_CFG
-
-
-@configclass
 class RobotPlayEnvCfgPhase3(RobotEnvCfgPhase3BalanceMatched):
-    scene: RobotSceneCfgPlayPhase3 = RobotSceneCfgPlayPhase3(num_envs=32, env_spacing=2.5)
-    observations: ObservationsCfgGo2LidarView = ObservationsCfgGo2LidarView()
+    scene: RobotSceneCfgPhase3Balance = RobotSceneCfgPhase3Balance(num_envs=32, env_spacing=2.5)
 
     def __post_init__(self):
         super().__post_init__()
@@ -396,29 +378,3 @@ class RobotPlayEnvCfgPhase3(RobotEnvCfgPhase3BalanceMatched):
         # Spread the spawn over all three rows; the training value exceeds num_rows - 1.
         self.scene.terrain.max_init_terrain_level = 2
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
-        self.scene.lidar_scanner.update_period = self.decimation * self.sim.dt
-        apply_lidar_view(self)
-
-
-# The same three noise conditions Phase 2 has, pinned one per task rather than drawn
-# 60/30/10. Only the drawn map differs -- the policy never sees it, so the gait is
-# identical across all three and the red cells, which are geometry, should be too.
-@configclass
-class RobotPlayEnvCfgPhase3NoiseWeak(RobotPlayEnvCfgPhase3):
-    def __post_init__(self):
-        super().__post_init__()
-        self.observations.lidar_map.height_scan = play_lidar_height_scan(lidar_noise_only("weak"))
-
-
-@configclass
-class RobotPlayEnvCfgPhase3NoiseNominal(RobotPlayEnvCfgPhase3):
-    def __post_init__(self):
-        super().__post_init__()
-        self.observations.lidar_map.height_scan = play_lidar_height_scan(lidar_noise_only("nominal"))
-
-
-@configclass
-class RobotPlayEnvCfgPhase3NoiseStrong(RobotPlayEnvCfgPhase3):
-    def __post_init__(self):
-        super().__post_init__()
-        self.observations.lidar_map.height_scan = play_lidar_height_scan(lidar_noise_only("strong"))

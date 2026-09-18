@@ -36,22 +36,18 @@ to 11.3%.
 The output has the same layout, order and units as ``height_scan_excluding_body`` --
 one value per kept grid cell -- so it drops into the policy observation group in place
 of that term while the critic keeps the clean top-down scan as privileged input. The
-cell count follows whatever exclusion rectangle the caller passes, and the LiDAR tasks
-widen theirs, so the two are not interchangeable at a fixed width; see
-``velocity_env_cfg_lidar.py``. Pass a non-positive extent to keep the whole grid, which
-is what a mount low enough to see under the trunk wants -- then the output lines up
-cell-for-cell with the critic's top-down ``height_scan``.
+cell count follows whatever exclusion rectangle the caller passes, so the two are not
+interchangeable at a fixed width. Pass a non-positive extent to keep the whole grid,
+which is what a mount low enough to see under the trunk wants -- then the output lines
+up cell-for-cell with the critic's top-down ``height_scan``.
 
-Nothing here is specific to the fan: the term reads ``sensor.data.ray_hits_w``, so any
-RayCaster works. ``velocity_env_cfg_mid360.py`` feeds it a Livox MID-360.
+Nothing here is specific to one sensor: the term reads ``sensor.data.ray_hits_w``, so
+any RayCaster works. ``velocity_env_cfg_mid360.py`` feeds it a Livox MID-360.
 
 Measurement noise is applied per ray, before the returns are binned -- see
 ``LidarNoiseCfg``. That placement is what makes it faithful: perturbing distance along
 the ray produces the lateral error a real sensor makes at shallow incidence, which
 cannot be expressed by adding noise to a finished height grid.
-
-``scripts/tools/check_lidar_map_coverage.py`` predicts the noise-free coverage
-analytically; this implementation is checked against it.
 """
 
 from __future__ import annotations

@@ -7,11 +7,6 @@ from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg import Curricul
 from isaaclab.sensors import RayCasterCfg
 
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_blind import (
-    GO2_LIDAR_SCANNER_CFG,
-    ObservationsCfgGo2LidarView,
-    apply_lidar_view,
-)
-from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_blind import (
     foot_ring_sensor,
     CommandsCfgGo2,
     RobotEnvCfgGo2,
@@ -71,20 +66,10 @@ class RobotEnvCfgPhase1(RobotEnvCfgGo2):
 
 
 @configclass
-class RobotSceneCfgPlayPhase1(RobotSceneCfgPhase1):
-    """Phase 1's scene plus the LiDAR fan, play only."""
-
-    lidar_scanner: RayCasterCfg = GO2_LIDAR_SCANNER_CFG
-
-
-@configclass
 class RobotPlayEnvCfgPhase1(RobotEnvCfgPhase1):
-    scene: RobotSceneCfgPlayPhase1 = RobotSceneCfgPlayPhase1(num_envs=32, env_spacing=2.5)
-    observations: ObservationsCfgGo2LidarView = ObservationsCfgGo2LidarView()
+    scene: RobotSceneCfgPhase1 = RobotSceneCfgPhase1(num_envs=32, env_spacing=2.5)
 
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 32
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
-        self.scene.lidar_scanner.update_period = self.decimation * self.sim.dt
-        apply_lidar_view(self)
