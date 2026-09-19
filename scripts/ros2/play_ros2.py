@@ -152,7 +152,10 @@ class SimBridge(Node):
         self.pub_cloud = self.create_publisher(PointCloud2, args_cli.cloud_topic, qos_profile_sensor_data)
         self.cmd_vel = np.zeros(3)
         self.cmd_vel_time = None  # wall time of last message
+        self._cmd_seen = False
         self.create_subscription(Twist, "/cmd_vel", self._on_cmd_vel, 10)
+        # Observability: the command actually applied to the policy this step.
+        self.pub_applied = self.create_publisher(Twist, "/sim/applied_cmd", 10)
 
         # Static parts of the messages
         self.joint_msg = JointState()
@@ -172,6 +175,9 @@ class SimBridge(Node):
     def _on_cmd_vel(self, msg: Twist):
         self.cmd_vel[:] = (msg.linear.x, msg.linear.y, msg.angular.z)
         self.cmd_vel_time = time.time()
+        if not self._cmd_seen:
+            self._cmd_seen = True
+            print(f"[INFO] first /cmd_vel received: {self.cmd_vel}", flush=True)
 
     def command(self) -> np.ndarray:
         """Latest command, zeroed once it goes stale (Nav2 died, teleop closed)."""
@@ -183,6 +189,11 @@ class SimBridge(Node):
         msg = Clock()
         msg.clock = _stamp(t)
         self.pub_clock.publish(msg)
+
+    def publish_applied_cmd(self, cmd: np.ndarray):
+        msg = Twist()
+        msg.linear.x, msg.linear.y, msg.angular.z = float(cmd[0]), float(cmd[1]), float(cmd[2])
+        self.pub_applied.publish(msg)
 
     def publish_state(self, t: float, q, dq, tau, quat_wxyz, gyro, acc, feet):
         stamp = _stamp(t)
@@ -294,6 +305,7 @@ def main():
         # /cmd_vel -> command term (clamped to the training envelope)
         rclpy.spin_once(bridge, timeout_sec=0.0)
         cmd = np.clip(bridge.command(), cmd_low, cmd_high)
+        bridge.publish_applied_cmd(cmd)
         with torch.inference_mode():
             cmd_term.vel_command_b[0] = torch.tensor(cmd, dtype=torch.float32, device=device)
             actions = policy(obs)
