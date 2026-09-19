@@ -1,0 +1,36 @@
+# Go2 robot-layer contract (doc/design/vlfm_nav.md §3).
+# Everything robot-specific the shared VLFM/Nav stack needs lives here; an Anaguma
+# port supplies its own copy of this file and nothing else changes.
+
+/**:
+  ros__parameters:
+    robot:
+      base_frame: "base"        # go2.urdf root link (inekf publishes odom->base)
+      odom_frame: "odom"
+      lidar_frame: "radar"      # L1 mount link in go2.urdf; sim cloud is stamped with it
+
+    topics:
+      pointcloud: "/utlidar/cloud"
+      odometry: "/odometry/filtered"
+      cmd_vel: "/cmd_vel"
+
+    # Policy training envelope (Go2-Blind-GRU-Phase4 limit_ranges). Nav2's velocity
+    # limits and any /cmd_vel clamping must stay inside these.
+    cmd_limits:
+      lin_vel_x: [-1.0, 1.0]
+      lin_vel_y: [-0.4, 0.4]
+      ang_vel_z: [-1.0, 1.0]
+
+    # Footprint (m): body ~0.70 x 0.31 plus margin.
+    footprint:
+      length: 0.85
+      width: 0.45
+
+    # pointcloud_to_laserscan z band, in base_frame coordinates. Base origin sits
+    # ~0.32 m above ground at nominal height, so [0.0, 0.5] keeps returns 0.32-0.82 m
+    # above ground: above the <=0.275 m Phase-4 walls the blind policy can climb,
+    # below the ceilings. Structures inside the band are the ones SLAM maps and Nav2
+    # treats as walls.
+    scan_band:
+      min_height: 0.0
+      max_height: 0.5
