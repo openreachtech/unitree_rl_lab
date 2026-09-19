@@ -94,3 +94,22 @@ gym.register(
     },
 )
 
+
+
+# ===========================================================================
+# VLFM nav stack: Mid360-Phase4 in an indoor four-room world, one robot, driven
+# over ROS 2 via scripts/ros2/play_ros2.py. Not for training. See
+# velocity_env_cfg_explore.py and doc/design/vlfm_nav.md.
+#   python scripts/ros2/play_ros2.py --task Go2-Blind-GRU-Mid360-Explore \
+#       --checkpoint logs/rsl_rl/go2_blind_gru_phase4/<run>/model_7300.pt
+# ===========================================================================
+gym.register(
+    id="Go2-Blind-GRU-Mid360-Explore",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_explore:RobotEnvCfgMid360Explore",
+        "play_env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_explore:RobotPlayEnvCfgMid360Explore",
+        "rsl_rl_cfg_entry_point": _RUNNER,
+    },
+)

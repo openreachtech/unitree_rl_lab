@@ -65,7 +65,7 @@ sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "
 import cli_args  # isort: skip
 
 parser = argparse.ArgumentParser(description="Play a policy and bridge the sim to ROS 2.")
-parser.add_argument("--task", type=str, default="Go2-Blind-GRU-Mid360-Phase4", help="Name of the task.")
+parser.add_argument("--task", type=str, default="Go2-Blind-GRU-Mid360-Explore", help="Name of the task.")
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
@@ -78,6 +78,14 @@ parser.add_argument(
     " robot_state_publisher provides base->radar and the chain closes.",
 )
 parser.add_argument("--cmd_vel_timeout", type=float, default=0.5, help="Zero the command this long after the last /cmd_vel (s).")
+parser.add_argument(
+    "--cloud_accum_steps",
+    type=int,
+    default=5,
+    help="Env steps of MID-360 returns per PointCloud2. 5 steps = 0.1 s = one full"
+    " elevation sweep, matching the real driver's 10 Hz frames; single 20 ms windows"
+    " cover only a slice of the elevation band and starve pointcloud_to_laserscan.",
+)
 cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -293,6 +301,7 @@ def main():
 
     dt = env.unwrapped.step_dt
     sim_t = 0.0
+    cloud_buf: list[torch.Tensor] = []
     prev_lin_vel_w = robot.data.root_lin_vel_w[0].clone()
     gravity_w = torch.tensor([0.0, 0.0, GRAVITY], device=device)
 
@@ -333,18 +342,23 @@ def main():
         bridge.publish_clock(sim_t)
         bridge.publish_state(sim_t, q, dq, tau, quat.cpu().numpy(), gyro, acc_b, feet)
 
-        # -- point cloud, in the `radar` (mount) frame --
+        # -- point cloud: accumulate one full elevation sweep, publish in `radar` frame --
+        # Returns are kept as world-frame points and only projected into the sensor
+        # frame at publish time, i.e. deskewed into the end-of-sweep pose (what the
+        # real driver+LIO pipeline delivers, minus their residual distortion).
         hits_w = scanner.data.ray_hits_w[0]
         sensor_pos = scanner._get_true_sensor_pos()[0]
-        base_quat = scanner.data.quat_w[0]
-        rel_w = hits_w - sensor_pos
-        finite = torch.isfinite(rel_w).all(dim=-1)
-        dist = rel_w.norm(dim=-1)
-        keep = finite & (dist >= min_range) & (dist < max_range - 1e-3)
-        rel_w = rel_w[keep]
-        p_base = quat_apply_inverse(base_quat.expand(len(rel_w), 4), rel_w)
-        p_radar = quat_apply_inverse(mount_quat.expand(len(rel_w), 4), p_base)
-        bridge.publish_cloud(sim_t, p_radar.cpu().numpy())
+        keep = torch.isfinite(hits_w).all(dim=-1)
+        dist = (hits_w - sensor_pos).norm(dim=-1)
+        keep &= (dist >= min_range) & (dist < max_range - 1e-3)
+        cloud_buf.append(hits_w[keep])
+        if len(cloud_buf) >= args_cli.cloud_accum_steps:
+            rel_w = torch.cat(cloud_buf) - sensor_pos
+            cloud_buf.clear()
+            base_quat = scanner.data.quat_w[0]
+            p_base = quat_apply_inverse(base_quat.expand(len(rel_w), 4), rel_w)
+            p_radar = quat_apply_inverse(mount_quat.expand(len(rel_w), 4), p_base)
+            bridge.publish_cloud(sim_t, p_radar.cpu().numpy())
 
         # real-time pacing: the ROS side integrates in /clock time, but Nav2's watchdogs
         # and the human at the teleop live in wall time.

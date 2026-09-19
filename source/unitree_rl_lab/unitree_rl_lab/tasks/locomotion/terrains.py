@@ -613,3 +613,109 @@ class MeshFloatingInvertedPyramidStairsTerrainCfg(MeshFloatingPyramidStairsTerra
     """Floating inverted pyramid stairs: thin treads + optional posts, no riser walls."""
 
     function = floating_inverted_pyramid_stairs_terrain
+
+
+# ---------------------------------------------------------------------------
+# Indoor rooms: a VLFM/SLAM exploration floorplan, not a locomotion challenge.
+# ---------------------------------------------------------------------------
+
+
+def indoor_rooms_terrain(
+    difficulty: float, cfg: "MeshIndoorRoomsTerrainCfg"
+) -> tuple[list[trimesh.Trimesh], np.ndarray]:
+    """Four rooms joined by door openings, walled at room height, on a flat floor.
+
+    Built for the VLFM nav stack (doc/design/vlfm_nav.md): the MID-360 raycasts
+    against the terrain mesh, so walls baked here are exactly what
+    pointcloud_to_laserscan / slam_toolbox get to map. Walls are tall enough to
+    cross the scan z band (base +0.0..0.5 m => 0.32..0.82 m above ground) with
+    margin, unlike the step-over hurdles of the phase terrains.
+
+    Layout, in fractions of ``cfg.size`` so any tile size works::
+
+        +--------------+--------------+
+        |     NW     door     NE      |     - perimeter walls all around
+        |              |              |     - one N-S wall, one E-W wall
+        +--door--------+-------door---+     - a door in every half-wall, so all
+        |              |              |       four rooms form a single loop
+        |     SW     door     SE      |     - spawn at the SW room center
+        +--------------+--------------+
+
+    A few knee-height boxes stand in as furniture (``include_furniture``): solid
+    obstacles the blind policy cannot cross, there to give the map interior
+    structure. ``difficulty`` is ignored -- the floorplan is fixed, exploration
+    difficulty is not a curriculum here.
+    """
+    sx, sy = cfg.size
+    t = cfg.wall_thickness
+    h = cfg.wall_height
+    z = h / 2.0
+    door = cfg.door_width
+
+    meshes = []
+
+    # floor
+    meshes.append(_box((sx, sy, cfg.floor_thickness), (sx / 2, sy / 2, -cfg.floor_thickness / 2)))
+
+    # perimeter
+    meshes += [
+        _box((sx, t, h), (sx / 2, t / 2, z)),            # south
+        _box((sx, t, h), (sx / 2, sy - t / 2, z)),       # north
+        _box((t, sy - 2 * t, h), (t / 2, sy / 2, z)),    # west
+        _box((t, sy - 2 * t, h), (sx - t / 2, sy / 2, z)),  # east
+    ]
+
+    def _wall_x(x: float, y0: float, y1: float):
+        """N-S wall segment centered on x, spanning [y0, y1]."""
+        if y1 > y0:
+            meshes.append(_box((t, y1 - y0, h), (x, (y0 + y1) / 2, z)))
+
+    def _wall_y(y: float, x0: float, x1: float):
+        """E-W wall segment centered on y, spanning [x0, x1]."""
+        if x1 > x0:
+            meshes.append(_box((x1 - x0, t, h), ((x0 + x1) / 2, y, z)))
+
+    # N-S dividing wall at x = sx/2, doors in the south and north halves
+    vd_s = 0.26 * sy  # door centers
+    vd_n = 0.74 * sy
+    _wall_x(sx / 2, 0.0, vd_s - door / 2)
+    _wall_x(sx / 2, vd_s + door / 2, vd_n - door / 2)
+    _wall_x(sx / 2, vd_n + door / 2, sy)
+
+    # E-W dividing wall at y = sy/2, doors in the west and east halves
+    hd_w = 0.24 * sx
+    hd_e = 0.76 * sx
+    _wall_y(sy / 2, 0.0, hd_w - door / 2)
+    _wall_y(sy / 2, hd_w + door / 2, hd_e - door / 2)
+    _wall_y(sy / 2, hd_e + door / 2, sx)
+
+    if cfg.include_furniture:
+        fh = cfg.furniture_height
+        # (x-frac, y-frac, w, d) -- one or two boxes per room, clear of doors and spawn
+        for fx, fy, w, d in [
+            (0.125, 0.375, 0.8, 0.8),  # SW
+            (0.790, 0.150, 1.2, 0.6),  # SE
+            (0.375, 0.850, 0.6, 0.6),  # NW
+            (0.630, 0.875, 1.0, 0.8),  # NE
+        ]:
+            meshes.append(_box((w, d, fh), (fx * sx, fy * sy, fh / 2)))
+
+    # spawn at the SW room center
+    origin = np.array([0.25 * sx, 0.25 * sy, 0.0])
+    return meshes, origin
+
+
+@configclass
+class MeshIndoorRoomsTerrainCfg(SubTerrainBaseCfg):
+    """Flat four-room floorplan with doors, for mapping/exploration tasks."""
+
+    function = indoor_rooms_terrain
+
+    wall_height: float = 1.0
+    """Room wall height (m). Keep well above the scan band top (0.82 m over ground)."""
+    wall_thickness: float = 0.10
+    door_width: float = 1.2
+    floor_thickness: float = 0.05
+    include_furniture: bool = True
+    furniture_height: float = 0.5
+    """Furniture box height (m); intersects the scan band so the boxes get mapped."""
