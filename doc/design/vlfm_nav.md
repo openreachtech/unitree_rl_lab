@@ -67,7 +67,7 @@ colcon ワークスペースは `~/isaacsim/go2_nav_ws`。`src/` には上記 `r
 
 | 提供物 | 型/形式 | Go2 | Anaguma |
 |---|---|---|---|
-| `odom→base_link` TF + オドメトリ | tf2 + `nav_msgs/Odometry` | go2_odometry (InEKF) | rko_lio (既存) |
+| `odom→base_link` TF + オドメトリ | tf2 + `nav_msgs/Odometry` | sim開発: `--gt_odom`(sim直出し)/ 実機: RKO-LIO 予定 / go2_odometry (InEKF) は検証用に維持※ | rko_lio (既存) |
 | LiDAR 点群 | `sensor_msgs/PointCloud2` | sim bridge / L1 実機 | livox driver (既存) |
 | RGB カメラ | `sensor_msgs/Image` + `CameraInfo` | sim bridge / 実機 | 実機カメラ |
 | 速度コマンド受理 | `geometry_msgs/Twist` on `/cmd_vel` | sim: play_ros2.py が購読 / 実機: deploy C++ に DDS 購読追加 | twist→joy 変換ノード (§6) |
@@ -144,11 +144,38 @@ sim/実機で go2_odometry・slam_toolbox・Nav2・VLFM は無改造で共用す
 4. unitree 系依存 (unitree_go, go2_odometry, invariant-ekf...) は
    `go2_nav_bringup` 以下に閉じているため tsubame ws には不要
 
-## 7. 未決事項
+### オドメトリの実測メモ(2026-09-20)
+
+※ 脚運動学 InEKF は短時間走行では機能するが、壁接触時の足滑りでヨーが飛び、
+数分を超える探索で slam_toolbox の探索窓を超えて地図がフォークした。実機計画は
+Go2(height-mapスタック)/Anaguma とも RKO-LIO なので、sim 開発は `--gt_odom` +
+`go2_sim.launch.py use_inekf:=false` で本番相当のオドメトリ品質に揃える。
+将来: sim の /utlidar/cloud + /sim/imu に本物の rko_lio を掛ければ経路が完全一致する。
+
+## 7. MLモデル構成(2026-09-20 確定)
+
+**BLIP-2 ITM 1本**で価値マップと目標物検出を兼ねる。論文の Grounding DINO /
+Mobile-SAM / ZoeDepth は載せない。
+
+| 役割 | 実装 |
+|---|---|
+| 価値マップ | BLIP-2 ITM: RGB × "Seems like there is a <target> ahead." のマッチスコアをカメラ視錐台で地図に投影(VLFM 論文 IV-B) |
+| 目標物検出 | max サリエンシー閾値 + N フレーム連続で発火(CoW 論文 3.5節と同型) |
+| 画像内位置 | **Grad-CAM サリエンシー**(ViT は Chefer 改良版)の argmax → ピクセル→方位。CoW 論文で3手法比較の最良。v1 実装は前方パスのみで済む k-Patch でも可 |
+| 目標物までの距離 | 検出方位の LiDAR レンジ(CoW の depth バックプロジェクションの置き換え。深度カメラ不使用) |
+| 停止判定 | 目標点まで 1m 以内 & スコア飽和 |
+
+根拠: zero-shot 位置特定は CoW 論文
+(doc/papers/CLIP_on_Wheels_*.md)が解決済み — CLIP 系エンコーダのサリエンシーで
+bbox 検出器なしに目標へ誘導できる。BLIP-2 も ViT ベースなので同手法が使える。
+モデル1個で VRAM ~4GB・サービス1プロセスに収まり、Isaac(~6GB)と 16GB GPU に
+同居できる。精度不足が実測されたときだけ検出器の追加を検討する
+(`value_map.py` のスコアラー境界の内側なので設計変更は局所)。
+
+## 8. 未決事項
 
 - 2D SLAM (slam_toolbox) は段差踏破と原理的に相性が悪い(乗り越え時の
   ピッチで /scan が汚れる)。まず z バンドフィルタで様子見、破綻したら
   elevation map / 3D 系 (rko_lio + 別マッピング) を検討
-- VLM の選定 (論文準拠なら BLIP-2 ITM)。GPU メモリと Isaac 併走の相性を実測して決める
-- Nav2 controller: Go2 は全方向移動できるため holonomic 対応 (MPPI/DWB) を第一候補に
-- VLFM の探索終了条件・対象物検出 (論文は Grounding DINO / Mobile-SAM) をどこまで再現するか
+- sim に本物の rko_lio を掛けてオドメトリ経路を実機と完全一致させる(§6注記)
+- 実機 Go2 の RGB カメラ選定とキャリブレーション(LiDAR との外部パラメータ)

@@ -13,20 +13,29 @@ Everything runs on sim time (/clock from Isaac).
 """
 
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node, SetParameter
 from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
+    use_inekf = LaunchConfiguration("use_inekf")
     inekf_launch = PathJoinSubstitution(
         [FindPackageShare("go2_odometry"), "launch", "go2_inekf_odometry.launch.py"]
+    )
+    state_pub_launch = PathJoinSubstitution(
+        [FindPackageShare("go2_odometry"), "launch", "go2_state_publisher.launch.py"]
     )
 
     return LaunchDescription(
         [
+            # use_inekf:=false when the sim publishes ground-truth odometry itself
+            # (play_ros2.py --gt_odom); robot_state_publisher + state_converter still
+            # run so the base->radar TF chain and /joint_states exist.
+            DeclareLaunchArgument("use_inekf", default_value="true"),
             # Applies to every node below, included launch files too.
             SetParameter(name="use_sim_time", value=True),
             Node(
@@ -35,6 +44,13 @@ def generate_launch_description():
                 name="sim_lowstate_bridge",
                 output="screen",
             ),
-            IncludeLaunchDescription(PythonLaunchDescriptionSource([inekf_launch])),
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource([inekf_launch]),
+                condition=IfCondition(use_inekf),
+            ),
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource([state_pub_launch]),
+                condition=UnlessCondition(use_inekf),
+            ),
         ]
     )

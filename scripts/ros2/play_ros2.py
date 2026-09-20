@@ -79,6 +79,18 @@ parser.add_argument(
 )
 parser.add_argument("--cmd_vel_timeout", type=float, default=0.5, help="Zero the command this long after the last /cmd_vel (s).")
 parser.add_argument(
+    "--gt_odom",
+    action="store_true",
+    default=False,
+    help="Publish ground-truth odometry (odom->base TF + /odometry/filtered) straight"
+    " from the sim, instead of leaving odometry to go2_odometry's leg-kinematics InEKF."
+    " Matches the deployed stack's odometry class better than the InEKF does -- both the"
+    " Go2 height-map pipeline and Anaguma run RKO-LIO (LiDAR-inertial), whose yaw does"
+    " not drift the way leg odometry's does; the InEKF path forked the SLAM map on every"
+    " run longer than a few minutes. Pair with go2_sim.launch.py use_inekf:=false so"
+    " there is exactly one odom->base publisher.",
+)
+parser.add_argument(
     "--min_walk_speed",
     type=float,
     default=0.6,
@@ -138,12 +150,14 @@ enable_extension("isaacsim.ros2.bridge")
 
 import rclpy
 from builtin_interfaces.msg import Time as TimeMsg
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import TransformStamped, Twist
+from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import Imu, JointState, PointCloud2, PointField
 from std_msgs.msg import Float32MultiArray
+from tf2_ros import TransformBroadcaster
 
 from unitree_rl_lab.assets.models.modules.runners import UnitreeOnPolicyRunner
 
@@ -188,6 +202,9 @@ class SimBridge(Node):
         self.pub_imu = self.create_publisher(Imu, "/sim/imu", 10)
         self.pub_feet = self.create_publisher(Float32MultiArray, "/sim/foot_forces", 10)
         self.pub_cloud = self.create_publisher(PointCloud2, args_cli.cloud_topic, qos_profile_sensor_data)
+        if args_cli.gt_odom:
+            self.pub_odom = self.create_publisher(Odometry, "/odometry/filtered", 10)
+            self.tf_broadcaster = TransformBroadcaster(self)
         self.cmd_vel = np.zeros(3)
         self.cmd_vel_time = None  # wall time of last message
         self._cmd_seen = False
@@ -251,6 +268,29 @@ class SimBridge(Node):
         feet_msg = Float32MultiArray()
         feet_msg.data = feet.tolist()
         self.pub_feet.publish(feet_msg)
+
+    def publish_gt_odom(self, t: float, pos, quat_wxyz, lin_vel_b, ang_vel_b):
+        stamp = _stamp(t)
+        tf = TransformStamped()
+        tf.header.stamp = stamp
+        tf.header.frame_id = "odom"
+        tf.child_frame_id = "base"
+        tf.transform.translation.x, tf.transform.translation.y, tf.transform.translation.z = pos.tolist()
+        w, x, y, z = quat_wxyz.tolist()
+        tf.transform.rotation.w, tf.transform.rotation.x = w, x
+        tf.transform.rotation.y, tf.transform.rotation.z = y, z
+        self.tf_broadcaster.sendTransform(tf)
+
+        od = Odometry()
+        od.header.stamp = stamp
+        od.header.frame_id = "odom"
+        od.child_frame_id = "base"
+        od.pose.pose.position.x, od.pose.pose.position.y, od.pose.pose.position.z = pos.tolist()
+        od.pose.pose.orientation.w, od.pose.pose.orientation.x = w, x
+        od.pose.pose.orientation.y, od.pose.pose.orientation.z = y, z
+        od.twist.twist.linear.x, od.twist.twist.linear.y, od.twist.twist.linear.z = lin_vel_b.tolist()
+        od.twist.twist.angular.x, od.twist.twist.angular.y, od.twist.twist.angular.z = ang_vel_b.tolist()
+        self.pub_odom.publish(od)
 
     def publish_cloud(self, t: float, points_xyz: np.ndarray):
         msg = self.cloud_msg
@@ -379,6 +419,14 @@ def main():
 
         bridge.publish_clock(sim_t)
         bridge.publish_state(sim_t, q, dq, tau, quat.cpu().numpy(), gyro, acc_b, feet)
+        if args_cli.gt_odom:
+            bridge.publish_gt_odom(
+                sim_t,
+                robot.data.root_pos_w[0].cpu().numpy(),
+                quat.cpu().numpy(),
+                robot.data.root_lin_vel_b[0].cpu().numpy(),
+                robot.data.root_ang_vel_b[0].cpu().numpy(),
+            )
 
         # -- point cloud: accumulate one full elevation sweep, publish in `radar` frame --
         # Returns are kept as world-frame points and only projected into the sensor
