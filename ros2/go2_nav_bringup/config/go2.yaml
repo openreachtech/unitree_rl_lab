@@ -26,11 +26,11 @@
       length: 0.85
       width: 0.45
 
-    # pointcloud_to_laserscan z band, in base_frame coordinates. Base origin sits
-    # ~0.32 m above ground at nominal height, so [0.0, 0.5] keeps returns 0.32-0.82 m
-    # above ground: above the <=0.275 m Phase-4 walls the blind policy can climb,
-    # below the ceilings. Structures inside the band are the ones SLAM maps and Nav2
-    # treats as walls.
+    # pointcloud_to_laserscan z band, in base_frame coordinates. Deliberately wide:
+    # the real height selection happens upstream in a gravity-aligned frame (sim:
+    # play_ros2.py --cloud_z_band, world z 0.15-0.85 m; real: RKO-LIO-posed filter),
+    # because a base-frame band tilts with body pitch and leaks far ground returns
+    # past walls. This band only cuts gross outliers that survive that filter.
     scan_band:
-      min_height: 0.0
-      max_height: 0.5
+      min_height: -0.4
+      max_height: 0.7

@@ -79,6 +79,35 @@ parser.add_argument(
 )
 parser.add_argument("--cmd_vel_timeout", type=float, default=0.5, help="Zero the command this long after the last /cmd_vel (s).")
 parser.add_argument(
+    "--min_walk_speed",
+    type=float,
+    default=0.6,
+    help="Minimum linear speed the policy reliably walks at (m/s). The Phase4 policy has"
+    " a stand deadband -- measured on 2026-09-20: vx<=0.5 stands, 0.7 trots -- a side"
+    " effect of rel_standing_envs training. A nonzero /cmd_vel with a smaller linear"
+    " norm is scaled up to this, keeping direction, so Nav2's slow approach commands"
+    " actually move the robot. 0 disables the shaping.",
+)
+parser.add_argument(
+    "--min_walk_wz",
+    type=float,
+    default=0.5,
+    help="Same shaping for pure rotations: |wz| below this (and above the 0.05 dead"
+    " zone) is raised to it. Only applied when the linear command is ~zero.",
+)
+parser.add_argument(
+    "--cloud_z_band",
+    type=float,
+    nargs=2,
+    default=(0.15, 0.85),
+    metavar=("MIN", "MAX"),
+    help="Keep only returns whose WORLD z lies in this band (m). Gravity-aligned"
+    " pre-filter, standing in for what RKO-LIO's pose gives the real pipeline: without"
+    " it, body pitch tilts the base-frame band and far ground returns leak past the"
+    " 1 m walls, ray-tracing phantom free space outside the building. Pass equal"
+    " values to disable.",
+)
+parser.add_argument(
     "--cloud_accum_steps",
     type=int,
     default=5,
@@ -96,6 +125,7 @@ simulation_app = app_launcher.app
 """Rest everything follows."""
 
 import gymnasium as gym
+import math
 import numpy as np
 import time
 import torch
@@ -314,6 +344,14 @@ def main():
         # /cmd_vel -> command term (clamped to the training envelope)
         rclpy.spin_once(bridge, timeout_sec=0.0)
         cmd = np.clip(bridge.command(), cmd_low, cmd_high)
+        # Deadband shaping: lift small nonzero commands to the speed the policy
+        # actually walks at (see --min_walk_speed). Zero stays zero.
+        lin = float(np.hypot(cmd[0], cmd[1]))
+        if 0.05 < lin < args_cli.min_walk_speed:
+            cmd[:2] *= args_cli.min_walk_speed / lin
+        elif lin <= 0.05 and 0.05 < abs(cmd[2]) < args_cli.min_walk_wz:
+            cmd[2] = math.copysign(args_cli.min_walk_wz, cmd[2])
+        cmd = np.clip(cmd, cmd_low, cmd_high)
         bridge.publish_applied_cmd(cmd)
         with torch.inference_mode():
             cmd_term.vel_command_b[0] = torch.tensor(cmd, dtype=torch.float32, device=device)
@@ -351,6 +389,9 @@ def main():
         keep = torch.isfinite(hits_w).all(dim=-1)
         dist = (hits_w - sensor_pos).norm(dim=-1)
         keep &= (dist >= min_range) & (dist < max_range - 1e-3)
+        z_lo, z_hi = args_cli.cloud_z_band
+        if z_hi > z_lo:
+            keep &= (hits_w[:, 2] >= z_lo) & (hits_w[:, 2] <= z_hi)
         cloud_buf.append(hits_w[keep])
         if len(cloud_buf) >= args_cli.cloud_accum_steps:
             rel_w = torch.cat(cloud_buf) - sensor_pos

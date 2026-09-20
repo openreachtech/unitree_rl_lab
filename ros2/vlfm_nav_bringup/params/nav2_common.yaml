@@ -1,0 +1,222 @@
+# Robot-agnostic Nav2 configuration for the VLFM nav stack (M3).
+#
+# Robot-specific values -- robot_base_frame, footprint, velocity limits -- live in
+# the robot overlay (e.g. go2_nav_bringup/params/nav2_go2.yaml), loaded AFTER this
+# file so its keys win. Values here assume:
+#   /map from slam_toolbox (mapping mode, map->odom TF), /scan from
+#   pointcloud_to_laserscan, odom->base TF from the robot layer, and a low-level
+#   controller consuming /cmd_vel.
+#
+# Controller: MPPI in Omni mode -- the quadruped policies track lateral velocity, so
+# holonomic planning is free maneuverability Nav2 would otherwise leave unused.
+
+controller_server:
+  ros__parameters:
+    # 10 Hz: enough for a velocity-interface quadruped, and this MPPI shares the
+    # CPU with Isaac Sim -- at 20 Hz it managed ~9 Hz with 0.27 s gaps.
+    controller_frequency: 10.0
+    min_x_velocity_threshold: 0.01
+    min_y_velocity_threshold: 0.01
+    min_theta_velocity_threshold: 0.01
+    failure_tolerance: 0.5
+    progress_checker_plugin: "progress_checker"
+    goal_checker_plugins: ["general_goal_checker"]
+    controller_plugins: ["FollowPath"]
+
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.3
+      # Generous: a legged robot climbing a step can be legitimately slow.
+      movement_time_allowance: 20.0
+
+    general_goal_checker:
+      plugin: "nav2_controller::SimpleGoalChecker"
+      stateful: True
+      xy_goal_tolerance: 0.25
+      yaw_goal_tolerance: 0.5
+
+    FollowPath:
+      plugin: "nav2_mppi_controller::MPPIController"
+      time_steps: 30
+      model_dt: 0.1 # must equal the 10 Hz controller period
+      batch_size: 800
+      vx_std: 0.2
+      vy_std: 0.15
+      wz_std: 0.35
+      # Envelope defaults; the robot overlay sets the policy's real limits.
+      vx_max: 0.5
+      vx_min: -0.2
+      vy_max: 0.3
+      wz_max: 1.0
+      iteration_count: 1
+      prune_distance: 1.7
+      transform_tolerance: 0.2
+      temperature: 0.3
+      gamma: 0.015
+      motion_model: "Omni"
+      visualize: false
+      TrajectoryVisualizer:
+        trajectory_step: 5
+        time_step: 3
+      critics:
+        [
+          "ConstraintCritic",
+          "ObstaclesCritic",
+          "GoalCritic",
+          "GoalAngleCritic",
+          "PathAlignCritic",
+          "PathFollowCritic",
+          "PathAngleCritic",
+          "PreferForwardCritic",
+        ]
+      ConstraintCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+      GoalCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 1.0
+      GoalAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.0
+        threshold_to_consider: 0.4
+      PreferForwardCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.0
+        threshold_to_consider: 0.4
+      ObstaclesCritic:
+        enabled: true
+        cost_power: 1
+        repulsion_weight: 1.5
+        critical_weight: 20.0
+        consider_footprint: false
+        collision_cost: 10000.0
+        collision_margin_distance: 0.10
+        near_goal_distance: 0.5
+      PathAlignCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 14.0
+        max_path_occupancy_ratio: 0.05
+        trajectory_point_step: 3
+        threshold_to_consider: 0.40
+        offset_from_furthest: 20
+      PathFollowCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        offset_from_furthest: 5
+        threshold_to_consider: 0.6
+      PathAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 2.0
+        offset_from_furthest: 4
+        threshold_to_consider: 0.4
+        max_angle_to_furthest: 1.0
+
+planner_server:
+  ros__parameters:
+    expected_planner_frequency: 5.0
+    planner_plugins: ["GridBased"]
+    GridBased:
+      plugin: "nav2_navfn_planner/NavfnPlanner"
+      tolerance: 0.3
+      use_astar: false
+      # Exploration plans into space SLAM has not seen yet.
+      allow_unknown: true
+
+bt_navigator:
+  ros__parameters:
+    global_frame: map
+    robot_base_frame: base_link # overlay
+    odom_topic: /odometry/filtered
+    bt_loop_duration: 10
+    default_server_timeout: 20
+
+behavior_server:
+  ros__parameters:
+    costmap_topic: local_costmap/costmap_raw
+    footprint_topic: local_costmap/published_footprint
+    cycle_frequency: 10.0
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]
+    spin:
+      plugin: "nav2_behaviors/Spin"
+    backup:
+      plugin: "nav2_behaviors/BackUp"
+    drive_on_heading:
+      plugin: "nav2_behaviors/DriveOnHeading"
+    wait:
+      plugin: "nav2_behaviors/Wait"
+    global_frame: odom
+    robot_base_frame: base_link # overlay
+    transform_tolerance: 0.2
+    simulate_ahead_time: 2.0
+    max_rotational_vel: 0.8
+    min_rotational_vel: 0.2
+    rotational_acc_lim: 2.0
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      update_frequency: 5.0
+      publish_frequency: 2.0
+      global_frame: odom
+      robot_base_frame: base_link # overlay
+      rolling_window: true
+      width: 4
+      height: 4
+      resolution: 0.05
+      # footprint: overlay
+      plugins: ["obstacle_layer", "inflation_layer"]
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: scan
+        scan:
+          topic: /scan
+          data_type: "LaserScan"
+          marking: true
+          clearing: true
+          obstacle_max_range: 6.0
+          raytrace_max_range: 8.0
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        inflation_radius: 0.35
+        cost_scaling_factor: 3.0
+      always_send_full_costmap: true
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      update_frequency: 2.0
+      publish_frequency: 1.0
+      global_frame: map
+      robot_base_frame: base_link # overlay
+      rolling_window: false
+      track_unknown_space: true
+      # footprint: overlay
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: true
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: scan
+        scan:
+          topic: /scan
+          data_type: "LaserScan"
+          marking: true
+          clearing: true
+          obstacle_max_range: 6.0
+          raytrace_max_range: 8.0
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        inflation_radius: 0.35
+        cost_scaling_factor: 3.0
+      always_send_full_costmap: true

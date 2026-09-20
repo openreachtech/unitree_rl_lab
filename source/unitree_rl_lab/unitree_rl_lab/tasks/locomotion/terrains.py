@@ -714,7 +714,7 @@ class MeshIndoorRoomsTerrainCfg(SubTerrainBaseCfg):
     wall_height: float = 1.0
     """Room wall height (m). Keep well above the scan band top (0.82 m over ground)."""
     wall_thickness: float = 0.10
-    door_width: float = 1.2
+    door_width: float = 1.5
     floor_thickness: float = 0.05
     include_furniture: bool = True
     furniture_height: float = 0.5
