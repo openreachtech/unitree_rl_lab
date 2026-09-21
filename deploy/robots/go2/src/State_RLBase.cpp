@@ -1,4 +1,5 @@
 #include "FSM/State_RLBase.h"
+#include "ProgramLink.h"
 #include "unitree_articulation.h"
 #include "isaaclab/envs/manager_based_rl_env.h"
 #include "isaaclab/envs/mdp/observations/observations.h"
@@ -81,9 +82,35 @@ REGISTER_OBSERVATION(keyboard_velocity_commands)
     auto & cmd = g_keyboard_cmd;
     std::array<float, 3> target = {0.0f, 0.0f, 0.0f};
 
+    auto * link = ProgramLink::active.load();
+
     if (keyboard->consume_velocity_stop())
     {
+        // The operator's safety valve, and it has to beat the network: latching the link off here
+        // means the next line falls through to the keyboard, whose command this just zeroed.
+        if (link)
+        {
+            link->note_manual_stop();
+        }
         cmd = {0.0f, 0.0f, 0.0f};
+        return std::vector<float>(cmd.begin(), cmd.end());
+    }
+
+    // A fresh network target replaces the keyboard outright -- no low-pass, and clamped against the
+    // exported range rather than the scaled keyboard one. The compiler on the other end already
+    // produced a step-wise command stream at the control rate, and it is the same stream the policy
+    // was validated against in simulation; smoothing it here would make the robot follow something
+    // other than what was compiled. `cmd` is still written so a hand-back to the keyboard starts
+    // from what the robot was last asked for instead of from zero.
+    std::array<float, 3> network = {0.0f, 0.0f, 0.0f};
+    if (link && link->velocity(network))
+    {
+        const auto rx = [&](int idx) { return ranges["lin_vel_x"][idx].as<float>(); };
+        const auto ry = [&](int idx) { return ranges["lin_vel_y"][idx].as<float>(); };
+        const auto rz = [&](int idx) { return ranges["ang_vel_z"][idx].as<float>(); };
+        cmd[0] = std::clamp(network[0], rx(0), rx(1));
+        cmd[1] = std::clamp(network[1], ry(0), ry(1));
+        cmd[2] = std::clamp(network[2], rz(0), rz(1));
         return std::vector<float>(cmd.begin(), cmd.end());
     }
 

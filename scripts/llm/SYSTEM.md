@@ -1,4 +1,7 @@
-# 全体設計: LLM を含めた実行系（案、2026-09-15）
+# 全体設計: LLM を含めた実行系（2026-09-15）
+
+実装状況: 1〜3 は実装済み（`scripts/llm/conductor.py`, `deploy/robots/go2/{include,src}/ProgramLink.*`、
+偽コントローラ相手に UDP で検証済み）。4（MuJoCo 実演と settle の実測）と 5（Jetson）が残り。
 
 前提（決定済み）: 既存の C++ コントローラ（`deploy/robots/go2`, `State_Multitask`）に統合する。
 指令はコンソールにキーボードで文字入力。会話履歴はメモリ上、保存しない。MuJoCo（`unitree_mujoco`）でも動かす。
@@ -81,14 +84,33 @@ unitree_mujoco、実機は eth の interface。
 ```bash
 # 1. シム
 cd ~/unitree/unitree_mujoco/simulate/build && ./unitree_mujoco          # interface: lo
-# 2. LLM
-~/isaacsim/llama.cpp/build/bin/llama-server -m logs/llm/gguf/v3/model-Q4_K_M.gguf --port 8080 -t 16
+# 2. LLM（すでにビルド済みの CPU 版。-c 4096 は 5 ターン分の余裕、--keep -1 でシステムプロンプトを固定）
+~/isaacsim/llama.cpp/build/bin/llama-server -m logs/llm/gguf/v3/model-Q8_0.gguf \
+    --port 8080 -t 16 -c 4096 --keep -1
 # 3. コントローラ（FixStand → [6] Multitask まではキーボードで）
 cd deploy/robots/go2/build && ./go2_ctrl --network lo
 # 4. conductor
 python scripts/llm/conductor.py --gguf-dir logs/llm/gguf/v3 --llm http://localhost:8080
 > 前に3mくらい走ってから、そのままハンドスプリングして
 ```
+
+LLM 抜きで実行系だけ確かめるときは `--llm` を外して `/fwd 3`、`/flip backflip running`、
+`/stance front 5`、`/append <json>`、`/cancel`、`/state`。文法・コンパイラ・キューは同じものを通る。
+
+### プロトコル（1 行 1 コマンド、UDP）
+
+```
+conductor -> 7777   VEL <vx> <vy> <wz>      50 Hz。これが鮮度のハートビートも兼ねる
+                    FLIP <kind>             backflip|frontflip|sideflip_left|sideflip_right
+                    STANCE front|hind|off
+                    STOP                    即ゼロ＋キュー破棄
+                    RESUME                  スペース停止ラッチの解除
+7778 <- go2_ctrl    STATE fsm=Multitask link=1 flip=1,0.42,1.00 stance=0,-1.00,10.00
+                          vel=0.98,0.00,0.00 manual_stop=0
+```
+
+技の名前は文法側（frontflip）と config 側（handspring）の両方を受ける。同じ 4 つの技で語彙が
+違うだけなので、`State_Multitask::find_motion` が読み替える。
 
 ## 5. 順序
 

@@ -131,7 +131,9 @@ def parse_clause(text: str) -> dict | None:
     if flip is not None:
         step = {"skill": "flip", "kind": flip, "count": _count(text)}
         # "そのまま" / "走りながら" / "勢いで" before a flip: fired out of the run, not from standing.
-        if re.search(r"そのまま|止まら[ずん]|走りながら|勢い", text):
+        # Kept in step with RUNNING_WORDS in phrasebank.py -- a form the bank can write and this
+        # cannot read is a round-trip failure, which is what this parser exists to catch.
+        if re.search(r"そのまま|進んだまま|止まら[ずんな]|走りながら|勢い", text):
             step["running"] = True
         return step
 

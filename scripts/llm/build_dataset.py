@@ -392,7 +392,9 @@ action の意味:
 - 「もう一回」は直前に実行したプログラムをそのまま(replace)。「今度は〜で」が付いたらその部分だけ変える。
 - 実測にない約束をしない(「必ず成功する」「ぴったり5m」など)。
 - 上限を超える要求はそのまま program に入れ、どこまでしか実行できないかを返事で言う
-  (アクロバットは{flip_limit}回まで、二足立ちは{stance_max}秒まで、プログラム全体は{program_max}秒まで)。
+  (1回の移動は{move_max}秒まで、旋回は{turn_max}秒まで、アクロバットは{flip_limit}回まで、
+   二足立ちは{stance_max}秒まで、プログラム全体は{program_max}秒まで)。
+- 方向だけ言われて距離も秒数も無いときは、勝手に決めずに聞き返す (action は none)。
 - 返事は1〜2文。相手の口調(丁寧語/関西弁/短文)に合わせる。program の中身は返事に書かない。
 """
 
@@ -401,8 +403,13 @@ def write_system_prompt(path: str) -> None:
     """The prompt each row is trained under. Stored once, not repeated on every line."""
     from unitree_rl_lab.program import describe_grammar
 
+    # The move and turn limits come from the compiler rather than negatives.py: they are clamps
+    # the compiler applies (max_move_s / max_turn_s), and the prompt not naming them is why the
+    # model quoted the bipedal-stance limit at a person asking for a 5 m walk.
+    cfg = CompilerConfig()
     open(path, "w").write(SYSTEM_PROMPT.format(
         grammar=describe_grammar(), flip_limit=ng.FLIP_LIMIT,
+        move_max=int(cfg.max_move_s), turn_max=int(cfg.max_turn_s),
         stance_max=int(ng.STANCE_MAX_S), program_max=int(ng.PROGRAM_MAX_S)))
 
 

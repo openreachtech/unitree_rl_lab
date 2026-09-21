@@ -5,7 +5,10 @@
 #include "isaaclab/envs/mdp/actions/joint_actions.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <cstdio>
+#include <unordered_map>
 
 namespace
 {
@@ -40,6 +43,14 @@ void apply_targets(YAML::Node node, const std::string & motion, float & h, float
         else if (motion == "sideflip_right") r = +1.0f;   // right:    left hips lifted
     }
 }
+
+// The grammar's flip names (program/grammar.py) against this config's motion names. Same four
+// moves; the vocabularies differ because the grammar names the *rotation* the way a person asks
+// for it and the config names the *motion preset* the way the training task does.
+const std::unordered_map<std::string, std::string> kFlipAliases = {
+    {"frontflip", "handspring"},
+    {"sideflip_left", "sideflip"},
+};
 }  // namespace
 
 std::shared_ptr<State_Multitask::HandstandCommand> State_Multitask::handstand = nullptr;
@@ -156,6 +167,24 @@ State_Multitask::State_Multitask(int state_mode, std::string state_string)
             "The policy still runs; handstand_command simply stays zero.", state_string);
     }
 
+    if (cfg["program_link"] && cfg["program_link"]["enabled"]
+        && cfg["program_link"]["enabled"].as<bool>())
+    {
+        auto link_cfg = cfg["program_link"];
+        ProgramLink::Config lc;
+        lc.enabled = true;
+        if (link_cfg["port"])       lc.port = link_cfg["port"].as<int>();
+        if (link_cfg["state_port"]) lc.state_port = link_cfg["state_port"].as<int>();
+        if (link_cfg["state_host"]) lc.state_host = link_cfg["state_host"].as<std::string>();
+        if (link_cfg["timeout_s"])  lc.timeout_s = link_cfg["timeout_s"].as<float>();
+        if (link_cfg["state_rate_hz"])
+        {
+            const float hz = link_cfg["state_rate_hz"].as<float>();
+            if (hz > 0.0f) publish_period_s_ = 1.0f / hz;
+        }
+        link_ = std::make_shared<ProgramLink>(lc);
+    }
+
     spdlog::info(
         "State_{}: drive + on-demand motions (duration {:.2f}s, re-arm {:.2f}s, fall guard arms "
         "{:.2f}s after a trigger)",
@@ -254,6 +283,16 @@ void State_Multitask::enter()
     State_Multitask::handstand = handstand_;  // and the handstand_command term its own
     bad_orientation_latched_ = false;
 
+    if (link_)
+    {
+        link_->start();
+        link_->reset();
+        // Published before the policy thread starts, so the term never reads a link the state is
+        // not yet servicing.
+        ProgramLink::active.store(link_.get());
+        last_publish_ = std::chrono::steady_clock::now();
+    }
+
     env->robot->update();
 
     policy_thread_running = true;
@@ -337,11 +376,117 @@ void State_Multitask::run()
         }
     }
 
+    service_link();
+
     auto action = env->action_manager->processed_actions();
     for (int i(0); i < env->robot->data.joint_ids_map.size(); i++)
     {
         lowcmd->msg_.motor_cmd()[env->robot->data.joint_ids_map[i]].q() = action[i];
     }
+}
+
+const State_Flip::MotionPreset * State_Multitask::find_motion(const std::string & name) const
+{
+    const auto alias = kFlipAliases.find(name);
+    const std::string wanted = alias == kFlipAliases.end() ? name : alias->second;
+    for (const auto & m : motions_)
+    {
+        if (m.name == wanted)
+        {
+            return &m;
+        }
+    }
+    return nullptr;
+}
+
+// Called every FSM tick (1 kHz) while the state is live. Three jobs, in the order they matter:
+// apply what the conductor queued, then tell it what the robot is doing.
+//
+// Triggers go through exactly the paths the keyboard uses -- `command_->request` and
+// `handstand_->request/cancel` -- including the two refusals, because the reasons for those are
+// about the policy and not about who asked. A conductor that disagrees will see the refusal in the
+// state line rather than get a flip fired from two legs.
+void State_Multitask::service_link()
+{
+    if (!link_)
+    {
+        return;
+    }
+
+    std::string kind;
+    while (link_->take_flip(kind))
+    {
+        const auto * motion = find_motion(kind);
+        if (!motion)
+        {
+            spdlog::warn(
+                "State_Multitask: FLIP '{}' is not in this policy's `motions:` list -- ignored.",
+                kind);
+            continue;
+        }
+        if (handstand_->enabled)
+        {
+            spdlog::warn("State_Multitask: FLIP '{}' ignored -- a bipedal stance is active.", kind);
+            continue;
+        }
+        command_->request(motion->target_height, motion->target_pitch_turns,
+                          motion->target_roll_turns);
+        spdlog::info("State_Multitask: FLIP {} ({}) queued from the link", kind, motion->name);
+    }
+
+    float sign = 0.0f;
+    while (link_->take_stance(sign))
+    {
+        if (sign == 0.0f)
+        {
+            if (handstand_->enabled)
+            {
+                handstand_->cancel();
+                spdlog::info("State_Multitask: releasing the stance (link)");
+            }
+            continue;
+        }
+        if (handstand_->enabled)
+        {
+            spdlog::warn("State_Multitask: STANCE ignored -- already up.");
+            continue;
+        }
+        if (command_->enabled)
+        {
+            spdlog::warn("State_Multitask: STANCE ignored -- an acrobatic move is running.");
+            continue;
+        }
+        handstand_->request(sign);
+        spdlog::info("State_Multitask: {} stance requested (link)", sign > 0 ? "front" : "hind");
+    }
+
+    // The state line, at the control rate rather than the FSM's 1 kHz. It is what the conductor
+    // builds the model's state block from, so it carries the two things Python cannot know: how far
+    // into a move or a stance the robot actually is, and whether the operator has taken over.
+    //
+    // `flip` and `stance` elapsed times are measured from the trigger by the same clocks the policy
+    // reads, so "still in the window" here means exactly what it means to the network.
+    const auto now = std::chrono::steady_clock::now();
+    if (std::chrono::duration<float>(now - last_publish_).count() < publish_period_s_)
+    {
+        return;
+    }
+    last_publish_ = now;
+
+    std::array<float, 3> vel = {0.0f, 0.0f, 0.0f};
+    const bool driving = link_->velocity(vel);
+
+    char line[256];
+    std::snprintf(
+        line, sizeof(line),
+        "STATE fsm=Multitask link=%d flip=%d,%.2f,%.2f stance=%d,%.2f,%.2f "
+        "vel=%.3f,%.3f,%.3f manual_stop=%d\n",
+        driving ? 1 : 0,
+        command_->enabled ? 1 : 0, command_->elapsed(), command_->command_duration_s,
+        static_cast<int>(handstand_->stance), handstand_->elapsed(), handstand_->hold_duration_s,
+        vel[0], vel[1], vel[2],
+        link_->manual_stopped() ? 1 : 0);
+    link_->publish(line);
 }
 
 void State_Multitask::exit()
@@ -350,6 +495,13 @@ void State_Multitask::exit()
     if (policy_thread.joinable())
     {
         policy_thread.join();
+    }
+    if (link_)
+    {
+        // Cleared only after the policy thread is joined: that thread is the one reading it.
+        ProgramLink::active.store(nullptr);
+        link_->publish("STATE fsm=none link=0\n");
+        link_->stop();
     }
     handstand_->reset();
     // Nulled, unlike State_Flip::command below: no other state publishes a handstand command, so

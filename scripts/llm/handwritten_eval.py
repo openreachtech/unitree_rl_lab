@@ -6,6 +6,9 @@ looking at ``phrasebank.py``: different verbs (前進 / 後退 / 一周 / 左向
 a person actually makes, and follow-ups phrased as they come out of a mouth. Add your own; the
 Kansai lines in particular should come from a Kansai speaker.
 
+Cases that a released model got wrong belong here too -- hw_running_word and hw_amount are the
+five phrasings v3 failed in MuJoCo, kept so the next model has to pass them.
+
     python scripts/llm/handwritten_eval.py --out data/llm/handwritten_eval.jsonl
     python scripts/llm/eval_model.py --adapter ... --dataset data/llm/handwritten_eval.jsonl
 
@@ -84,6 +87,38 @@ CASES = [
     # --- running-flip mismatch: proposal ---
     ("hw_mismatch", [("前に3メートル走りながらバク転して。", "idle", "none", [], "前に走りながらやと前転になるけど、それでええ?"),
                      ("ええよ、それで。", "idle", "replace", [mv("forward", 3), fl("frontflip", running=True)])]),
+    # --- the same running flip asked five ways (regression, 2026-09-15) ---
+    # v3 answered every one of these with a proposal instead of the program, because 「走りながら」
+    # appeared in all five proposal replies and in no other reply. Only the そのまま variant worked.
+    # The ask already matches the heading in each, so the answer is the program, not a question.
+    ("hw_running_word", [("3メートル前に進んで、走りながら前方回転して。", "idle", "replace", [mv("forward", 3), fl("frontflip", running=True)])]),
+    ("hw_running_word", [("3メートル前に進んで、そのまま前方回転して。", "idle", "replace", [mv("forward", 3), fl("frontflip", running=True)])]),
+    ("hw_running_word", [("3メートル前に進んで、止まらずに前方回転して。", "idle", "replace", [mv("forward", 3), fl("frontflip", running=True)])]),
+    ("hw_running_word", [("3メートル前に進んで、その勢いで前方回転して。", "idle", "replace", [mv("forward", 3), fl("frontflip", running=True)])]),
+    ("hw_running_word", [("前に5メートル走りながら前転して。", "idle", "replace", [mv("forward", 5), fl("frontflip", running=True)])]),
+    ("hw_running_word", [("3メートル前に走って、止まらんとハンドスプリングして。", "idle", "replace", [mv("forward", 3), fl("frontflip", running=True)])]),
+    # --- not everything said while idle is a command (regression, 2026-09-17, from MuJoCo) ---
+    # v6 re-ran the last program for every one of these: 「とまれ」 was spelled in a way the bank
+    # never used, and an unrecognised short utterance at an idle state with a previous program fell
+    # into the 84.5% of them that meant 「もう一回」. 「なるほど」 made the robot run for ten seconds.
+    ("hw_idle_filler", [("前に10秒歩いて。", "idle", "replace", [mv("forward", 10, by="s")]),
+                        ("とまれ！", "done", "none", [])]),
+    ("hw_idle_filler", [("前に10秒歩いて。", "idle", "replace", [mv("forward", 10, by="s")]),
+                        ("なるほど。", "done", "none", [])]),
+    ("hw_idle_filler", [("前に10秒歩いて。", "idle", "replace", [mv("forward", 10, by="s")]),
+                        ("そうか。", "done", "none", [])]),
+    ("hw_idle_filler", [("前に10秒歩いて。", "idle", "replace", [mv("forward", 10, by="s")]),
+                        ("ふーん。", "done", "none", [])]),
+    ("hw_idle_filler", [("前に10秒歩いて。", "idle", "replace", [mv("forward", 10, by="s")]),
+                        ("とめて。", "done", "none", [])]),
+    # --- a direction with no amount: ask, do not guess (regression, 2026-09-15) ---
+    # v3 answered 「もどってきて、バックで。」 out of the decline templates ("人を乗せるところが
+    # ないねん"), and then read the 5 m that followed as an argument rather than the missing number.
+    ("hw_amount", [("もどってきて、バックで。", "idle", "none", []),
+                   ("あ、5mやで。", "idle", "replace", [mv("backward", 5)])]),
+    ("hw_amount", [("前に進んで。", "idle", "none", []),
+                   ("2メートルくらいで。", "idle", "replace", [mv("forward", 2)])]),
+    ("hw_amount", [("5m後ろに戻って。", "idle", "replace", [mv("backward", 5)])]),
     # --- fast + running flip: any valid program at replace; the grammar refuses fast + running ---
     ("hw_fast", [("全速力で前に走って、そのまま前転!", "idle", "replace", None)]),
     # --- follow-ups while running: base program forward 10 s ---

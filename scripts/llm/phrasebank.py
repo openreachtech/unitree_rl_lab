@@ -193,9 +193,9 @@ FLIP_VERBS: dict[str, list[Verb]] = {
 # A flip fired out of the preceding move, without stopping. The instruction has to say so, or the
 # reader (and the model) would take it for the ordinary stop-then-flip.
 RUNNING_WORDS: dict[str, list[str]] = {
-    "polite": ["そのまま", "止まらずに", "走りながら", "その勢いで", "走った勢いで"],
-    "kansai": ["そのまま", "止まらんで", "走りながら", "その勢いで", "勢いのまま", "走った勢いで"],
-    "short": ["そのまま", "走りながら"],
+    "polite": ["そのまま", "止まらずに", "走りながら", "その勢いで", "走った勢いで", "進んだまま", "止まらないで"],
+    "kansai": ["そのまま", "止まらんで", "走りながら", "その勢いで", "勢いのまま", "走った勢いで", "進んだまま", "止まらんと"],
+    "short": ["そのまま", "走りながら", "止まらんと"],
 }
 
 STANCE_WORDS: dict[str, list[str]] = {
@@ -211,19 +211,34 @@ TURN_DIR_WORDS: dict[str, list[str]] = {
 TURN_VERBS = [V_MAWARU, V_SENKAI, V_MUKI, V_MAWARU]
 STOP_VERBS = [V_TOMARU, V_TEISHI, V_MATSU]
 
-IN_PLACE = ["その場で", "そのまま", ""]
+# Deliberately without 「そのまま」, which belongs to RUNNING_WORDS above. It is the most natural
+# way to say "keep going and then do it", and having it also mean "without moving" made it the one
+# word that could not be read: in the v3 dataset 358 instructions containing そのまま carried a
+# running flip and 141 a standing one, and the model resolved the ambiguity by dropping `running`.
+IN_PLACE = ["その場で", "そこで", ""]
 
 # -------------------------------------------------------------------------------------- endings
 
+# The bare 「、」 is listed twice because it is how people actually join two actions -- 「3m前に
+# 進んで、そのまま前転して」 -- and it was the one join the bank could not write: every clause was
+# followed by a connective word. A model trained only on the wordy joins reads the plain one as
+# unfamiliar, and v3/v4 both answered unfamiliar sentences with a question instead of a program.
 CONNECTIVES: dict[str, list[str]] = {
-    "polite": ["から、", "。そのあと、", "。次に、", "。それから、", "。続けて、", "、そのあとに"],
-    "kansai": ["から、", "、そんで", "、ほんで", "。そのあと、", "、そっから", "。ほんで次に、"],
+    "polite": ["、", "、", "から、", "。そのあと、", "。次に、", "。それから、", "。続けて、", "、そのあとに"],
+    "kansai": ["、", "、", "から、", "、そんで", "、ほんで", "。そのあと、", "、そっから", "。ほんで次に、"],
     "short": ["、", "、", "。", "、そのあと"],
 }
 
+# The bare ending -- 「…前方回転して。」 with no 「ください」 and no 「や」 -- is the plainest way to
+# end a typed instruction and was the last shape the bank could not write: only 551 of ~7250 rows
+# ended that way, nearly all of them Kansai, so a sentence with neutral vocabulary and a plain
+# ending was outside the data. Measured on v5, that ending alone decided the answer: every step of
+# 「前方へ約3m行って。それから、走りながら前方回転を1回してください。」 ->
+# 「3メートル前に進んで、走りながら前方回転してください。」 was answered with the program, and only
+# swapping the last 「ください」 for 「。」 turned it into a question.
 ENDINGS: dict[str, list[str]] = {
-    "polite": ["ください。", "ください。", "もらえますか。", "ほしいです。", "みましょう。", "くれますか。", "ください!"],
-    "kansai": ["や。", "な。", "。", "くれる?", "みて。", "や!", "ほしいねん。", "んか。"],
+    "polite": ["ください。", "ください。", "もらえますか。", "ほしいです。", "みましょう。", "くれますか。", "ください!", "。", "。", "!"],
+    "kansai": ["や。", "な。", "。", "。", "。", "くれる?", "みて。", "や!", "ほしいねん。", "んか。"],
     "short": ["。", "。", "!"],
 }
 
@@ -342,12 +357,21 @@ def _amount_move(step: dict, style: str, rng: random.Random) -> str:
 
 
 def move_clause(step: dict, style: str, rng: random.Random) -> Clause:
+    """The three orders a person uses for the same thing.
+
+    「ゆっくり前に3m」 / 「ゆっくり3m前に」 / 「3mゆっくり前に」 all say it, and the bank used to write
+    the first almost always. Word order is not decoration here: it is the main thing that made a
+    typed sentence look unlike the training data.
+    """
     dirw = rng.choice(DIR_WORDS[step["dir"]])
     speed = _speed_word(step.get("speed", "normal"), style, rng)
     amount = _amount_move(step, style, rng)
     verb = rng.choice(MOVE_VERBS[step["dir"]])
-    if not speed and rng.random() < 0.3:
-        body = f"{amount}{dirw}"
+    order = rng.random()
+    if order < 0.22:
+        body = f"{speed}{amount}{dirw}"
+    elif order < 0.40:
+        body = f"{amount}{speed}{dirw}"
     else:
         body = f"{speed}{dirw}{amount}"
     return Clause(body, verb)
@@ -368,7 +392,7 @@ def turn_clause(step: dict, style: str, rng: random.Random) -> Clause:
 
 def stop_clause(step: dict, style: str, rng: random.Random) -> Clause:
     amount = seconds_word(step.get("duration_s", 1.0), style, rng)
-    head = rng.choice(["", "", "そのまま", "その場で"])
+    head = rng.choice(["", "", "そこで", "その場で"])  # not そのまま -- see IN_PLACE
     return Clause(f"{head}{amount}", rng.choice(STOP_VERBS))
 
 
@@ -442,6 +466,19 @@ def short_phrase(step: dict, rng: random.Random) -> str:
 # ------------------------------------------------------------------------------------ assembling
 
 
+def _nounable(step: dict) -> bool:
+    """Whether this step still says what it is once the verb is dropped.
+
+    A flip or a stance is named by its noun and a move carries a direction, so 「バク転1回。」 and
+    「前へ3m。」 are complete. A stop is not -- 「だいたい1秒。」 is one second of nothing -- and
+    neither is a timed turn, which without 「回って」 reads as a sideways walk. That is the same
+    reason turn_clause keeps a rotation word on a timed turn.
+    """
+    if step["skill"] in ("flip", "stance", "move"):
+        return True
+    return step["skill"] == "turn" and step.get("angle_deg") is not None
+
+
 def instruction(steps: list[dict], style: str, rng: random.Random) -> str:
     if not steps:
         return ""
@@ -452,6 +489,10 @@ def instruction(steps: list[dict], style: str, rng: random.Random) -> str:
     out = ""
     for clause in clauses[:-1]:
         out += clause.te() + rng.choice(CONNECTIVES[style])
+    if rng.random() < 0.15 and _nounable(steps[-1]):
+        # Noun-ended: 「後ろに3秒下がって、バク転1回。」 The verb is dropped and nothing is lost --
+        # people write this constantly and the bank never did.
+        return out + clauses[-1].body + rng.choice(["。", "。", "!"])
     return out + clauses[-1].te() + rng.choice(ENDINGS[style])
 
 

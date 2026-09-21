@@ -135,6 +135,11 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=4, help="8 fitted 1280-token rows; the ~2000-token conversations need 4")
     parser.add_argument("--grad-accum", type=int, default=4)
     parser.add_argument("--max-len", type=int, default=2304, help="prompt ~1400 tokens + up to three turns")
+    parser.add_argument("--grad-checkpoint", action="store_true",
+                        help="recompute activations in the backward pass instead of storing them. "
+                             "About 30%% slower and several times smaller: the 1.7B run holds every "
+                             "activation for 4 x 2304 tokens and peaks near 90 GB, which a 4B model "
+                             "cannot do on one card. Off by default so the 1.7B numbers stay comparable")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--limit", type=int, help="tiny run, to check the wiring")
     args = parser.parse_args()
@@ -158,10 +163,14 @@ def main() -> None:
 
     peft_config = LoraConfig(
         r=args.rank, lora_alpha=args.alpha, lora_dropout=args.dropout,
-        target_modules="all-linear",  # q,k,v,o,gate,up,down in all 28 blocks; lm_head is excluded
+        target_modules="all-linear",  # q,k,v,o,gate,up,down in every block; lm_head is excluded
         bias="none", use_dora=not args.lora, task_type="CAUSAL_LM",
     )
     model = get_peft_model(model, peft_config)
+    if args.grad_checkpoint:
+        # Without this the checkpointed blocks see inputs that do not require grad -- every base
+        # weight is frozen -- and the backward pass finds nothing to recompute through.
+        model.enable_input_require_grads()
     model.print_trainable_parameters()
 
     steps_per_epoch = math.ceil(len(train) / (args.batch_size * args.grad_accum))
@@ -178,6 +187,8 @@ def main() -> None:
         weight_decay=0.0,
         max_grad_norm=1.0,
         bf16=True,
+        gradient_checkpointing=args.grad_checkpoint,
+        gradient_checkpointing_kwargs={"use_reentrant": False} if args.grad_checkpoint else None,
         logging_steps=10,
         eval_strategy="epoch" if evals else "no",
         # One adapter per epoch. Eval loss says when the model stops improving on *token* prediction;

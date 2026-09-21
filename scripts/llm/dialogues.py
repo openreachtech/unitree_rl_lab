@@ -21,6 +21,8 @@ the step marked as under way and the 中断可/不可 flag are the ones an execu
     jump_propose    idle    「ジャンプして」                 -> none + alternative, then yes/no
     running_propose idle    「前に走りながらバク転して」       -> none + the heading's flip, then yes/no
     running_fast    idle    「速く走りながら前転して」         -> replace at normal speed, says so
+    missing_amount  idle    「バックで戻って」(数量なし)        -> none + ask how far, then the number
+    idle_filler     idle+直前 「なるほど」「ふーん」               -> none (not everything is a command)
 
 Wording lives in the tables at the top; nothing below them invents Japanese. Decisions -- which
 action, which program, whether a warning is due -- come from the scenario, the grammar and the
@@ -66,10 +68,15 @@ REPEAT_SLOW_RE = {
     "short": ["ゆっくりで、いくで。"],
 }
 
+# The kana spellings are here because a person typing in a hurry does not reach for the kanji.
+# Measured on v6: 「とまれ!」 was answered by re-running the last program -- 0 of 10164 training turns
+# spelled it that way, so it was simply an unknown word, and an unknown short word in this state
+# falls into the 84.5% of them that mean 「もう一回」.
 STOP_IN = {
-    "polite": ["止まってください。", "ストップ!", "待ってください。", "そこで止まって。", "一旦止まってください。"],
-    "kansai": ["あ、ストップ!", "止まって!", "待って待って!", "ちょい待ち!", "やめて!", "そこでストップ。", "待った。", "待った待った!", "ストップや!", "止まれ止まれ!"],
-    "short": ["ストップ。", "止まれ。", "待て。"],
+    "polite": ["止まってください。", "ストップ!", "待ってください。", "そこで止まって。", "一旦止まってください。", "とまってください。"],
+    "kansai": ["あ、ストップ!", "止まって!", "待って待って!", "ちょい待ち!", "やめて!", "そこでストップ。", "待った。",
+               "待った待った!", "ストップや!", "止まれ止まれ!", "とまって!", "とまれ!", "はよとまって!", "とめて!"],
+    "short": ["ストップ。", "止まれ。", "待て。", "とまれ。", "とめて。"],
 }
 STOP_RE = {
     "polite": ["止まります。", "はい、ここで止まります。", "停止します。残りは取り消しました。"],
@@ -121,13 +128,47 @@ INSERT_TURN_RE = {
     "short": ["{turn}、いくで。"],
 }
 
-# a flip the heading does not allow while running: propose the one it does
+# A flip the heading does not allow while running: propose the one it does.
+#
+# Every variant used to open with 「走りながら」, and that one word then carried the whole decision:
+# measured on the v3 dataset, a reply containing 走りながら was a proposal 48% of the time while a
+# reply containing any other running word (そのまま, 止まらずに, その勢いで, 走った勢いで) was a
+# proposal 0.0% of the time. The model reuses the word the person used, so 「走りながら前転して」
+# reliably produced a question and 「そのまま前転して」 -- the same request -- produced the program.
+# The word is spread across the variants here so it cannot stand in for the actual signal, which is
+# whether the asked rotation matches the heading.
 PROPOSE_RUNNING_RE = {
-    "polite": ["{dir}に走りながらだと{allowed}になります。それでよろしいですか。",
-               "走りながらできるのは{dir}なら{allowed}だけです。{allowed}でよいですか。"],
-    "kansai": ["{dir}に走りながらやと{allowed}になるけど、それでええ?", "走りながらは{dir}やと{allowed}しかできひんねん。{allowed}でええ?"],
-    "short": ["{dir}に走りながらは{allowed}だけ。それでええ?"],
+    "polite": ["{dir}へ{run}出せるのは{allowed}だけです。{allowed}でよいですか。",
+               "{dir}に{run}やる場合は{allowed}になります。それでよろしいですか。",
+               "{run}できるのは、{dir}なら{allowed}だけです。{allowed}でよいですか。"],
+    "kansai": ["{dir}に{run}出せるんは{allowed}だけやねん。{allowed}でええ?",
+               "{dir}に{run}やるんやったら{allowed}になるけど、それでええ?",
+               "{run}できるんは、{dir}やと{allowed}だけや。それでええ?"],
+    "short": ["{dir}に{run}出せるんは{allowed}だけ。ええ?",
+              "{run}できるんは{dir}やと{allowed}だけ。それでええ?"],
 }
+
+ALL_RUNNING_WORDS = sorted({w for words in pb.RUNNING_WORDS.values() for w in words}, key=len, reverse=True)
+
+
+def _running_word(asked_text: str, style: str, rng: random.Random) -> str:
+    """The word the person just used for "without stopping", to say it back to them.
+
+    Echoed rather than chosen, because choosing is what broke v3. Every variant of this reply used
+    to open with 「走りながら」, and since the model reuses the person's word, that one word ended up
+    deciding the action: measured on the v3 dataset a reply containing 走りながら was a proposal 48%
+    of the time and a reply containing any other running word 0.0% of the time, so
+    「走りながら前転して」 got a question and 「そのまま前転して」 -- the same request -- got the
+    program. Echoing makes the word's distribution here identical to its distribution in the
+    instructions, which leaves the model nothing to read off it but the thing that actually decides:
+    whether the rotation asked for matches the heading.
+    """
+    for word in ALL_RUNNING_WORDS:
+        if word in asked_text:
+            return word
+    return rng.choice(pb.RUNNING_WORDS[style])
+
+
 PROPOSE_YES_RE = {
     "polite": ["はい、{allowed}でいきます。", "承知しました、{allowed}にします。"],
     "kansai": ["ほな{allowed}でいくで!", "おっけー、{allowed}な!"],
@@ -143,6 +184,51 @@ PROPOSE_NO_IDLE_RE = {
     "kansai": ["おっけー、やめとくわ。", "了解、なしな。"],
     "short": ["了解、やめとく。"],
 }
+# Reactions and fillers -- the things a person says that are not instructions at all. The existing
+# chit-chat rows put these at a plain idle state (nothing run yet) or mid-run; neither covers the
+# state you are in most of the time, which is standing still with a program just finished. Measured
+# on the v6 dataset, a short utterance in *that* state was `replace` 84.5% of the time, so anything
+# the model did not recognise -- 「なるほど」, 「そうか」, 「とまれ」 -- re-ran the last program.
+# Deliberately no 「うん」「ええよ」「オッケー」: those are how a proposal is accepted, and they have
+# to keep meaning yes when one is pending.
+IDLE_FILLER_IN = {
+    "polite": ["なるほど。", "そうですか。", "ふむ。", "へえ。", "なるほどですね。", "ふーん。", "ああ。", "すごいですね。"],
+    "kansai": ["なるほど。", "なるほどな。", "そうか。", "ふーん。", "へえ。", "ほんまか。", "やるやん。", "おお。", "すごいな。", "あー。"],
+    "short": ["ふーん。", "へえ。", "なるほど。", "そうか。"],
+}
+IDLE_FILLER_RE = {
+    "polite": ["はい。次のご指示をお待ちしています。", "何かあればお申し付けください。", "待機しています。"],
+    "kansai": ["せやろ。次どうする?", "まあな。次の指示待っとるで。", "ほんで、次は?", "待っとるで。"],
+    "short": ["待機中。", "次どうする?", "待っとる。"],
+}
+
+# A direction with no amount. Every instruction the phrase bank writes names a distance or a
+# duration, so 「バックで戻って」 sat outside the data and the model answered it out of the decline
+# templates instead ("人を乗せるところがないねん"). Asking is the honest answer: the alternative is
+# guessing a number, and the number is how far a 15 kg robot actually travels.
+MISSING_AMOUNT_IN = {
+    "polite": ["{dir}に進んでください。", "{dir}へ行ってください。", "{dir}に動いてください。", "{dir}へお願いします。"],
+    "kansai": ["{dir}に行って。", "{dir}へ進んで。", "{dir}に動いて。", "{dir}やって。", "{dir}に行ってくれる?"],
+    "short": ["{dir}に。", "{dir}へ。", "{dir}。"],
+}
+MISSING_AMOUNT_RE = {
+    # No example distance in the wording: check_dataset's numerals rule counts any number in a
+    # reply that the program does not justify, and it is right to -- that rule is what stops
+    # 「ぴったり5m」. The question works without one.
+    "polite": ["どのくらい{dir}へ進みましょうか。距離か秒数を教えてください。",
+               "{dir}ですね。どのくらい進みましょうか。メートルでも秒でも構いません。",
+               "{dir}に進みます。距離か時間を決めてもらえますか。"],
+    "kansai": ["どんくらい{dir}行く?距離か秒数を言うてくれたらいくで。",
+               "{dir}やな。どんくらい行く?メートルでも秒でもええで。",
+               "{dir}やね。距離か時間だけ決めてくれる?"],
+    "short": ["どんくらい?距離か秒数を。", "{dir}やな。どんくらい?", "距離は?"],
+}
+AMOUNT_IN = {
+    "polite": ["{amount}です。", "{amount}でお願いします。", "{amount}で。", "{amount}くらいで。"],
+    "kansai": ["{amount}や。", "あ、{amount}やで。", "{amount}で。", "{amount}くらいやな。"],
+    "short": ["{amount}。", "{amount}で。"],
+}
+
 YES_IN = {
     "polite": ["はい、それでお願いします。", "お願いします。", "それでいいです。", "はい。"],
     "kansai": ["うん、それで。", "ええよ。", "それでええ。", "おk。", "頼む。", "うん。"],
@@ -431,9 +517,11 @@ def sc_insert_propose(record, steps, timeline, style, rng, ctx) -> Turns | None:
     if not _valid(inserted, context=steps[index]):
         return None
     turns = _open(record, steps, timeline, style, rng, ctx)
-    turns.user(state_from_timeline(steps, timeline, t), _pick(INSERT_FLIP_IN, style, rng).format(flip=rng.choice(pb.FLIP_WORDS[asked])))
-    turns.bot(_pick(PROPOSE_RUNNING_RE, style, rng).format(dir=_dir_ja(direction), allowed=_flip_ja(allowed)),
-              "none", [], proposed=inserted)
+    asked_text = _pick(INSERT_FLIP_IN, style, rng).format(flip=rng.choice(pb.FLIP_WORDS[asked]))
+    turns.user(state_from_timeline(steps, timeline, t), asked_text)
+    turns.bot(_pick(PROPOSE_RUNNING_RE, style, rng).format(
+        dir=_dir_ja(direction), allowed=_flip_ja(allowed), run=_running_word(asked_text, style, rng)),
+        "none", [], proposed=inserted)
     later = state_from_timeline(steps, timeline, t + 1.5)
     if rng.random() < 0.7:
         turns.user(later, _pick(YES_IN, style, rng))
@@ -537,6 +625,52 @@ def sc_jump_propose(record, steps, timeline, style, rng, ctx) -> Turns | None:
     return turns
 
 
+def sc_idle_filler(record, steps, timeline, style, rng, ctx) -> Turns | None:
+    """Something that is not an instruction, said while standing after a program finished.
+
+    The state that produced 課題1 in MuJoCo: the robot is idle, `last` holds what it just did, and
+    the person says something -- a reaction, a stop word the bank never spelled that way, anything.
+    Every short utterance the model had seen in this state meant "do it again", so it did it again.
+    These rows are the counterweight: in this state, not everything is a command.
+    """
+    turns = _open(record, steps, timeline, style, rng, ctx)
+    state = RobotState.idle(steps, "completed")
+    if rng.random() < 0.45:
+        casual_in, polite_in, casual_re, polite_re = rng.choice(ng.CHITCHAT)
+        text, reply = ((rng.choice(polite_in), rng.choice(polite_re)) if style == "polite"
+                       else (rng.choice(casual_in), rng.choice(casual_re)))
+    else:
+        text, reply = _pick(IDLE_FILLER_IN, style, rng), _pick(IDLE_FILLER_RE, style, rng)
+    turns.user(state, text)
+    turns.bot(reply, "none", [])
+    return turns
+
+
+def sc_missing_amount(record, steps, timeline, style, rng, ctx) -> Turns | None:
+    """A direction with no amount: ask how far, then take the number and go.
+
+    Not answered with a guess. A distance the person did not give is a distance the robot actually
+    travels, and the two turns here are what they did anyway -- 「バックで戻って」 followed by
+    「あ、5mやで」 -- so the only thing missing was the robot asking instead of declining.
+    """
+    move = next((s for s in steps if s["skill"] == "move" and s.get("distance_m") is not None), None)
+    if move is None:
+        return None
+    # Normal speed, whatever the base program used. The person gave a direction and then a distance
+    # and nothing else, so a reply that says 「ゆっくり」 is inventing the same way a guessed distance
+    # would -- and this scenario exists precisely to stop the model filling in what it was not told.
+    program = [{"skill": "move", "dir": move["dir"], "speed": "normal", "distance_m": move["distance_m"]}]
+    line = compile_program(program_from_json(program), ctx.compiler)
+    where = _dir_ja(move["dir"])
+    turns = Turns()
+    turns.user(RobotState.idle(), _pick(MISSING_AMOUNT_IN, style, rng).format(dir=where))
+    turns.bot(_pick(MISSING_AMOUNT_RE, style, rng).format(dir=where), "none", [])
+    turns.user(RobotState.idle(), _pick(AMOUNT_IN, style, rng).format(
+        amount=pb.distance_word(move["distance_m"], style, rng)))
+    turns.bot(ctx.first_reply(program, style, line.duration, rng), "replace", program)
+    return turns
+
+
 def _first_running_pair(steps: list[dict]) -> int | None:
     for i in range(len(steps) - 1):
         if steps[i]["skill"] == "move" and steps[i + 1].get("running"):
@@ -545,17 +679,36 @@ def _first_running_pair(steps: list[dict]) -> int | None:
 
 
 def sc_running_propose(record, steps, timeline, style, rng, ctx) -> Turns | None:
+    """A running flip asked for by name from idle -- sometimes the one the heading allows, sometimes
+    not, and the answer differs on exactly that.
+
+    A third of these ask for the rotation the heading *does* allow, and are answered with the
+    program rather than a question. They are the minimal pair: same generator, same wording, same
+    two-turn shape, one word different. Without them the model has no example where a running flip
+    named from idle is simply carried out in this shape, and it learns "running flip from idle ->
+    ask" -- which is what v3 and v4 both did, v3 keying off the word 走りながら and v4, once that was
+    decorrelated, off whether the sentence looked generated at all.
+    """
     i = _first_running_pair(steps)
     if i is None or len(steps) > 3:
         return None
     allowed = steps[i + 1]["kind"]
+    if rng.random() < 0.35:
+        turns = Turns()
+        turns.user(RobotState.idle(), pb.instruction(steps, style, rng))
+        turns.bot(ctx.first_reply(steps, style, timeline.duration, rng), "replace", steps, roundtrip=True)
+        turns.user(RobotState.idle(steps, "completed"), _pick(REPEAT_IN, style, rng))
+        turns.bot(_pick(REPEAT_RE, style, rng) + ctx.cautions_for(steps, style, rng), "replace", steps)
+        return turns
     asked = rng.choice([k for k in FLIP_KINDS if k not in (allowed, "jump")])
     wrong = [dict(s) for s in steps]
     wrong[i + 1]["kind"] = asked
     turns = Turns()
-    turns.user(RobotState.idle(), pb.instruction(wrong, style, rng))
-    turns.bot(_pick(PROPOSE_RUNNING_RE, style, rng).format(dir=_dir_ja(steps[i]["dir"]), allowed=_flip_ja(allowed)),
-              "none", [], proposed=steps)
+    asked_text = pb.instruction(wrong, style, rng)
+    turns.user(RobotState.idle(), asked_text)
+    turns.bot(_pick(PROPOSE_RUNNING_RE, style, rng).format(
+        dir=_dir_ja(steps[i]["dir"]), allowed=_flip_ja(allowed), run=_running_word(asked_text, style, rng)),
+        "none", [], proposed=steps)
     if rng.random() < 0.7:
         turns.user(RobotState.idle(), _pick(YES_IN, style, rng))
         turns.bot(_pick(PROPOSE_YES_RE, style, rng).format(allowed=_flip_ja(allowed)) + ctx.cautions_for(steps, style, rng),
@@ -600,6 +753,8 @@ SCENARIOS: dict[str, Scenario] = {
     "dlg_jump_propose": sc_jump_propose,
     "dlg_running_propose": sc_running_propose,
     "running_fast": sc_running_fast,
+    "dlg_missing_amount": sc_missing_amount,
+    "dlg_idle_filler": sc_idle_filler,
 }
 
 # Scenarios whose first turn is a proposal, not an execution: any validated program will do.
@@ -607,11 +762,14 @@ FROM_ALL_RECORDS = {"dlg_running_propose", "running_fast"}
 
 # Share of the dialogue budget per scenario.
 SHARE: dict[str, float] = {
-    "dlg_repeat": 0.11, "dlg_interrupt": 0.09, "dlg_resume": 0.06, "dlg_insert": 0.14, "dlg_insert_fast": 0.05,
+    "dlg_repeat": 0.06, "dlg_interrupt": 0.07, "dlg_resume": 0.06, "dlg_insert": 0.12, "dlg_insert_fast": 0.05,
     "dlg_insert_turn": 0.04, "dlg_insert_propose": 0.10, "dlg_append": 0.07, "dlg_correction": 0.07,
-    "dlg_chitchat": 0.08, "dlg_status": 0.06, "dlg_stopped": 0.02, "dlg_jump_propose": 0.04,
-    "dlg_running_propose": 0.05, "running_fast": 0.02,
+    "dlg_chitchat": 0.06, "dlg_status": 0.06, "dlg_stopped": 0.02, "dlg_jump_propose": 0.04,
+    "dlg_running_propose": 0.05, "running_fast": 0.02, "dlg_missing_amount": 0.05,
+    "dlg_idle_filler": 0.06,
 }
+"""Sums to 1.0. The 0.05 for dlg_missing_amount came off dlg_repeat and dlg_chitchat, which score
+highest of the lot and are the least sensitive to a smaller share."""
 
 
 def build_dialogue_rows(records: list[dict], total: int, styles: tuple[str, ...], ctx: Context,

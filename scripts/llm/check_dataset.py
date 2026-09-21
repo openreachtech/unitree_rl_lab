@@ -52,6 +52,11 @@ CAUTION_FOR_KIND = {"frontflip": "frontflip_landing", "handstand": "handstand_de
 NUMBER = re.compile(r"\d+(?:\.\d+)?")
 
 NO_PROGRAM = {"chitchat", "impossible", "ambiguous"}
+
+# Categories whose follow-up turns are small talk rather than a reply about the program. Their
+# numbers come from the robot talking about itself (「Go2です」, 「8方向に歩ける」), which no program
+# can justify -- the check would otherwise read the 2 in Go2 as an invented distance.
+CHATTY_FOLLOWUP = {"dlg_chitchat", "dlg_idle_filler"}
 RUNNING_ONLY = {"cancel", "insert", "append"}
 
 
@@ -171,7 +176,7 @@ def main() -> None:
                     failures.append(f"[cautions] {tag}: unearned warning {label}")
 
             # 6. numerals
-            if row["category"] not in NO_PROGRAM and not (row["category"] == "dlg_chitchat" and k > 0):
+            if row["category"] not in NO_PROGRAM and not (row["category"] in CHATTY_FOLLOWUP and k > 0):
                 allowed = allowed_numbers(program, user["content"], state)
                 stated_total = durations.get(row["source"].get("program_id")) if k == 0 else None
                 for token in NUMBER.findall(reply):

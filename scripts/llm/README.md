@@ -153,9 +153,51 @@ flip's kind against the heading the robot actually has; `render_output` refuses 
 heads every user turn so the history stays append-only. `gbnf_match.py` is a small reference
 matcher that checks every training target against the generated grammar without llama.cpp.
 
+## Running it
+
+`conductor.py` is the serving side: console in, llama-server in the middle, UDP out to the
+controller. The controller gained one port and nothing else (`ProgramLink`, ~230 lines); the
+compiler, the state block and the conversation stay here, where the training data was made. The
+whole shape is in [SYSTEM.md](SYSTEM.md).
+
+```bash
+# 1. simulator                  (or the real robot: --network <eth iface> below instead of lo)
+cd ~/unitree/unitree_mujoco/simulate/build && ./unitree_mujoco     # interface: lo
+
+# 2. the model
+~/isaacsim/llama.cpp/build/bin/llama-server -m logs/llm/gguf/v3/model-Q8_0.gguf \
+    --port 8080 -t 16 -c 4096 --keep -1
+
+# 3. the controller             [1] FixStand, then [6] Multitask
+cd deploy/robots/go2/build && ./go2_ctrl --network lo
+
+# 4. the conductor
+python scripts/llm/conductor.py --llm http://localhost:8080
+> 前に3mくらい走って
+> そのままハンドスプリング!
+> あ、ストップ!
+```
+
+Without `--llm` the same queue is driven by hand, which is how the executor is brought up before
+the model is in the loop: `/fwd 3`, `/turn left 90`, `/flip backflip running`, `/stance front 5`,
+`/append <json>`, `/cancel`, `/state`.
+
+Two things the conductor does that are not in the model:
+
+- **Emergency words never wait for a generation.** 「ストップ」「止まって」「やめて」 cancel the queue
+  on the console thread, in the time it takes to send a datagram; the line still goes to the model
+  afterwards so the reply and the conversation match what the robot did.
+- **The state block is predicted, not observed.** It is built at `elapsed + <measured generation
+  time>`, because the answer lands one to three seconds after the person spoke and a state block
+  describing the moment of asking would have the model planning against a step that is over.
+
+[Space] on the controller's keyboard still wins over all of it: it zeroes the command and latches
+the link off until the conductor sends `RESUME`, which it does when the operator asks for something
+new.
+
 ## Next stages
 
 - **End-to-end evaluation**: run the fine-tuned model's programs back through
   `validate_programs.py` and check they still stand up at the end.
-- **Robot executor**: consume `Timeline.events()` in `State_Multitask` (velocity set, flip request,
-  stance request/release), later closing the loop on `distance_m` with odometry.
+- **Closing the loop on distance**: `distance_m` is open-loop against the capability table's fit;
+  odometry would make it a measurement.

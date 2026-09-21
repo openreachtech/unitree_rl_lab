@@ -29,6 +29,7 @@
 // are inherited rather than re-derived.
 
 #include "FSM/FSMState.h"
+#include "ProgramLink.h"
 #include "State_Flip.h"
 
 #include "isaaclab/envs/manager_based_rl_env.h"
@@ -186,6 +187,20 @@ private:
     float bad_orientation_limit_ = 1.2f;
     std::chrono::steady_clock::time_point bad_orientation_since_{};
     bool bad_orientation_latched_ = false;
+
+    // --- language side ------------------------------------------------------
+    // The conductor (scripts/llm/conductor.py) drives through this: a velocity target at 50 Hz and
+    // the same flip / stance triggers the keyboard fires, queued the same way. Null unless
+    // `program_link:` is configured. See ProgramLink.h for why so little of the system is here.
+    std::shared_ptr<ProgramLink> link_;
+    std::chrono::steady_clock::time_point last_publish_{};
+    float publish_period_s_ = 0.02f;
+
+    // Resolve a flip name from the wire onto one of the configured `motions:` entries. Accepts both
+    // the grammar's names (frontflip) and the config's (handspring), which are the same four moves
+    // under two vocabularies -- see FLIP_MOTION in program/grammar.py.
+    const State_Flip::MotionPreset * find_motion(const std::string & name) const;
+    void service_link();
 
     std::thread policy_thread;
     bool policy_thread_running = false;

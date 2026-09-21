@@ -11,6 +11,7 @@ FSM:
     Dynamic:
       id: 4
       type: Flip
+      optional: true
     Multitask:
       id: 5
       type: Multitask
@@ -250,6 +251,29 @@ FSM:
     # 69 of 69 commanded stances succeeded, so a guard that fires here is a false positive, and it
     # would drop the robot to Passive while it is still on two legs.
     stance_settle_s: 1.0
+
+    # --- language link (scripts/llm/conductor.py) ----------------------------
+    # The UDP port the conductor drives through: a velocity target at 50 Hz plus the same flip and
+    # stance triggers the keyboard fires. Everything above the command stream -- the grammar, the
+    # compiler, the state block, the conversation -- stays in Python, where the training data was
+    # built. See scripts/llm/SYSTEM.md and include/ProgramLink.h.
+    #
+    #   timeout_s     how long a velocity target stays valid. At 50 Hz this is 25 missed packets;
+    #                 a conductor that dies hands the robot back to the keyboard instead of
+    #                 leaving it running at the last speed it asked for.
+    #   state_rate_hz how often the state line goes back. The conductor's executor runs at 50 Hz
+    #                 and its state block is built from these, so matching the control rate is the
+    #                 point; this is not a debug feed.
+    #
+    # [Space] still wins: it zeroes the command and latches the link off until the conductor sends
+    # RESUME, which it does only after the operator asks for something new.
+    program_link:
+      enabled: true
+      port: 7777
+      state_port: 7778
+      state_host: 127.0.0.1
+      timeout_s: 0.5
+      state_rate_hz: 50
 
     # Fall -> Passive guard. Values carried over from Dynamic, where they were tuned on
     # hardware: at 0.3 s the guard armed while the front feet were still slamming down and
