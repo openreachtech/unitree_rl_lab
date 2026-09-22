@@ -89,7 +89,7 @@ def test(gguf: Path, out: Path, threads: int) -> None:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "source" / "unitree_rl_lab"))
     from unitree_rl_lab.program import compile_program, program_from_json
     running = state_from_timeline(program, compile_program(program_from_json(program)), 3.0)
-    first_answer = "了解、前に10秒歩くで。\n\naction: replace\nprogram: " + json.dumps(program, ensure_ascii=False)
+    first_answer = "了解、前に10秒歩くで。\n\nprogram: " + json.dumps(program, ensure_ascii=False)
     cases.append(([cases[1][0][0], render_user_turn(running, "バク転して！")], [first_answer]))
     cases.append(([cases[1][0][0], render_user_turn(running, "ええ天気やなあ")], [first_answer]))
 
@@ -107,8 +107,8 @@ def test(gguf: Path, out: Path, threads: int) -> None:
         print(f"\n--- {user_texts[-1].splitlines()[-1]}")
         print(text)
         try:
-            reply, action, prog = parse_output(text)
-            print(f"  parsed: action={action} steps={len(prog)}")
+            parsed = parse_output(text)
+            print(f"  parsed: steps={len(parsed.program)}")
         except Exception as exc:  # noqa: BLE001
             print(f"  PARSE FAILED: {exc}")
             print(result.stderr[-800:])

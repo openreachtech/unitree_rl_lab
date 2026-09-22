@@ -13,7 +13,7 @@ of state block it saw in training. The controller gains one UDP port and nothing
 
 Four threads:
 
-    console  (main)  reads a line, answers emergencies itself, hands the rest to the LLM
+    console  (main)  reads a line and hands it to the LLM
     llm              one request at a time; applies the action it gets back to the queue
     executor (50 Hz) walks the compiled timeline and sends VEL / FLIP / STANCE
     receiver         reads the controller's state line
@@ -49,6 +49,7 @@ import chat_format as cf  # noqa: E402
 from unitree_rl_lab.program import (  # noqa: E402
     CapabilityTable,
     CompilerConfig,
+    Move,
     ProgramError,
     compile_program,
     program_from_json,
@@ -59,16 +60,9 @@ from unitree_rl_lab.program.grammar import FLIP_MOTION  # noqa: E402
 FLIP_BY_CODE = {code: kind for kind, (code, _, _) in FLIP_MOTION.items()}
 STANCE_WORD = {1: "front", -1: "hind", 0: "off"}
 
-# Words that must not wait for a language model. A generation is 1-3 s on CPU, and the robot covers
-# four metres in that time; "止まって" has to reach the controller in the time it takes to send a
-# datagram. The line still goes to the model afterwards, so the conversation and the reply stay
-# consistent with what the robot did -- it is told, in the state block, that it has been stopped.
-# The lookahead keeps 「止まれというまで走って」 from reading as a stop: the word is there, but it is
-# the *subject* of the sentence rather than the request. Anything followed by という / と言 / まで is
-# someone talking about stopping, not asking for it.
-EMERGENCY = re.compile(
-    r"(?:ストップ|すとっぷ|とまっ|止まっ|止まれ|とまれ|停止|やめ|止めて|とめて|待って|まって|STOP|stop)"
-    r"(?!という|と言|っていう|まで)", re.IGNORECASE)
+QUEUE_LABEL = "queued programs: "
+"""How the queue is labelled in the prompt. Pairs with the ``program:`` line the model writes back,
+so the thing it reads and the thing it returns are named and shaped alike."""
 
 MAX_HISTORY_TURNS = 5
 """How many user/assistant pairs are kept. The state block carries the queue, so older turns only
@@ -176,43 +170,62 @@ class Job:
     timeline: object
     array: np.ndarray
     elapsed: float = 0.0
+    open_ended: bool = False
+    """The last step is a move with no length: hold its command past the end of the array rather
+    than finishing. The timeline is only drawn out to ``open_move_s``; the move itself has no end."""
     fired_flip_at: int = -1
-    """Step index of the last flip trigger sent, so a flip fires once and not every tick."""
+    """Array row of the last flip trigger sent, so a flip fires once and not every tick."""
 
     @property
     def step(self) -> int:
         return int(round(self.elapsed / self.timeline.dt))
 
-    def segment(self):
-        """The segment under way, or None past the end.
+    def spans(self, index: int) -> tuple[float, float] | None:
+        """``(start, end)`` of a program step across all the segments the compiler gave it."""
+        parts = [s for s in self.timeline.segments if s.step_index == index]
+        if not parts:
+            return None
+        return min(s.t0 for s in parts), max(s.t1 for s in parts)
 
-        Used for "can the robot be stopped right now", which is a narrower question than the
-        ``interruptible`` flag the model reads. That flag covers a whole step -- a two-turn flip
-        reads as uninterruptible from its settle to its last landing, which is the right thing to
-        tell a person ("I can't cut in") -- but the executor only has to wait out the *window it is
-        in*, and then the stop takes effect before the repeat rather than after it.
-        """
-        for seg in self.timeline.segments:
-            if seg.t0 <= self.elapsed < seg.t1:
-                return seg
-        return None
+    def flip_open_at(self, at: float) -> bool:
+        """True while a flip window is running: the move is on the policy's clock, not ours."""
+        return any(s.kind == "flip" and s.t0 <= at < s.t1 for s in self.timeline.segments)
+
+    def flips_fired(self, index: int, at: float) -> int:
+        """How many windows of this flip step have already been triggered by ``at``."""
+        return sum(1 for s in self.timeline.segments
+                   if s.step_index == index and s.kind == "flip" and s.t0 <= at)
+
+
+def _shrink(step: dict, fraction: float) -> dict | None:
+    """The part of a step still to come, as a step in its own right.
+
+    The conductor does this arithmetic so the model never has to. It is handed 「あと5.5秒」 and can
+    copy it straight back, and because the executor replaces rather than resumes, copying it back is
+    what makes the run continue. A flip is not shrunk but counted: a window already fired is a move
+    the robot has committed to, and re-issuing it would fire it twice.
+    """
+    out = dict(step)
+    for key in ("duration_s", "distance_m", "angle_deg"):
+        if out.get(key) is not None:
+            out[key] = round(out[key] * fraction, 2)
+    return out
 
 
 class Executor:
     """The queue and the 50 Hz loop that walks it.
 
-    The five actions land here:
+    One rule: whatever the model returns *is* the queue from now on. There is no merge, no diff and
+    no resume -- the five actions the old format carried (none / cancel / replace / insert / append)
+    all reduce to replacement, because the model is handed the queue as it will stand when its reply
+    lands and hands back the version it wants. Echoing it unchanged continues the run; returning []
+    stops; putting a flip in front of it flips and carries on.
 
-        none      nothing
-        cancel    stop now -- or at the end of the move, if one is under way that cannot be cut
-        replace   drop everything and run the new program
-        insert    suspend what is running, run the new program, then carry on where it left off
-        append    run it after what is already queued
+    That only works because :meth:`upcoming` reports what is *left* of each step rather than what it
+    was originally asked for. Copy back 「あと5.5秒前へ」 and the robot runs 5.5 more seconds, which
+    is the same thing as not being interrupted.
 
-    ``insert`` is why the jobs form a stack rather than a list. A skill asked for mid-run is not a
-    request to stop: 「走りながらハンドスプリング！」 flips out of the run and the run continues,
-    and the compiler is told that with ``context=`` (the step under way) and ``resume=True`` (do not
-    append a final stop -- the interrupted program's own stop is still coming).
+    The one thing that is not replaceable is a flip already in the air.
     """
 
     def __init__(self, link: RobotLink, cfg: CompilerConfig):
@@ -221,20 +234,12 @@ class Executor:
         self.lock = threading.RLock()
 
         self.current: Job | None = None
-        self.stack: list[Job] = []      # suspended by an insert, newest last
-        self.pending: list[Job] = []    # waiting behind an append
-        self.last: list[dict] = []
-        self.last_outcome: str | None = None
-        self.last_step_index: int = 0
-        self.cancel_when_free = False
-        self.stop_at: float | None = None
-        """Monotonic time the robot may go limp at, while a commanded stance comes down."""
+        self.deferred: Job | None = None
+        """Waiting for a flip window to close before taking over."""
         self.stance_sent = 0
         self.driving = False
         self.resumed_at = 0.0
-        """When RESUME was last sent. The controller's state line lags by up to a tick, so the
-        manual-stop latch is ignored for a moment after that -- otherwise the stale ``manual_stop=1``
-        that is already in flight would wipe the program that just cleared it."""
+        """When RESUME was last sent, so the controller's lagging manual_stop does not wipe it."""
 
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True)
@@ -246,168 +251,102 @@ class Executor:
         self._running = False
         self._thread.join(timeout=1.0)
 
-    # -- compiling ---------------------------------------------------------------------------
+    # -- what the model is shown -------------------------------------------------------------
 
-    def compile(self, steps: list[dict], *, context: dict | None = None, resume: bool = False) -> Job:
-        program = program_from_json(steps)
-        ctx = program_from_json([context])[0] if context else None
-        timeline = compile_program(program, self.cfg, context=ctx, resume=resume)
-        return Job(program=steps, timeline=timeline, array=timeline.to_array())
+    def upcoming(self, lookahead_s: float = 0.0) -> list[dict]:
+        """The queue as it will stand when the reply lands: the step under way, then the rest.
 
-    # -- the actions -------------------------------------------------------------------------
-
-    def apply(self, action: str, steps: list[dict], *, stop_requested: bool = False) -> str:
-        """Apply one model output to the queue. Returns a one-line note for the console.
-
-        ``stop_requested`` marks a turn where the person used a stop word, which the console has
-        already acted on without waiting for a generation. Nothing the model returns for that turn
-        may start the robot moving again: it has been stopped, and a reply that re-runs the last
-        program -- which is what v6 does when it reads 「とまれ」 against an idle state -- would have
-        the robot drive off in answer to "stop". The action is refused here rather than argued with,
-        because this is the one invariant that cannot depend on a language model being right.
+        ``lookahead_s`` is the expected generation time. Describing the queue as it is *now* would
+        hand the model a step that has finished by the time it answers, and under replacement that
+        means the robot re-runs it.
         """
         with self.lock:
-            if stop_requested and action in cf.QUEUE_ACTIONS:
-                return f"[安全] 「止まって」と言われたターンなので {action} は実行しません"
-            if action == "none":
-                return "(no change)"
-            if action == "cancel":
-                return self.cancel()
+            job = self.current
+            if job is None:
+                return []
+            at = min(job.elapsed + lookahead_s, job.timeline.duration)
+            out: list[dict] = []
+            for index, step in enumerate(job.program):
+                span = job.spans(index)
+                if span is None:
+                    continue
+                t0, t1 = span
+                last_and_open = job.open_ended and index == len(job.program) - 1
+                if t1 <= at and not last_and_open:
+                    continue                      # finished
+                if last_and_open:
+                    out.append(dict(step))        # no end, so nothing to report but itself
+                    continue
+                if t0 > at:
+                    out.append(dict(step))        # not started: as asked for
+                    continue
+                if step["skill"] == "flip":
+                    # A window already fired is a move the robot has committed to; re-issuing it
+                    # would fire it twice. One step is one rotation, so it is in or it is gone.
+                    if not job.flips_fired(index, at):
+                        out.append(dict(step))
+                    continue
+                out.append(_shrink(step, (t1 - at) / (t1 - t0)))
+            return out
+
+    # -- the only action ---------------------------------------------------------------------
+
+    def apply(self, program: list[dict]) -> str:
+        """Run this instead of whatever was queued. Returns a one-line note for the console."""
+        with self.lock:
             # A new instruction is the operator asking for the robot back, which is the only thing
-            # that clears the [Space] latch. Sent here rather than left to the person: they have
-            # already said what they want, and a silent refusal to move is the worst failure this
-            # system can have.
+            # that clears the [Space] latch.
             if self.link.status.manual_stop:
                 self.link.send("RESUME")
                 self.resumed_at = time.monotonic()
-            if action == "replace":
-                self._retire("cancelled")
-                self.stack.clear()
-                self.pending.clear()
-                job = self.compile(steps)
-                self.current = job
-                return f"replace: {job.timeline.duration:.1f}s" + self._adjustment_note(job)
-            if action == "insert":
+
+            if not program:
+                self.deferred = None
                 if self.current is None:
-                    job = self.compile(steps)
-                    self.current = job
-                    return f"insert (idle, so just run it): {job.timeline.duration:.1f}s" + self._adjustment_note(job)
-                # The step under way is the context: a running flip written first flips out of
-                # *this* move, at its speed and heading, without stopping.
-                state = self._state_locked(0.0)
-                context = None
-                if state.running and state.step_index < len(self.current.program):
-                    context = self.current.program[state.step_index]
-                job = self.compile(steps, context=context, resume=True)
-                self.stack.append(self.current)
-                self.current = job
-                return f"insert: {job.timeline.duration:.1f}s, then back to the rest" + self._adjustment_note(job)
-            if action == "append":
-                return self._append(steps)
-            raise ValueError(f"unknown action {action!r}")
+                    return "(already idle)"
+                self.current = None
+                self._stop_robot()
+                return "停止しました"
 
-    def _append(self, steps: list[dict]) -> str:
-        """Extend the queue.
-
-        Merged into the running program and recompiled rather than queued behind it, because the
-        state block the model reads *is* the queue -- `RobotState.program` is "steps already done,
-        the one under way, the ones still to come". Queue them as two programs and the next state
-        block would hide everything after the current one, and 「終わったらバク転も」 followed by
-        「やっぱりやめて」 would cancel something the model cannot see.
-
-        The prefix of the recompiled timeline is identical to the old one (the compiler walks the
-        steps in order and only the trailing stop moves), so `elapsed` carries over unchanged.
-        """
-        target = self.current if self.current is not None else None
-        if target is None:
-            job = self.compile(steps)
+            job = self.compile(program, context=self._step_under_way())
+            note = self._adjustment_note(job)
+            if self.current is not None and self.current.flip_open_at(self.current.elapsed):
+                # Mid-air. The window is at most flip_window_s, and firing anything now would either
+                # re-trigger the move or command a velocity while the robot is upside down.
+                self.deferred = job
+                return f"技が終わってから差し替えます ({job.timeline.duration:.1f}s)" + note
+            self.deferred = None
             self.current = job
-            return f"append (idle, so just run it): {job.timeline.duration:.1f}s" + self._adjustment_note(job)
-        if self.stack:
-            # An insert is under way: the queue being extended is the one it interrupted, not the
-            # interruption itself, which is over in a second or two.
-            target = self.stack[0]
-        try:
-            job = self.compile(target.program + steps)
-        except ProgramError as exc:
-            # Nearly always the 40 s program limit. Run it as a separate job rather than refusing;
-            # the state block loses sight of it, which is the lesser problem.
-            self.pending.append(self.compile(steps))
-            return f"append: queued separately ({exc})"
-        job.elapsed = target.elapsed
-        job.fired_flip_at = target.fired_flip_at
-        if target is self.current:
-            self.current = job
-        else:
-            self.stack[0] = job
-        return f"append: {len(steps)} step(s), queue now {job.timeline.duration:.1f}s" + self._adjustment_note(job)
+            return f"差し替え: {job.timeline.duration:.1f}s" + note
 
-    def cancel(self) -> str:
-        """Stop -- now if that means anything, otherwise at the first moment it does."""
-        with self.lock:
-            self.stack.clear()
-            self.pending.clear()
-            if self.current is None and self.stop_at is None:
-                return "(already idle)"
-            self.cancel_when_free = True
-            if not self._cancel_step(announce=False):
-                return "cancel: 技が終わってから止めます（いま中断できません）"
-            if self.stop_at is not None:
-                return "cancel: 立ちを降ろしてから止まります"
-            return "cancel: 止めました"
+    def compile(self, steps: list[dict], context: dict | None = None) -> Job:
+        ctx = program_from_json([context])[0] if context else None
+        parsed = program_from_json(steps)
+        timeline = compile_program(parsed, self.cfg, context=ctx)
+        open_ended = bool(parsed) and isinstance(parsed[-1], Move) and parsed[-1].open_ended
+        return Job(program=steps, timeline=timeline, array=timeline.to_array(), open_ended=open_ended)
 
-    def _cancel_step(self, announce: bool = True) -> bool:
-        """Carry a pending cancel one tick forward. False = still inside a flip, keep running.
+    def _step_under_way(self) -> dict | None:
+        """The step the robot is in, for a program that opens with a flip.
 
-        Zeroing the velocity does not stop a flip: the move runs on the policy's own clock and the
-        command is ignored until the window closes, so a "stop" issued mid-air would only land the
-        robot and then look like it had been ignored. A stance is worse -- going limp leaves the
-        robot to fall out of it -- so the descent is commanded and given the settle the policy
-        learned before anything else happens.
+        「そのままハンドスプリングして」 comes back as ``[{flip}, {move ...}]`` -- flip now, then
+        carry on -- and whether that flip comes out of a run is decided by what precedes it. Nothing
+        does, in the list; the move it flips out of is the one already under way. Handing that step
+        to the compiler as context is what tells it so.
         """
-        now = time.monotonic()
-        if self.stop_at is not None:
-            self.link.send("VEL 0.000 0.000 0.000")
-            if now < self.stop_at:
-                return True
-            self.stop_at = None
-            self._commit_cancel(announce)
-            return True
-
-        segment = self.current.segment() if self.current is not None else None
-        if segment is not None and segment.kind == "flip":
-            return False
-        if segment is not None and segment.stance != 0.0:
-            self.link.send("STANCE off")
-            self.stance_sent = 0
-            self.link.send("VEL 0.000 0.000 0.000")
-            self.stop_at = now + self.cfg.post_stance_settle_s
-            return True
-        self._commit_cancel(announce)
-        return True
-
-    def _commit_cancel(self, announce: bool) -> None:
-        self.cancel_when_free = False
-        self.stack.clear()
-        self.pending.clear()
-        self._retire("cancelled")
-        self._stop_robot()
-        if announce:
-            print("\n[実行] 止まりました。", flush=True)
+        job = self.current
+        if job is None:
+            return None
+        for index, step in enumerate(job.program):
+            span = job.spans(index)
+            if span and span[0] <= job.elapsed < span[1]:
+                return step if step["skill"] == "move" else None
+        return None
 
     def _adjustment_note(self, job: Job) -> str:
         if not job.timeline.adjustments:
             return ""
         return "\n    " + "\n    ".join(job.timeline.adjustments)
-
-    def _retire(self, outcome: str) -> None:
-        """Move the running job into ``last`` so 「もう一回」 still has a referent."""
-        if self.current is not None:
-            state = self._state_locked(0.0)
-            self.last = self.current.program
-            self.last_outcome = outcome
-            self.last_step_index = state.step_index if state.running else len(self.current.program)
-        self.current = None
 
     def _stop_robot(self) -> None:
         if self.stance_sent:
@@ -416,37 +355,16 @@ class Executor:
         self.link.send("STOP")
         self.driving = False
 
-    # -- state -------------------------------------------------------------------------------
-
-    def state(self, lookahead_s: float = 0.0) -> cf.RobotState:
-        with self.lock:
-            return self._state_locked(lookahead_s)
-
-    def _state_locked(self, lookahead_s: float) -> cf.RobotState:
-        """What the model reads. ``lookahead_s`` moves it forward by the expected generation time.
-
-        The model's answer arrives one to three seconds after the person spoke, and the robot has
-        moved on by then; a state block describing the moment of asking would have it planning
-        against a step that is already finished. Predicting it is a guess, but a guess in the right
-        direction beats a fact about the past.
-        """
-        if self.current is None:
-            return cf.RobotState.idle(self.last, self.last_outcome, self.last_step_index)
-        at = min(self.current.elapsed + lookahead_s, self.current.timeline.duration)
-        return cf.state_from_timeline(
-            self.current.program, self.current.timeline, at,
-            last=self.last, last_outcome=self.last_outcome, last_step_index=self.last_step_index,
-        )
-
     def describe(self) -> str:
         with self.lock:
-            lines = [cf.render_state(self._state_locked(0.0))]
+            steps = self.upcoming()
+            if not steps:
+                return QUEUE_LABEL + "[]"
+            lines = [QUEUE_LABEL + json.dumps(steps, ensure_ascii=False)]
             if self.current is not None:
                 lines.append(self.current.timeline.describe())
-            if self.stack:
-                lines.append(f"  (+{len(self.stack)} suspended by an insert)")
-            if self.pending:
-                lines.append(f"  (+{len(self.pending)} appended)")
+            if self.deferred is not None:
+                lines.append("  (技の終了待ちの差し替えが1件)")
             return "\n".join(lines)
 
     # -- the loop ----------------------------------------------------------------------------
@@ -465,41 +383,38 @@ class Executor:
                 next_tick = time.monotonic()  # fell behind; do not try to catch up by running fast
 
     def _tick(self, dt: float) -> None:
-        # The operator's [Space] wins over anything queued: the controller has already zeroed the
-        # command and latched the link off, so carrying on would only mean shouting at a closed
-        # port and then lurching when RESUME is sent.
+        # [Space] wins over anything queued: the controller has already zeroed the command and
+        # latched the link off, so carrying on would mean shouting at a closed port.
         if (self.link.status.manual_stop
                 and time.monotonic() - self.resumed_at > 0.3
-                and (self.current or self.pending or self.stack)):
-            self.pending.clear()
-            self.stack.clear()
-            self._retire("cancelled")
+                and (self.current or self.deferred)):
+            self.current = self.deferred = None
             self.stance_sent = 0
             self.driving = False
-            print("\n[操作] スペースで停止されました。キューを捨てます。", flush=True)
+            print("\n[操作] スペースで停止されました。予定を捨てます。", flush=True)
             return
-
-        # Before anything is advanced: a cancel that has been waiting for a window to close has to
-        # be taken at the first tick it can be, not at the end of the program.
-        if self.cancel_when_free and self._cancel_step():
-            return
-
-        if self.current is None:
-            if self.stack:
-                self.current = self.stack.pop()   # an insert finished: back to what it interrupted
-            elif self.pending:
-                self.current = self.pending.pop(0)
-            else:
-                # Idle: stop sending. The target goes stale in the controller after timeout_s and
-                # the keyboard has the robot back -- which is what "the conductor is not driving"
-                # should mean, rather than a stream of zeros that blocks the operator.
-                self.driving = False
-                return
 
         job = self.current
+        if job is not None and self.deferred is not None and not job.flip_open_at(job.elapsed):
+            job = self.current = self.deferred      # the window closed: take the replacement
+            self.deferred = None
+
+        if job is None:
+            # Idle: stop sending. The target goes stale in the controller after timeout_s and the
+            # keyboard has the robot back, which is what "not driving" should mean.
+            self.driving = False
+            return
+
         index = job.step
+        if index >= len(job.array) and job.open_ended:
+            index = len(job.array) - 1        # hold the last command; the move has no end
         if index >= len(job.array):
-            self._finish()
+            self.current = None
+            if self.stance_sent:
+                self.link.send("STANCE off")
+                self.stance_sent = 0
+            self.driving = False
+            print("\n[実行] 完了。", flush=True)
             return
 
         row = job.array[index]
@@ -519,20 +434,6 @@ class Executor:
             self.stance_sent = stance
 
         job.elapsed += dt
-
-    def _finish(self) -> None:
-        if self.stack or self.pending:
-            # An inserted program is over: hand back to what it interrupted rather than reporting
-            # a completion, which would tell the model the queue is empty when it is not.
-            self.current = None
-            return
-        self._retire("completed")
-        if self.stance_sent:
-            self.link.send("STANCE off")
-            self.stance_sent = 0
-        self.driving = False
-        print("\n[実行] 完了。", flush=True)
-
 
 # =================================================================================================
 # The model
@@ -564,13 +465,13 @@ class LlmClient:
         self.last_prompt = ""
         """The exact text the model was last given, for /prompt."""
 
-    def next_prompt(self, state: cf.RobotState, text: str) -> str:
+    def next_prompt(self, queue: list[dict], text: str) -> str:
         """What would be sent for this turn. Building it is free, so /prompt can show it."""
         return cf.conversation_text(
-            self.system_prompt, self.user_texts + [cf.render_user_turn(state, text)], self.answers)
+            self.system_prompt, self.user_texts + [cf.render_user_turn(text, queue)], self.answers)
 
-    def ask(self, state: cf.RobotState, text: str) -> tuple[cf.Output, float]:
-        user_turn = cf.render_user_turn(state, text)
+    def ask(self, queue: list[dict], text: str) -> tuple[cf.Output, float]:
+        user_turn = cf.render_user_turn(text, queue)
         prompt = cf.conversation_text(self.system_prompt, self.user_texts + [user_turn], self.answers)
         payload = {
             "prompt": prompt,
@@ -594,7 +495,7 @@ class LlmClient:
         # Remembered only once it parsed: a malformed turn in the history would teach the cache a
         # shape the model never produced in training.
         self.user_texts.append(user_turn)
-        self.answers.append(cf.render_output(output.reply, output.action, output.program))
+        self.answers.append(output.reply)
         if len(self.user_texts) > MAX_HISTORY_TURNS:
             self.user_texts = self.user_texts[-MAX_HISTORY_TURNS:]
             self.answers = self.answers[-MAX_HISTORY_TURNS:]
@@ -654,51 +555,44 @@ class LlmClient:
 
 HELP = """\
   そのまま日本語で指令  (--llm があるときだけ)
-  /fwd <m> [speed]    /back <m>   /left <m>   /right <m>     まっすぐ
+  /fwd <m|-> [speed]  /back  /left  /right      "-" で止まるまで進む
   /turn left|right <deg>
-  /flip <kind> [running]   backflip frontflip sideflip_left sideflip_right
+  /flip <kind>        backflip frontflip sideflip_left sideflip_right
   /stance front|hind <s>
-  /prog <json>        action replace で生プログラム
-  /insert <json>      実行中のものに割り込む
-  /append <json>      キューの後ろに足す
-  /cancel  /state  /forget  /resume  /help  /quit
+  /stop               キューを空にして止まる
+  /prog <json>        実行予定そのものを書く
+  /state  /forget  /resume  /help  /quit
   /prompt [文]        モデルに渡すプロンプト全文（引数なしなら直前に送ったもの）
-  /state-block        いまモデルに見せる状態ブロックの1行だけ
 """
 
 
-def shorthand(line: str) -> tuple[str, list[dict]] | None:
-    """The hand-driving commands. Returns ``(action, program)`` or None if the line is not one.
+def shorthand(line: str) -> list[dict] | None:
+    """The hand-driving commands, as a whole queue. None if the line is not one.
 
     Only enough grammar to bring the executor up in MuJoCo without the model in the loop -- the
-    real vocabulary is the model's job, and anything this parser accepts it also accepts.
+    real vocabulary is the model's job.
     """
     parts = line.split()
     verb = parts[0][1:]
     rest = parts[1:]
     directions = {"fwd": "forward", "back": "backward", "left": "left", "right": "right"}
     if verb in directions:
-        distance = float(rest[0]) if rest else 2.0
-        speed = rest[1] if len(rest) > 1 else "normal"
-        return "replace", [{"skill": "move", "dir": directions[verb], "speed": speed, "distance_m": distance}]
+        step = {"skill": "move", "dir": directions[verb], "speed": rest[1] if len(rest) > 1 else "normal"}
+        if rest and rest[0] != "-":          # "-" for an open-ended move
+            step["distance_m"] = float(rest[0])
+        return [step]
     if verb == "turn":
-        side = rest[0] if rest else "left"
-        angle = float(rest[1]) if len(rest) > 1 else 90.0
-        return "replace", [{"skill": "turn", "dir": side, "speed": "normal", "angle_deg": angle}]
+        return [{"skill": "turn", "dir": rest[0] if rest else "left",
+                 "angle_deg": float(rest[1]) if len(rest) > 1 else 90.0}]
     if verb == "flip":
-        kind = rest[0] if rest else "backflip"
-        running = len(rest) > 1 and rest[1] == "running"
-        step = {"skill": "flip", "kind": kind, "count": 1}
-        if running:
-            step["running"] = True
-        return ("insert" if running else "replace"), [step]
+        return [{"skill": "flip", "kind": rest[0] if rest else "backflip"}]
     if verb == "stance":
         kind = {"front": "handstand", "hind": "hindstand"}.get(rest[0] if rest else "front", "handstand")
-        duration = float(rest[1]) if len(rest) > 1 else 5.0
-        return "replace", [{"skill": "stance", "kind": kind, "duration_s": duration}]
-    if verb in ("prog", "insert", "append"):
-        steps = json.loads(line.split(None, 1)[1])
-        return {"prog": "replace", "insert": "insert", "append": "append"}[verb], steps
+        return [{"skill": "stance", "kind": kind, "duration_s": float(rest[1]) if len(rest) > 1 else 5.0}]
+    if verb == "stop":
+        return []
+    if verb == "prog":
+        return json.loads(line.split(None, 1)[1])
     return None
 
 
@@ -750,17 +644,16 @@ def main() -> None:
 
     # One request at a time, off the console thread: a generation takes seconds and the console has
     # to stay free for 「ストップ」.
-    asks: queue.Queue[tuple[str, bool]] = queue.Queue()
+    asks: queue.Queue[str] = queue.Queue()
 
     def llm_worker() -> None:
         while True:
-            item = asks.get()
-            if item is None:
+            text = asks.get()
+            if text is None:
                 return
-            text, stop_requested = item
             try:
-                state = executor.state(lookahead_s=llm.latency_ema)
-                output, took = llm.ask(state, text)
+                queue = executor.upcoming(lookahead_s=llm.latency_ema)
+                output, took = llm.ask(queue, text)
             except (urllib.error.URLError, TimeoutError) as exc:
                 print(f"\n[LLM] 届かへん: {exc}", flush=True)
                 continue
@@ -769,7 +662,7 @@ def main() -> None:
                 continue
             print(f"\n🤖 {output.reply}", flush=True)
             try:
-                note = executor.apply(output.action, output.program, stop_requested=stop_requested)
+                note = executor.apply(output.program)
             except ProgramError as exc:
                 # The grammar keeps the shape right and the compiler substitutes what it can, so
                 # this is a program that is well-formed and still impossible -- too long, mostly.
@@ -802,9 +695,6 @@ def main() -> None:
                     print(f"  controller: fsm={status.fsm} alive={status.alive} "
                           f"link={status.link} manual_stop={status.manual_stop}")
                     continue
-                if verb == "cancel":
-                    print(executor.cancel())
-                    continue
                 if verb == "prompt":
                     if llm is None:
                         print("LLM に繋がってへんので、渡すプロンプトもありません。")
@@ -813,7 +703,7 @@ def main() -> None:
                     if len(rest) > 1:
                         # Build the prompt for a line without sending it: the state is the live one,
                         # so this shows exactly what that sentence would be asked against.
-                        text = llm.next_prompt(executor.state(lookahead_s=llm.latency_ema), rest[1])
+                        text = llm.next_prompt(executor.upcoming(lookahead_s=llm.latency_ema), rest[1])
                         print(f"--- 「{rest[1]}」をいま送ったら、こうなります ---")
                     elif llm.last_prompt:
                         text = llm.last_prompt
@@ -823,9 +713,6 @@ def main() -> None:
                         continue
                     print(text)
                     print(f"--- ここまで ({len(text)} 文字) ---")
-                    continue
-                if verb == "state-block":
-                    print(cf.render_state(executor.state(lookahead_s=llm.latency_ema if llm else 0.0)))
                     continue
                 if verb == "forget":
                     if llm:
@@ -846,26 +733,22 @@ def main() -> None:
                     print(f"知らんコマンド: {line.split()[0]}")
                     continue
                 try:
-                    print(executor.apply(*parsed))
+                    print(executor.apply(parsed))
                 except ProgramError as exc:
                     print(f"できひん: {exc}")
                 continue
 
-            # A plain line. Emergencies never wait for a generation.
-            stop_requested = bool(EMERGENCY.search(line))
-            if stop_requested:
-                print(executor.cancel())
             if llm is None:
                 print("LLM に繋がってへんので、/help のコマンドだけ使えます。")
                 continue
             if not link.status.alive:
                 print("[注意] コントローラから状態が来てません。Multitask に入ってますか？")
-            asks.put((line, stop_requested))
+            asks.put(line)
     except KeyboardInterrupt:
         pass
     finally:
         print("\n止めます。")
-        executor.cancel()
+        executor.apply([])
         time.sleep(0.1)
         link.send("STOP")
         executor.close()

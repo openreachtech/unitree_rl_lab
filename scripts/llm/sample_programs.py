@@ -22,13 +22,12 @@ def main():
     parser.add_argument("--count", type=int, default=100)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", type=str, default=None)
-    parser.add_argument("--max-total-s", type=float, default=20.0)
     parser.add_argument("--capability", type=str, default=None, help="Capability table for the compiler's calibration.")
     parser.add_argument("--describe", action="store_true", help="Print each program's timeline as well.")
     args = parser.parse_args()
 
     rng = random.Random(args.seed)
-    sampler = SamplerConfig(max_total_s=args.max_total_s)
+    sampler = SamplerConfig()
     compiler = CompilerConfig(calibration=CapabilityTable.load_or_empty(args.capability).calibration())
 
     handle = None
@@ -37,11 +36,11 @@ def main():
         handle = open(args.out, "w")
     for index in range(args.count):
         program, timeline = sample_program(rng, sampler, compiler)
-        record = {
-            "id": f"s{args.seed}-{index:06d}",
-            "program": [step_to_dict(step) for step in program],
-            "duration_s": round(timeline.duration, 2),
-        }
+        # Just the program. Everything else about it -- how long it takes, whether it ends
+        # open-ended -- is derived by compiling it, and a copy stored here would go stale the
+        # moment a calibration or a settle changes.
+        record = {"id": f"s{args.seed}-{index:06d}",
+                  "program": [step_to_dict(step) for step in program]}
         if handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
         else:

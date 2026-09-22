@@ -36,10 +36,9 @@ from typing import Any
 import numpy as np
 
 from .grammar import (
+    OPEN_HOLD_S,
     DIRECTION_VECTORS,
     FLIP_MOTION,
-    RUNNING_FLIP_FOR,
-    RUNNING_FLIP_SPEEDS,
     STANCE_SIGN,
     Flip,
     Move,
@@ -47,7 +46,6 @@ from .grammar import (
     ProgramError,
     Stance,
     Step,
-    Stop,
     Turn,
     validate_program,
 )
@@ -77,12 +75,35 @@ class CompilerConfig:
     backward_speed: dict[str, float] = field(default_factory=lambda: _default_speeds(0.4, 0.6, 0.9))
     lateral_speed: dict[str, float] = field(default_factory=lambda: _default_speeds(0.4, 0.5, 0.8))
     yaw_rate: dict[str, float] = field(default_factory=lambda: _default_speeds(0.6, 0.8, 1.0))
-    stance_speed: dict[str, float] = field(default_factory=lambda: _default_speeds(0.2, 0.3, 0.4))
-    """Walking speed while on two legs. Small: the bipedal expert tracks slow commands only."""
+    open_move_s: float = 30.0
+    """How much of an open-ended move is compiled at a time. It is not a limit on the move -- the
+    executor keeps sending the command past the end of the timeline -- only how far ahead the
+    timeline is drawn."""
+
+    turn_speed: str = "fast"
+    """Turns always go at the top rate. Waiting out a slow rotation is time spent watching a robot
+    spin, and nothing downstream ever depended on the rate."""
 
     min_move_s: float = 0.5
-    max_move_s: float = 15.0
-    max_turn_s: float = 10.0
+
+    # ---------------------------------------------------------------------------------------
+    # Policy constraints. Everything below describes what *this* policy cannot do, not what the
+    # grammar forbids or what a person may ask for. Each one is here so the model never has to
+    # know about it: a program that breaks it is compiled into the nearest thing the robot can
+    # actually do, and the substitution is recorded in `Timeline.adjustments` for the conductor to
+    # print. Those notes are the record of what the policy is costing us.
+    #
+    # DELETE THEM as the policy improves. Each carries what to measure before removing it; a
+    # constraint kept past its usefulness is a robot doing less than it can. See COMPILER.md.
+    # ---------------------------------------------------------------------------------------
+
+    min_run_up_s: float = 3.0
+    """A flip out of a move needs this much of the move in front of it: the gait has to be up to
+    speed or the take-off is from a half-built stride. Short of it the run-up is lengthened.
+
+    REMOVE WHEN: a running flip lands from a standing start, or from under a second of run-up.
+    MEASURE: --calibrate with the run-up swept 0.5/1/2/3 s and compare landing rates."""
+
 
     pre_flip_settle_s: float = 0.5
     flip_window_s: float = 1.0
@@ -95,20 +116,13 @@ class CompilerConfig:
     the flip ends the move, and the stop (or the next step) follows as soon as the window closes.
     Raise it only if calibration shows the robot falling when a stop arrives while it is still
     collecting itself -- the policy's own diagnostics allow up to 3 s from the trigger for that."""
-    max_flip_count: int = 5
-    running_count_limit: dict[str, int] = field(default_factory=lambda: {"frontflip": 1})
-    """Per kind, how many times a *running* flip may repeat. Measured on Go2-Multitask-v2: a
-    running frontflip lands 0.88 the first time at normal speed and 0.38 / 0.25 the second and
-    third, while running backflips and sideflips hold 0.95-1.0 through three repeats."""
-
     pre_stance_settle_s: float = 0.5
-    min_stance_s: float = 2.0
-    max_stance_s: float = 12.0
     post_stance_settle_s: float = 1.5
+    stance_speed: dict[str, float] = field(default_factory=lambda: _default_speeds(0.2, 0.3, 0.4))
+    """Unused since a stance stopped being able to walk; kept so an old calibration still loads."""
 
     final_stop_s: float = 1.0
     """Appended when a program would otherwise end while moving."""
-    max_program_s: float = 40.0
 
     calibration: dict[str, tuple[float, float]] = field(default_factory=dict)
     """``skill key -> (a, b)`` with ``length = a * duration + b``. Keys are
@@ -120,24 +134,11 @@ class CompilerConfig:
     def velocity(self, direction: str, speed: str) -> tuple[float, float]:
         """Body-frame ``(vx, vy)`` for a direction word at a speed word."""
         ux, uy = DIRECTION_VECTORS[direction]
-        if ux != 0.0 and uy != 0.0:
-            # A diagonal uses the lateral table on both axes so the heading is a true 45 degrees;
-            # the forward table would skew it toward the nose.
-            magnitude = self.lateral_speed[speed]
-            return ux * magnitude, uy * magnitude
         if ux > 0:
             return self.forward_speed[speed], 0.0
         if ux < 0:
             return -self.backward_speed[speed], 0.0
         return 0.0, uy * self.lateral_speed[speed]
-
-    def stance_velocity(self, direction: str | None, speed: str) -> tuple[float, float]:
-        if direction is None:
-            return 0.0, 0.0
-        ux, uy = DIRECTION_VECTORS[direction]
-        norm = math.hypot(ux, uy)
-        magnitude = self.stance_speed[speed]
-        return ux / norm * magnitude, uy / norm * magnitude
 
     def duration_for_length(self, key: str, nominal_rate: float, length: float) -> float:
         """Seconds needed to cover ``length`` under the calibration for ``key``."""
@@ -317,124 +318,109 @@ class _Builder:
         return value
 
 
-def normalise_running_flips(program: Program, context: Step | None, adjustments: list[str]) -> Program:
-    """Make every running flip one the robot can actually do, noting what changed.
+def compile_program(program: Program, cfg: CompilerConfig | None = None, *, context: Step | None = None) -> Timeline:
+    """Turn a program into a timeline. Raises :class:`ProgramError` when it cannot be run.
 
-    The policy chooses the rotation from the heading whatever code it is handed
-    (``_select_motion_for_direction``), and above the acrobatics speed ceiling it defers the move
-    until the robot slows -- so a program asking for the wrong kind, or a flip out of a fast run,
-    would be executed *as* the matching kind, or from standing, anyway. Doing the same here, before
-    validation, means a language model's slip in this one rule is carried out the way the robot
-    would have carried it out, with a note, instead of being refused. Everything else the grammar
-    checks still raises.
-    """
-    out: Program = []
-    previous = context
-    for index, step in enumerate(program):
-        if isinstance(step, Flip) and step.running:
-            step = Flip(kind=step.kind, count=step.count, running=True)
-            if not isinstance(previous, Move) or previous.speed not in RUNNING_FLIP_SPEEDS:
-                why = "no move to flip out of" if not isinstance(previous, Move) else f"the move is {previous.speed}"
-                adjustments.append(f"step {index} (running {step.kind}): done from standing instead -- {why}")
-                step.running = False
-            elif step.kind != RUNNING_FLIP_FOR[previous.dir]:
-                wanted = RUNNING_FLIP_FOR[previous.dir]
-                adjustments.append(f"step {index} (running {step.kind}): {wanted} instead -- the only flip possible while moving {previous.dir}")
-                step.kind = wanted
-        out.append(step)
-        previous = step
-    return out
+    What the model wrote is what gets compiled. There used to be a pass here that rewrote a running
+    flip whose kind did not match the heading -- the policy substitutes one anyway -- but silently
+    doing something other than what was asked is worse than doing the asked-for thing badly, and
+    the landing is the policy's problem to fix.
 
-
-def compile_program(program: Program, cfg: CompilerConfig | None = None, *, context: Step | None = None,
-                    resume: bool = False) -> Timeline:
-    """Turn a validated program into a timeline. Raises :class:`ProgramError` when it cannot be run.
-
-    ``context`` is the step under way when this program is inserted into a running one (the
-    ``insert`` action): a running flip written first then flips out of that move's velocity. With
-    ``resume`` the timeline does not end in a stop -- the executor goes back to the interrupted
-    step -- so an inserted running flip hands the gait straight back at the same speed.
+    ``context`` is the step under way when a program is handed over mid-run. It only matters when
+    the program opens with a flip: that flip comes out of the move already in progress, and the
+    velocity to flip out of is not written anywhere in the program itself.
     """
     cfg = cfg or CompilerConfig()
     b = _Builder(cfg)
-    program = normalise_running_flips(program, context, b.adjustments)
-    validate_program(program, context)
+    validate_program(program)
 
+    previous: Step | None = context
+    was_running = isinstance(context, Move)
+    """Whether the flip just written came out of a run, so a flip after it does too."""
     for index, step in enumerate(program):
         if isinstance(step, Move):
             vx, vy = cfg.velocity(step.dir, step.speed)
             key = f"move:{step.dir}:{step.speed}"
-            if step.distance_m is not None:
-                duration = cfg.duration_for_length(key, math.hypot(vx, vy), step.distance_m)
-                what = f"step {index} ({step.dir} {step.distance_m:g} m): duration {duration:.1f} s"
+            if step.open_ended:
+                # Drawn out to open_move_s; the executor holds the command past the end.
+                b.add("move", cfg.open_move_s, vx=vx, vy=vy, step_index=index,
+                      label=f"{step.dir} {step.speed} (open-ended)")
             else:
-                duration = step.duration_s
-                what = f"step {index} ({step.dir}): duration"
-            duration = b.clamp(duration, cfg.min_move_s, cfg.max_move_s, what)
-            b.add("move", duration, vx=vx, vy=vy, step_index=index, label=f"{step.dir} {step.speed}")
+                if step.distance_m is not None:
+                    duration = cfg.duration_for_length(key, math.hypot(vx, vy), step.distance_m)
+                    what = f"step {index} ({step.dir} {step.distance_m:g} m): duration {duration:.1f} s"
+                else:
+                    duration = step.duration_s
+                    what = f"step {index} ({step.dir}): duration"
+                duration = max(duration, cfg.min_move_s)
+                b.add("move", duration, vx=vx, vy=vy, step_index=index, label=f"{step.dir} {step.speed}")
 
         elif isinstance(step, Turn):
             sign = 1.0 if step.dir == "left" else -1.0
-            rate = cfg.yaw_rate[step.speed]
-            key = f"turn:{step.dir}:{step.speed}"
-            if step.angle_deg is not None:
-                duration = cfg.duration_for_length(key, rate, math.radians(step.angle_deg))
-                what = f"step {index} (turn {step.dir} {step.angle_deg:g} deg): duration {duration:.1f} s"
-            else:
-                duration = step.duration_s
-                what = f"step {index} (turn {step.dir}): duration"
-            duration = b.clamp(duration, cfg.min_move_s, cfg.max_turn_s, what)
-            b.add("turn", duration, wz=sign * rate, step_index=index, label=f"{step.dir} {step.speed}")
-
-        elif isinstance(step, Stop):
-            b.add("stop", step.duration_s, step_index=index)
+            rate = cfg.yaw_rate[cfg.turn_speed]
+            duration = cfg.duration_for_length(f"turn:{step.dir}:{cfg.turn_speed}", rate,
+                                               math.radians(step.angle_deg))
+            duration = max(duration, cfg.min_move_s)
+            b.add("turn", duration, wz=sign * rate, step_index=index, label=step.dir)
 
         elif isinstance(step, Flip):
-            count = step.count
-            if count > cfg.max_flip_count:
-                b.adjustments.append(f"step {index} ({step.kind}): count reduced from {count} to the maximum {cfg.max_flip_count}")
-                count = cfg.max_flip_count
-            running_limit = cfg.running_count_limit.get(step.kind) if step.running else None
-            if running_limit is not None and count > running_limit:
-                b.adjustments.append(f"step {index} (running {step.kind}): count reduced from {count} to {running_limit}")
-                count = running_limit
-            if step.running:
-                # validate_program has made sure the step before is a move (in the program, or the
-                # context it is inserted into), and a move is one segment, so the segment just
-                # written -- or the context -- carries the velocity to flip out of.
-                if b.segments:
-                    vx, vy = b.segments[-1].vx, b.segments[-1].vy
-                else:
-                    vx, vy = cfg.velocity(context.dir, context.speed)
-                gap_kind = "gap"  # keep running between repeats, as the training schedule did
+            # Out of a run when a move is what precedes it -- in the program, or under way when the
+            # program was handed over. The velocity to flip out of is that move's.
+            # Which rotation a heading allows, and how fast a run it can be fired out of, are the
+            # sampler's business: programs that break either are not drawn, so there is nothing to
+            # repair here. The robot does whatever it does with one that slips through.
+            run = previous if isinstance(previous, Move) else None
+            #
+            # A second rotation straight after a running one is still running: the robot keeps the
+            # gait through the gap and rotates again out of it. Deciding that on "is the previous
+            # step a move" alone made the second one stop first, which is both slower and a
+            # different move from the one asked for.
+            running = run is not None or (isinstance(previous, Flip) and was_running)
+            if running:
+                vx, vy = (b.segments[-1].vx, b.segments[-1].vy) if b.segments \
+                    else cfg.velocity(previous.dir, previous.speed)
             else:
                 vx = vy = 0.0
-                gap_kind = "settle"
                 b.settle(cfg.pre_flip_settle_s, index)
-            for k in range(count):
-                if k > 0:
-                    b.add(gap_kind, cfg.flip_gap_s, vx=vx, vy=vy, step_index=index)
-                b.add("flip", cfg.flip_window_s, vx=vx, vy=vy, flip=step.kind, step_index=index, label=step.kind)
-            if step.running:
+            if run is not None and b.segments:
+                # A flip needs a run of at least min_run_up_s in front of it. The move segment was
+                # written on the previous pass and nothing has been added since, so it is the last
+                # one: stretch it in place rather than refusing the program.
+                written = b.segments[-1]
+                if written.step_index == index - 1 and written.duration < cfg.min_run_up_s:
+                    b.adjustments.append(
+                        f"step {index - 1}: run-up stretched from {written.duration:g} s to "
+                        f"{cfg.min_run_up_s:g} s -- the gait needs that long to be up to speed")
+                    b.t = round(b.t + (cfg.min_run_up_s - written.duration), 6)
+                    written.t1 = b.t
+            b.add("flip", cfg.flip_window_s, vx=vx, vy=vy, flip=step.kind, step_index=index, label=step.kind)
+            if running:
                 if cfg.running_recover_s > 0.0:
                     b.add("recover", cfg.running_recover_s, vx=vx, vy=vy, step_index=index)
             else:
                 b.add("settle", cfg.post_flip_settle_s, step_index=index)
+            # Two rotations in a row are two steps; the gap between them is what lets the command
+            # re-arm, so it is inserted here rather than inside a count loop.
+            was_running = running
+            if index + 1 < len(program) and isinstance(program[index + 1], Flip):
+                if running:
+                    b.add("gap", cfg.flip_gap_s, vx=vx, vy=vy, step_index=index)
+                else:
+                    b.settle(cfg.flip_gap_s, index)   # counts the settle already written above
 
         elif isinstance(step, Stance):
-            duration = b.clamp(step.duration_s, cfg.min_stance_s, cfg.max_stance_s, f"step {index} ({step.kind}): hold")
-            vx, vy = cfg.stance_velocity(step.dir, step.speed)
             b.settle(cfg.pre_stance_settle_s, index)
-            b.add("stance", duration, vx=vx, vy=vy, stance=STANCE_SIGN[step.kind], step_index=index, label=step.kind)
-            b.add("settle", cfg.post_stance_settle_s, step_index=index)
+            duration = OPEN_HOLD_S if step.open_ended else step.duration_s
+            b.add("stance", duration, stance=STANCE_SIGN[step.kind], step_index=index, label=step.kind)
+            if not step.open_ended:
+                b.add("settle", cfg.post_stance_settle_s, step_index=index)
 
         else:  # pragma: no cover - the grammar already rejects this
             raise ProgramError(f"unknown step type {type(step).__name__}")
+        previous = step
 
-    if b.segments and b.segments[-1].moving and not resume:
+    open_ended = bool(program) and getattr(program[-1], "open_ended", False)
+    if b.segments and b.segments[-1].moving and not open_ended:
         b.add("stop", cfg.final_stop_s)
-
-    if b.t > cfg.max_program_s:
-        raise ProgramError(f"program runs {b.t:.1f} s, longer than the {cfg.max_program_s:g} s limit -- shorten or split it")
 
     return Timeline(segments=b.segments, adjustments=b.adjustments, dt=cfg.dt)

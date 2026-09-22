@@ -8,7 +8,7 @@ What the model is taught, per row:
     <|im_start|>system\\n{system prompt}<|im_end|>          <- masked, loss is not taken here
     <|im_start|>user\\n{instruction}<|im_end|>              <- masked
     <|im_start|>assistant\\n<think>\\n\\n</think>\\n\\n      <- masked: the empty think block the
-    {reply}\\n\\naction: ...\\nprogram: [...]<|im_end|>       non-thinking template always inserts
+    {reply}\\n\\nprogram: [...]<|im_end|>                    non-thinking template always inserts
     <|im_start|>user\\n{next turn}<|im_end|>                 <- masked; the conversation continues as a
     <|im_start|>assistant\\n<think>...  {next answer}<|im_end|>   raw stream (see chat_format)
 
@@ -44,7 +44,7 @@ from peft import LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from chat_format import conversation_text, first_prompt, render_output, row_turns  # noqa: E402
+from chat_format import conversation_text, first_prompt, render_output, render_user_turn, row_turns  # noqa: E402
 
 IGNORE = -100
 
@@ -69,10 +69,10 @@ def build_rows(dataset: str, system_prompt: str, tokenizer, max_len: int, limit:
         row = json.loads(line)
         ids, labels, n_answer = [], [], 0
         user_texts, answers = [], []
-        for user_text, reply, action, program in row_turns(row):
-            user_texts.append(user_text)
+        for user_text, queue, reply, program in row_turns(row):
+            user_texts.append(render_user_turn(user_text, queue))
             prompt = conversation_text(system_prompt, user_texts, answers)
-            answer = render_output(reply, action, program)
+            answer = render_output(reply, program)
             answers.append(answer)
             # Only the part of the prompt not yet tokenised: the first turn whole, then each
             # "<|im_end|>\n<|im_start|>user..." continuation after the previous answer.
@@ -192,7 +192,7 @@ def main() -> None:
         logging_steps=10,
         eval_strategy="epoch" if evals else "no",
         # One adapter per epoch. Eval loss says when the model stops improving on *token* prediction;
-        # which epoch actually writes the best programs is decided by eval_model.py, so keep them all.
+        # which epoch actually writes the best programs is decided after the run, so keep them all.
         save_strategy="epoch",
         save_total_limit=4,
         report_to=[],

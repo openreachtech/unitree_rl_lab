@@ -8,10 +8,9 @@ Two kinds of entry, keyed like the compiler's calibration keys:
 * ``flip:<kind>`` / ``stance:<kind>``: attempts, successes and falls. A stance also records what
   fraction of its hold the robot actually spent up.
 
-The table is the ground truth for three consumers: the compiler (distance -> duration), the dataset
-generator (which skills to sample, which to teach the model to decline) and the reply writer (what
-to promise). It is written by ``scripts/llm/validate_programs.py --calibrate`` and updated by every
-validation run after that.
+The table is the ground truth for two consumers: the compiler, which turns a distance into a
+duration through the calibration, and the program sampler, which draws from the skills that were
+measured. It is written by ``scripts/llm/validate_programs.py --calibrate``.
 """
 
 from __future__ import annotations
@@ -180,13 +179,6 @@ class CapabilityTable:
     def rate(self, key: str) -> float | None:
         entry = self.entries.get(key)
         return entry.rate if isinstance(entry, EventEntry) else None
-
-    def unreliable(self, threshold: float = 0.8) -> list[str]:
-        """Event skills whose measured success rate is below ``threshold`` (with at least one attempt)."""
-        return sorted(
-            key for key, entry in self.entries.items()
-            if isinstance(entry, EventEntry) and entry.rate is not None and entry.rate < threshold
-        )
 
     def summary(self) -> str:
         lines = []

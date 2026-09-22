@@ -1,16 +1,13 @@
 """Inputs that must not produce the program they look like they ask for.
 
-Four kinds, all hand-written here rather than derived from sim:
+Three kinds, all hand-written here rather than derived from sim:
 
     chitchat    ロボットと関係ない話・挨拶・質問        -> reply only, program []
     impossible  文法にない動作（階段、物を持つ、泳ぐ）  -> decline, program []
-    over_ask    上限を超える要求（バク転20回、倒立60秒）-> program as asked, reply explains the clamp
     ambiguous   何をしてほしいのか決まらない            -> a short question, program []
 
-``over_ask`` keeps the literal request in the program on purpose: the compiler is the thing that
-clamps (5 flips, stance 2-12 s, 40 s total), and the model should not silently pre-clamp -- it
-should say out loud what will be cut. The numbers in those replies therefore have to match the
-compiler's limits, which is why the limits are restated at the top of this file.
+A request over the compiler's limits is not one of these: the model writes it as asked and the
+compiler clamps it downstream, which is a plain instruction row and needs nothing here.
 
 Every topic carries both registers: ``kansai`` (the user's own) and ``polite`` (標準語).
 ``build_dataset.py`` picks one per entry.
@@ -219,17 +216,6 @@ IMPOSSIBLE_FALLBACK: dict[str, list[str]] = {
         "できる範囲の動きでしたらご指示ください。",
     ],
 }
-
-# -------------------------------------------------------------------------------------- over_ask
-
-OVER_ASK_FLIPS = [
-    ("backflip", "バク転"),
-    ("frontflip", "前方回転"),
-    ("sideflip_left", "左側転"),
-    ("sideflip_right", "右側転"),
-]
-
-OVER_ASK_STANCES = [("handstand", "倒立"), ("hindstand", "後ろ足立ち")]
 
 # --------------------------------------------------------------------------------------- ambiguous
 

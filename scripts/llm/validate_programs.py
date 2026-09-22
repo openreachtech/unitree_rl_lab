@@ -85,8 +85,6 @@ import unitree_rl_lab.tasks  # noqa: F401, E402
 from unitree_rl_lab.program import (  # noqa: E402
     DIRECTIONS,
     FLIP_KINDS,
-    RUNNING_FLIP_FOR,
-    RUNNING_FLIP_SPEEDS,
     SPEEDS,
     STANCE_KINDS,
     CapabilityTable,
@@ -111,30 +109,46 @@ from unitree_rl_lab.utils.parser_cfg import parse_env_cfg  # noqa: E402
 # =================================================================================================
 
 
+# Which rotation to measure out of which heading. Not a rule any more -- the grammar stopped
+# constraining it and the policy is left to do what it does with a mismatch -- but these four are
+# the pairings it was trained on, so they are the ones worth a number.
+TURN_SPEED = CompilerConfig().turn_speed
+"""Turns are only ever done at this rate, so it is what their calibration key says."""
+
+RUNNING_PAIR = {"forward": "frontflip", "backward": "backflip",
+                "left": "sideflip_left", "right": "sideflip_right"}
+RUNNING_SPEEDS = ("slow", "normal")
+
+
 def canonical_programs() -> list[dict]:
-    """One program per skill and setting, at two lengths each so a slope and an offset can be fit."""
+    """One program per skill and setting, at two lengths each so a slope and an offset can be fit.
+
+    Trimmed to what the grammar can still say (2026-09-21): four headings instead of eight, no
+    jump, turns only at the rate they are always done at, one rotation per flip step, and a stance
+    that does not walk. That is 44 programs against the 106 the old vocabulary needed.
+    """
     out = []
     for direction in DIRECTIONS:
         for speed in SPEEDS:
             for seconds in (3.0, 6.0):
                 out.append({"id": f"move:{direction}:{speed}:{seconds:g}s",
                             "program": [Move(dir=direction, speed=speed, duration_s=seconds)]})
+    # A turn is only ever done at one rate, so the angle is the only thing to vary. Two angles give
+    # the slope and the offset; the duration each takes comes from the conversion under test, which
+    # is fine -- the fit is over (time taken, angle achieved), both measured.
     for direction in ("left", "right"):
-        for speed in SPEEDS:
-            for seconds in (2.0, 4.0):
-                out.append({"id": f"turn:{direction}:{speed}:{seconds:g}s",
-                            "program": [Turn(dir=direction, speed=speed, duration_s=seconds)]})
+        for degrees in (90.0, 270.0):
+            out.append({"id": f"turn:{direction}:{degrees:g}deg",
+                        "program": [Turn(dir=direction, angle_deg=degrees)]})
     for kind in FLIP_KINDS:
-        for count in (1, 3):
-            out.append({"id": f"flip:{kind}:x{count}", "program": [Flip(kind=kind, count=count)]})
-    # Running flips: the kind is fixed by the heading, so one program per heading and speed.
-    for direction in DIRECTIONS:
-        for speed in RUNNING_FLIP_SPEEDS:
-            for count in (1, 3):
-                kind = RUNNING_FLIP_FOR[direction]
-                out.append({"id": f"flip:{kind}:running:{direction}:{speed}:x{count}",
-                            "program": [Move(dir=direction, speed=speed, duration_s=3.0),
-                                        Flip(kind=kind, count=count, running=True)]})
+        out.append({"id": f"flip:{kind}", "program": [Flip(kind=kind)]})
+    # Out of a run: one per heading, at the two speeds the acrobatics ceiling allows.
+    for direction, kind in RUNNING_PAIR.items():
+        for speed in RUNNING_SPEEDS:
+            out.append({"id": f"flip:{kind}:running:{direction}:{speed}",
+                        "program": [Move(dir=direction, speed=speed, duration_s=3.0), Flip(kind=kind)]})
+    # The descent is the half that was failing; both hold lengths are kept so a fix shows up as a
+    # change in both, not just the short one.
     for kind in STANCE_KINDS:
         for seconds in (5.0, 10.0):
             out.append({"id": f"stance:{kind}:{seconds:g}s", "program": [Stance(kind=kind, duration_s=seconds)]})
@@ -427,7 +441,10 @@ class BatchRun:
                 else:
                     measured = motion_result[(p, k)]
                     valid = (fell_at < 0) | (fell_at >= stop)
-                    direction, speed = seg.label.split()
+                    # A move's label is "<dir> <speed>"; a turn's is just "<dir>" -- there is only
+                    # one turn rate now, and the calibration key follows the same shape.
+                    parts = seg.label.split()
+                    direction, speed = parts[0], (parts[1] if len(parts) > 1 else TURN_SPEED)
                     if seg.kind == "move":
                         norm = math.hypot(seg.vx, seg.vy)
                         along = (measured[:, 0] * seg.vx + measured[:, 1] * seg.vy) / norm

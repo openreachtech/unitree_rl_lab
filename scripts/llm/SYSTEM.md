@@ -10,7 +10,7 @@
 
 ```
  ┌──────────────── conductor (Python, scripts/llm/conductor.py) ────────────────┐
- │  console thread   : 1 行入力 → 緊急語なら即 cancel（LLM を通さない）→ それ以外は LLM へ   │
+ │  console thread   : 1 行入力 → そのまま LLM へ（割り込みはしない）                      │
  │  llm thread       : 予測状態で状態ブロック → llama-server (/completion, grammar, cache) │
  │                     → parse_output → action を queue に適用                          │
  │  executor loop 50Hz: queue（実行中 program + カーソル + insert スタック）を進め、        │
@@ -48,7 +48,7 @@ unitree_mujoco、実機は eth の interface。
 | 会話 | user/assistant のテキスト列。**5 ターンで打ち切り**（決定）。`conversation_text` で生プロンプトを組む | `chat_format.conversation_text` |
 | LLM 呼び出し | llama-server `/completion`: prompt（生テキスト）, grammar（`output.gbnf`）, `cache_prompt: true`, `temperature: 0`, stop `<|im_end|>` | `gbnf_grammar()` |
 | action の適用 | none: 何もしない / cancel: 即停止・キュー空 / replace: 停止して差し替え / insert: 今の step を止めて挿入、終わったら残り時間から再開 / append: 待ち行列へ | — |
-| 緊急語ホットパス | 「ストップ／止まって／止まれ／待って／やめて」を含む行は **LLM を待たず** cancel を送る。LLM にも渡す（返事は「止まるで」になる。状態は 中断 と書いて渡す） | — |
+| 停止 | 緊急語のホットパスは **廃止**（2026-09-21）。停止もモデルが頼むひとつの action で、conductor は先回りしない。手動の止め口はキーボードの [Space] で、これは C++ 側で速度を 0 にしてリンクにラッチを掛けるので、どんな生成でも覆せない | — |
 | 実行 | 50 Hz でタイムラインの現在セグメントを読み、`VEL` を毎ステップ送信。flip セグメントの先頭で `FLIP <motion>`、stance の入/切で `STANCE` | `Timeline.segments` / `events()` |
 
 ### 技の発火タイミング
@@ -116,7 +116,7 @@ conductor -> 7777   VEL <vx> <vy> <wz>      50 Hz。これが鮮度のハート�
 
 1. ProgramLink（C++）+ 速度だけ流す conductor の骨組み → MuJoCo で「前に3m」が動く
 2. flip/stance イベント、insert/append/cancel のキュー、状態パケット
-3. LLM 接続（llama-server）、予測状態、緊急語ホットパス、5 ターン履歴
+3. LLM 接続（llama-server）、予測状態、5 ターン履歴
 4. MuJoCo で手書きテストの対話を実演 → settle の実機値決め
 5. Jetson AGX Orin 64GB に全部載せる: llama-server（CUDA ビルド、全層 GPU）+ conductor + go2_ctrl。
    メモリは Q8_0 でも 2〜3 GB で問題なし（Q8_0 を既定、Q4_K_M は速度が要るときの予備）。
