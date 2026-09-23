@@ -97,6 +97,7 @@ from __future__ import annotations
 
 import math
 
+import isaaclab.terrains as terrain_gen
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import SceneEntityCfg
@@ -112,7 +113,22 @@ from unitree_rl_lab.tasks.locomotion.mdp.lidar_elevation_map import (
     LidarNoiseCfg,
     LidarNoiseConditionCfg,
 )
+from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_blind_phase1 import (
+    RobotEnvCfgPhase1,
+    RobotPlayEnvCfgPhase1,
+    RobotSceneCfgPhase1,
+)
+from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_blind_phase2 import (
+    RobotEnvCfgPhase2,
+    RobotPlayEnvCfgPhase2,
+)
+from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_blind_phase3 import (
+    PHASE3_TERRAIN_CFG_VARIABLE_WIDTH,
+    RobotEnvCfgPhase3BalanceMatched,
+    RobotPlayEnvCfgPhase3,
+)
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_blind_phase4 import (
+    PHASE4_TERRAIN_CFG,
     RobotEnvCfgPhase4,
     RobotPlayEnvCfgPhase4,
 )
@@ -412,9 +428,19 @@ hardware noise, which is the intended margin.
 Two measurement notes, both of which cost a run to find:
 
   * Do **not** use ``terrain_type="plane"`` for anything at this scale. That one enormous
-    quad raycasts in float32 to about a centimetre, and it put +-40 mm of spread on a
-    nominally flat ground -- which reads exactly like sensor noise and is ten times what is
-    being measured. A generated flat tile is a finite mesh and comes out at 1.4 mm.
+    quad raycasts in float32 to about a centimetre, which reads exactly like sensor noise.
+    It is this sensor's rays specifically that suffer -- long and shallow from a 0.27 m
+    mount -- not raycasting in general. Measured on ground that is exactly flat, standing
+    still, ``ray_hits_w`` before any noise model:
+
+                                 top-down scanner    MID-360
+        generated flat tile            0.00 mm       0.00 mm
+        terrain_type="plane"           0.00 mm      15.93 mm std, +-87 mm
+
+    The top-down scanner fires straight down over 1.4 x 1.0 m and is unaffected; the
+    MID-360's +-87 mm is four times ``strong``'s range noise and seventeen times
+    ``nominal``'s, on terrain with no relief at all. ``PERCEPTIVE_PHASE1_TERRAIN_CFG`` is
+    the flat tile that replaces the plane wherever the policy reads this map.
   * Compute the statistic over the frames a cell was actually measured. A held cell repeats
     its last value, and a cell no beam has ever reached holds ``flat_fill``, a convention
     rather than a measurement; including those frames measures the fill policy. It matters
@@ -496,6 +522,7 @@ def _attach_mid360(
     debug_vis: bool,
     show_raw_points: bool = False,
     dynamic_mesh: bool = MID360_DYNAMIC_MESH,
+    group_name: str = "mid360_map",
 ) -> None:
     """Bolt the MID-360 and its height map onto a blind-phase cfg.
 
@@ -505,6 +532,10 @@ def _attach_mid360(
     returns of this step, the ring that breathes at 10 Hz. Off by default: they land on
     the same ground as the map's cell markers and make both hard to read. Worth turning on
     to watch the scan pattern itself rather than the map it builds.
+
+    ``group_name`` is the observation group the map lands in. The display-only task keeps
+    ``mid360_map``; the perceptive task uses ``height_map``, which is the name its runner
+    config routes to the actor's exteroceptive encoder.
 
     ``dynamic_mesh`` decides whether the robot blocks its own rays; see
     ``MID360_DYNAMIC_MESH`` for what it costs and why it defaults off. In play it is the one
@@ -517,12 +548,11 @@ def _attach_mid360(
         debug_vis=show_raw_points, dynamic_mesh=dynamic_mesh
     )
     cfg.scene.mid360_scanner.update_period = cfg.decimation * cfg.sim.dt
-    cfg.observations.mid360_map = Mid360MapObsCfg()
+    group = Mid360MapObsCfg()
     if debug_vis:
         # env_index=None draws every environment; only affordable at play sizes.
-        cfg.observations.mid360_map.height_scan = _mid360_map_term(
-            debug_vis=True, debug_vis_env_index=None
-        )
+        group.height_scan = _mid360_map_term(debug_vis=True, debug_vis_env_index=None)
+    setattr(cfg.observations, group_name, group)
 
 
 @configclass
@@ -537,3 +567,251 @@ class RobotPlayEnvCfgMid360Phase4(RobotPlayEnvCfgPhase4):
     def __post_init__(self):
         super().__post_init__()
         _attach_mid360(self, debug_vis=True)
+
+
+# ===========================================================================
+# Perceptive: the same MID-360 map, but read by the policy instead of only drawn.
+#
+# The actor's exteroceptive input is ``height_map`` -- the sensor's grid, with the
+# noise model and the holds. The critic's is ``height_map_clean`` -- the top-down
+# raycast, no noise, no holes. Both are the full 29 x 21 with no body exclusion, and
+# both compute ``base_z - hit_z - offset``, so they line up cell for cell and a
+# reconstruction or a value estimate can be read against either.
+#
+# The network that consumes them is ``assets/models/actor_critic_perceptive.py``; the
+# wiring that says which group is which is ``PerceptiveGruPPORunnerCfg``.
+#
+# Four phases, on the blind lineage's terrain and rewards unchanged:
+#
+#   1  flat        2  rough + boxes        3  stairs        4  walls
+#
+# Only Phase 1 differs from its blind counterpart, and only in how its ground is built --
+# see ``PERCEPTIVE_PHASE1_TERRAIN_CFG``.
+#
+# Policy input is 45 + 609 rather than the blind lineage's 45, so a blind checkpoint
+# does not load as-is. What does transfer is the recurrent branch: the GRU still sees
+# only the 45, so with the default ``extero_to_memory=False`` its weights are the same
+# shape as the blind lineage's.
+#
+#   python scripts/rsl_rl/train.py --task Go2-Perceptive-Mid360-Phase1 --headless
+#   python scripts/rsl_rl/train.py --task Go2-Perceptive-Mid360-Phase2 --headless \
+#       --resume --previous-task Go2-Perceptive-Mid360-Phase1
+# ===========================================================================
+CLEAN_HEIGHT_SCAN_CFG = ObsTerm(
+    func=mdp.height_scan_excluding_body,
+    params={
+        "sensor_cfg": SceneEntityCfg("height_scanner"),
+        "offset": GO2_HEIGHT_SCAN_OFFSET,
+        "resolution": HEIGHT_SCAN_RESOLUTION,
+        "size": HEIGHT_SCAN_SIZE,
+        "scanner_offset_xy": (GO2_HEIGHT_SCAN_CENTER_X, GO2_HEIGHT_SCAN_CENTER_Y),
+        # Negative rather than 0.0, for the same reason the MID-360 map uses it: an
+        # extent of exactly zero would still drop the cell sitting on the body origin.
+        "exclude_half_extent_x": -1.0,
+        "exclude_half_extent_y": -1.0,
+    },
+    clip=(-1.0, 5.0),
+)
+"""The true terrain on the MID-360 map's own grid: all 609 cells, same sign and offset."""
+
+
+@configclass
+class CleanHeightMapObsCfg(ObsGroup):
+    """Privileged exteroception for the critic. Never corrupted, never held."""
+
+    height_scan = CLEAN_HEIGHT_SCAN_CFG
+
+    def __post_init__(self):
+        self.enable_corruption = False
+        self.concatenate_terms = True
+
+
+def _attach_perceptive(cfg, debug_vis: bool) -> None:
+    _attach_mid360(cfg, debug_vis=debug_vis, group_name="height_map")
+    cfg.observations.height_map_clean = CleanHeightMapObsCfg()
+
+
+# ---------------------------------------------------------------------------
+# Phase 1's ground, rebuilt as a finite mesh.
+#
+# The blind Phase 1 runs on ``terrain_type="plane"``, and that is fine for a policy that
+# cannot see: the plane is flat, and the only thing reading it is the physics. It is not
+# fine here. That one enormous quad raycasts in float32 to about a centimetre, and this
+# sensor's rays -- long and shallow, from a 0.27 m mount -- are where it shows: measured
+# standing still on ground that is exactly flat, ``ray_hits_w`` came back with a 15.9 mm
+# standard deviation and a +-87 mm range, before any noise model ran. That is seventeen
+# times ``MID360_NOISE_CFG``'s nominal range noise, and indistinguishable from it in the
+# grid. Training the first phase on that would teach the policy that flat ground is rough.
+#
+# A generated tile is a finite mesh and returns exactly 0.00 mm on the same measurement,
+# so Phase 1 gets a one-tile generator with its noise range pinned to zero. The ground the
+# robot walks on is unchanged; only the numbers the raycaster returns for it are.
+# ---------------------------------------------------------------------------
+PERCEPTIVE_PHASE1_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
+    size=(8.0, 8.0),
+    border_width=20.0,
+    num_cols=2,
+    num_rows=2,
+    horizontal_scale=0.1,
+    vertical_scale=0.005,
+    slope_threshold=0.75,
+    difficulty_range=(0.0, 1.0),
+    use_cache=False,
+    sub_terrains={
+        "flat": terrain_gen.HfRandomUniformTerrainCfg(
+            proportion=1.0,
+            # A zero range makes every cell the same height. The step has to stay at
+            # ``vertical_scale`` rather than 0.0 -- the generator divides by it
+            # (``np.arange(min, max + step, step)``), so zero is a ZeroDivisionError, and
+            # at one vertical unit the range is the single value 0 anyway.
+            noise_range=(0.0, 0.0),
+            noise_step=0.005,
+            border_width=0.25,
+        ),
+    },
+)
+"""Phase 1's flat ground as a generated mesh. Every tile is identical, so the rows carry
+no difficulty and ``CurriculumCfgPhase1``'s ``terrain_levels = None`` still holds."""
+
+
+@configclass
+class PerceptiveSceneCfgPhase1(RobotSceneCfgPhase1):
+    """Phase 1's scene with the plane swapped for the tile above.
+
+    Substituted at class level rather than in ``__post_init__``: ``RobotEnvCfg`` sets the
+    generator's curriculum flag from the ``terrain_levels`` term on whatever generator is
+    present when it runs, and swapping afterwards leaves that flag at its default. It
+    would not matter here -- Phase 1 has no levels and wants ``curriculum=False`` -- but
+    this file has paid for that shortcut once already.
+    """
+
+    terrain = RobotSceneCfgPhase1().terrain.replace(
+        terrain_type="generator",
+        terrain_generator=PERCEPTIVE_PHASE1_TERRAIN_CFG,
+    )
+
+
+@configclass
+class RobotEnvCfgPerceptiveMid360Phase1(RobotEnvCfgPhase1):
+    scene: PerceptiveSceneCfgPhase1 = PerceptiveSceneCfgPhase1(num_envs=4096, env_spacing=2.5)
+
+    def __post_init__(self):
+        super().__post_init__()
+        _attach_perceptive(self, debug_vis=False)
+
+
+@configclass
+class RobotPlayEnvCfgPerceptiveMid360Phase1(RobotPlayEnvCfgPhase1):
+    scene: PerceptiveSceneCfgPhase1 = PerceptiveSceneCfgPhase1(num_envs=32, env_spacing=2.5)
+
+    def __post_init__(self):
+        super().__post_init__()
+        _attach_perceptive(self, debug_vis=True)
+
+
+@configclass
+class RobotEnvCfgPerceptiveMid360Phase2(RobotEnvCfgPhase2):
+    def __post_init__(self):
+        super().__post_init__()
+        _attach_perceptive(self, debug_vis=False)
+
+
+@configclass
+class RobotPlayEnvCfgPerceptiveMid360Phase2(RobotPlayEnvCfgPhase2):
+    def __post_init__(self):
+        super().__post_init__()
+        _attach_perceptive(self, debug_vis=True)
+
+
+@configclass
+class RobotEnvCfgPerceptiveMid360Phase3(RobotEnvCfgPhase3BalanceMatched):
+    def __post_init__(self):
+        super().__post_init__()
+        _attach_perceptive(self, debug_vis=False)
+
+
+# ---------------------------------------------------------------------------
+# Play courses for Phase 3 and 4: one obstacle type per column, one difficulty per row,
+# ascending from row 0 so a single pass up the grid walks the policy from easy to hard.
+#
+# Two things have to be right for that, and neither is the default:
+#
+#   * ``curriculum=True`` on the generator. Without it ``TerrainGenerator`` samples each
+#     tile's difficulty at random and the rows mean nothing. ``RobotEnvCfg.__post_init__``
+#     sets this flag, but on whatever generator is attached *when it runs* -- a play config
+#     that swaps the generator afterwards gets ``TerrainGeneratorCfg``'s ``False`` default
+#     back. Every play course in this repo is currently in that state; these two set the
+#     flag themselves after the swap.
+#
+#   * Equal ``proportion`` across sub-terrains. Columns are handed out by cumulative
+#     proportion -- column ``i`` takes the first sub-terrain whose running total exceeds
+#     ``i / num_cols`` -- so the training mix's 2:1 over two columns puts ``thin_wall`` in
+#     *both* and the floating wall nowhere. Equalising is what makes "one type per column"
+#     true rather than approximately true.
+#
+# Row heights: difficulty is ``(row + jitter) / num_rows`` with the jitter uniform on
+# [0, 1), so a row is a band rather than a single height. Over 5 rows the band centres sit
+# at difficulty 0.1, 0.3, 0.5, 0.7, 0.9, and a range of (0.025, 0.275) puts those centres
+# on 5 / 10 / 15 / 20 / 25 cm. The top of that is the training mix's hardest, and the
+# policy reached terrain level ~5.4 of 10 in training, so rows 0-2 should be comfortable
+# and rows 3-4 are where it is expected to struggle.
+# ---------------------------------------------------------------------------
+PLAY_TERRAIN_CFG_PERCEPTIVE_P3 = PHASE3_TERRAIN_CFG_VARIABLE_WIDTH.replace(
+    num_rows=5,
+    num_cols=1,
+    curriculum=True,
+    sub_terrains={
+        "pyramid_stairs_inv": PHASE3_TERRAIN_CFG_VARIABLE_WIDTH.sub_terrains[
+            "pyramid_stairs_inv"
+        ].replace(proportion=1.0, step_height_range=(0.025, 0.275)),
+    },
+)
+"""1 x 5: descending stairs only, rows centred on 5 / 10 / 15 / 20 / 25 cm steps."""
+
+PLAY_TERRAIN_CFG_PERCEPTIVE_P4 = PHASE4_TERRAIN_CFG.replace(
+    num_rows=5,
+    num_cols=2,
+    curriculum=True,
+    sub_terrains={
+        name: cfg.replace(
+            proportion=1.0,
+            wall_height_range=(0.025, 0.275),
+            # Pinned rather than narrowing with difficulty, so height is the only thing
+            # that changes down a column. 5 cm is the training mix's hardest thickness.
+            wall_thickness_range=(0.05, 0.05),
+        )
+        for name, cfg in PHASE4_TERRAIN_CFG.sub_terrains.items()
+    },
+)
+"""2 x 5: solid wall | floating wall, rows centred on 5 / 10 / 15 / 20 / 25 cm.
+
+The floating wall is the same wall hollowed out -- a tread hovering at ``wall_height``
+with an open gap underneath. It is the pair's interesting half for a policy that can see:
+the map shows a surface at wall height either way, and only the solid one is backed by
+anything."""
+
+
+@configclass
+class RobotPlayEnvCfgPerceptiveMid360Phase3(RobotPlayEnvCfgPhase3):
+    def __post_init__(self):
+        super().__post_init__()
+        # After super(), which installs the blind lineage's own play course.
+        self.scene.terrain.terrain_generator = PLAY_TERRAIN_CFG_PERCEPTIVE_P3.copy()
+        self.scene.terrain.max_init_terrain_level = 4
+        _attach_perceptive(self, debug_vis=True)
+
+
+@configclass
+class RobotEnvCfgPerceptiveMid360Phase4(RobotEnvCfgPhase4):
+    def __post_init__(self):
+        super().__post_init__()
+        _attach_perceptive(self, debug_vis=False)
+
+
+@configclass
+class RobotPlayEnvCfgPerceptiveMid360Phase4(RobotPlayEnvCfgPhase4):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.terrain.terrain_generator = PLAY_TERRAIN_CFG_PERCEPTIVE_P4.copy()
+        self.scene.terrain.max_init_terrain_level = 4
+        _attach_perceptive(self, debug_vis=True)

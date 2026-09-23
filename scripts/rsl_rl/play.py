@@ -148,6 +148,9 @@ def main():
 
     # export policy to onnx/jit
     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
+    from unitree_rl_lab.assets.models.actor_critic_perceptive import (
+        ActorCriticPerceptiveRecurrent,
+    )
     from unitree_rl_lab.assets.models.modules.student_teacher import StudentTeacher
 
     is_student_teacher = isinstance(policy_nn, StudentTeacher)
@@ -163,6 +166,18 @@ def main():
         StudentPolicyOnnxExporter(policy_nn.student, normalizer=normalizer).export(
             export_model_dir, filename="policy.onnx"
         )
+    elif isinstance(policy_nn, ActorCriticPerceptiveRecurrent):
+        # The height map reaches the actor without passing through the GRU, so
+        # isaaclab_rl's generic recurrent exporter -- which assumes obs -> rnn -> actor --
+        # would export a network missing the skip connection, silently. These wrappers run
+        # the real branch and carry both normalizers themselves.
+        from unitree_rl_lab.assets.models.actor_critic_perceptive import (
+            PerceptivePolicyJitExporter,
+            PerceptivePolicyOnnxExporter,
+        )
+
+        PerceptivePolicyJitExporter(policy_nn).export(export_model_dir, filename="policy.pt")
+        PerceptivePolicyOnnxExporter(policy_nn).export(export_model_dir, filename="policy.onnx")
     else:
         export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
         export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")

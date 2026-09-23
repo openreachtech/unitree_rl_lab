@@ -4,6 +4,9 @@ import gymnasium as gym
 # train.py's task filter, which keys on the "locomotion." prefix, still matches.
 _CFG = __name__
 _RUNNER = "unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:GruPPORunnerCfg"
+_PERCEPTIVE_RUNNER = (
+    "unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:PerceptiveGruPPORunnerCfg"
+)
 
 gym.register(
     id="Unitree-Go2-Velocity-v0",
@@ -94,3 +97,37 @@ gym.register(
     },
 )
 
+
+# ===========================================================================
+# Perceptive: the blind GRU lineage's four phases with the MID-360 height map fed to
+# the policy rather than only drawn. Terrain, rewards, curriculum and terminations are
+# each phase's own; only the observations change -- and Phase 1's ground, which is built
+# as a generated tile instead of an infinite plane because a plane raycasts to about a
+# centimetre and that lands in the map as fake sensor noise. See
+# velocity_env_cfg_mid360.py and assets/models/actor_critic_perceptive.py.
+#
+# The actor reads the sensor's grid through an MLP encoder handed to its head beside the
+# GRU's output; the critic reads the clean top-down grid.
+#
+# Policy observation is 45 + 609, so blind checkpoints do not load whole. The GRU still
+# sees only the 45, so its weights keep the blind lineage's shape.
+#
+#   python scripts/rsl_rl/train.py --task Go2-Perceptive-Mid360-Phase1 --headless
+#   python scripts/rsl_rl/train.py --task Go2-Perceptive-Mid360-Phase2 --headless \
+#       --resume --previous-task Go2-Perceptive-Mid360-Phase1
+# ===========================================================================
+for _phase in (1, 2, 3, 4):
+    gym.register(
+        id=f"Go2-Perceptive-Mid360-Phase{_phase}",
+        entry_point="isaaclab.envs:ManagerBasedRLEnv",
+        disable_env_checker=True,
+        kwargs={
+            "env_cfg_entry_point": (
+                f"{_CFG}.velocity_env_cfg_mid360:RobotEnvCfgPerceptiveMid360Phase{_phase}"
+            ),
+            "play_env_cfg_entry_point": (
+                f"{_CFG}.velocity_env_cfg_mid360:RobotPlayEnvCfgPerceptiveMid360Phase{_phase}"
+            ),
+            "rsl_rl_cfg_entry_point": _PERCEPTIVE_RUNNER,
+        },
+    )

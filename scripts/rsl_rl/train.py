@@ -274,6 +274,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             normalizer = None
 
         export_model_dir = os.path.join(log_dir, "exported")
+        from unitree_rl_lab.assets.models.actor_critic_perceptive import (
+            ActorCriticPerceptiveRecurrent,
+        )
         from unitree_rl_lab.assets.models.modules.student_teacher import StudentTeacher
 
         if isinstance(policy_nn, StudentTeacher):
@@ -288,6 +291,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             StudentPolicyOnnxExporter(policy_nn.student, normalizer=normalizer).export(
                 export_model_dir, filename="policy.onnx"
             )
+        elif isinstance(policy_nn, ActorCriticPerceptiveRecurrent):
+            # The height map reaches the actor without passing through the GRU, so
+            # isaaclab_rl's generic recurrent exporter -- which assumes obs -> rnn -> actor --
+            # cannot express this network. These wrappers run the real branch and carry both
+            # normalizers themselves.
+            from unitree_rl_lab.assets.models.actor_critic_perceptive import (
+                PerceptivePolicyJitExporter,
+                PerceptivePolicyOnnxExporter,
+            )
+
+            PerceptivePolicyJitExporter(policy_nn).export(export_model_dir, filename="policy.pt")
+            PerceptivePolicyOnnxExporter(policy_nn).export(export_model_dir, filename="policy.onnx")
         else:
             export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
             export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
