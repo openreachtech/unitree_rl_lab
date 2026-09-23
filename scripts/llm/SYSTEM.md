@@ -12,7 +12,7 @@
  ┌──────────────── conductor (Python, scripts/llm/conductor.py) ────────────────┐
  │  console thread   : 1 行入力 → そのまま LLM へ（割り込みはしない）                      │
  │  llm thread       : 予測状態で状態ブロック → llama-server (/completion, grammar, cache) │
- │                     → parse_output → action を queue に適用                          │
+ │                     → parse_output → 返ってきた program をキューに差し替え              │
  │  executor loop 50Hz: queue（実行中 program + カーソル + insert スタック）を進め、        │
  │                     vx,vy,wz と flip/stance イベントを UDP で送る                       │
  │  receiver thread  : 制御側の状態パケット（FSM 状態、技/立ちの進行、手動停止、転倒）      │
@@ -47,8 +47,8 @@ unitree_mujoco、実機は eth の interface。
 | 状態ブロック | `state_from_timeline(program, timeline, t_now + 推論時間の見込み)` — **返答が届く時刻の予測状態**で作る（決定）。推論時間は直近の実測の EMA | `chat_format.render_user_turn` |
 | 会話 | user/assistant のテキスト列。**5 ターンで打ち切り**（決定）。`conversation_text` で生プロンプトを組む | `chat_format.conversation_text` |
 | LLM 呼び出し | llama-server `/completion`: prompt（生テキスト）, grammar（`output.gbnf`）, `cache_prompt: true`, `temperature: 0`, stop `<|im_end|>` | `gbnf_grammar()` |
-| action の適用 | none: 何もしない / cancel: 即停止・キュー空 / replace: 停止して差し替え / insert: 今の step を止めて挿入、終わったら残り時間から再開 / append: 待ち行列へ | — |
-| 停止 | 緊急語のホットパスは **廃止**（2026-09-21）。停止もモデルが頼むひとつの action で、conductor は先回りしない。手動の止め口はキーボードの [Space] で、これは C++ 側で速度を 0 にしてリンクにラッチを掛けるので、どんな生成でも覆せない | — |
+| 返答の適用 | `action:` 行は廃止（2026-09-21）。モデルは**キュー全体**を返し、conductor はそれで差し替えるだけ。止めたいときは `[]`、割り込みは新しい手順を先頭に、追加は末尾に — 5つの action はリストの形そのものに吸収された | `chat_format` |
+| 停止 | 緊急語のホットパスは **廃止**（2026-09-21）。停止はモデルが空のリストを返すことで、conductor は先回りしない。手動の止め口はキーボードの [Space] で、これは C++ 側で速度を 0 にしてリンクにラッチを掛けるので、どんな生成でも覆せない | — |
 | 実行 | 50 Hz でタイムラインの現在セグメントを読み、`VEL` を毎ステップ送信。flip セグメントの先頭で `FLIP <motion>`、stance の入/切で `STANCE` | `Timeline.segments` / `events()` |
 
 ### 技の発火タイミング
@@ -81,18 +81,29 @@ unitree_mujoco、実機は eth の interface。
 
 ## 4. 起動手順（MuJoCo）
 
+端末を4つ使う。順番に意味があるのは 3 → 4 だけ（conductor は起動時に状態を待たない）。
+
 ```bash
-# 1. シム
-cd ~/unitree/unitree_mujoco/simulate/build && ./unitree_mujoco          # interface: lo
-# 2. LLM（すでにビルド済みの CPU 版。-c 4096 は 5 ターン分の余裕、--keep -1 でシステムプロンプトを固定）
-~/isaacsim/llama.cpp/build/bin/llama-server -m logs/llm/gguf/v3/model-Q8_0.gguf \
+# 1. シム（interface: lo は simulate/config.yaml に設定済み）
+cd ~/unitree/unitree_mujoco/simulate/build && ./unitree_mujoco
+
+# 2. LLM。-c 4096 は5ターン分の余裕、--keep -1 でシステムプロンプトを落とさせない
+~/isaacsim/llama.cpp/build/bin/llama-server \
+    -m ~/isaacsim/unitree_rl_lab/logs/llm/gguf/v1/model-Q8_0.gguf \
     --port 8080 -t 16 -c 4096 --keep -1
-# 3. コントローラ（FixStand → [6] Multitask まではキーボードで）
-cd deploy/robots/go2/build && ./go2_ctrl --network lo
-# 4. conductor
-python scripts/llm/conductor.py --gguf-dir logs/llm/gguf/v3 --llm http://localhost:8080
-> 前に3mくらい走ってから、そのままハンドスプリングして
+
+# 3. コントローラ。FixStand → [6] Multitask までは、この端末でキーボード操作
+cd ~/isaacsim/unitree_rl_lab/deploy/robots/go2/build && ./go2_ctrl --network lo
+
+# 4. conductor（env_llm は不要。torch を使わない）
+cd ~/isaacsim/unitree_rl_lab
+python scripts/llm/conductor.py --gguf-dir logs/llm/gguf/v1 --llm http://localhost:8080 --trace
+> 前に3mくらい走ってから、そのまま前転して
 ```
+
+`--trace` はモデルに渡した行と生の返答を出す。**実演中は `--trace-file logs/llm/trace.jsonl` も付ける** ―
+落ちた言い方を後から掘り出せる唯一の記録で、コンソールの表示は流れて消える。
+`/state` で キュー・FSM・リンクの鮮度、`/prompt <文>` で送る前のプロンプト全文が見られる。
 
 LLM 抜きで実行系だけ確かめるときは `--llm` を外して `/fwd 3`、`/flip backflip running`、
 `/stance front 5`、`/append <json>`、`/cancel`、`/state`。文法・コンパイラ・キューは同じものを通る。

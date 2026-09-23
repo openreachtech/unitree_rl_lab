@@ -238,6 +238,9 @@ def main() -> None:
     parser.add_argument("--handwritten", default="data/llm/handwritten.jsonl",
                         help="the hand-written half's instructions; see HANDWRITTEN.md. Pass an "
                              "empty string to build without it, before it exists.")
+    parser.add_argument("--cases", default="scripts/llm/cases",
+                        help="case-targeted rows, one rows.jsonl per failure case; see "
+                             "cases/README.md. Same row shape as --handwritten, written the same way.")
     parser.add_argument("--capability", default="data/llm/capability.json")
     parser.add_argument("--out", default="data/llm/dataset.jsonl")
     parser.add_argument("--prompt-out", default="data/llm/system_prompt.txt")
@@ -271,6 +274,12 @@ def main() -> None:
 
     if args.handwritten and Path(args.handwritten).exists():
         rows += load_handwritten(args.handwritten)
+    # One file per failure case, so a case can be rewritten or dropped without touching the rest --
+    # and so eval_model's per-category table says whether that case got better.
+    for case in sorted(Path(args.cases).glob("*/rows.jsonl")) if args.cases else []:
+        loaded = load_handwritten(str(case))
+        print(f"  case {case.parent.name:16} {len(loaded):4}行")
+        rows += loaded
 
     quota = round((len(rows) + args.dialogues) * args.negatives / (1 - args.negatives))
     share = {"chitchat": 0.45, "impossible": 0.33, "ambiguous": 0.22}

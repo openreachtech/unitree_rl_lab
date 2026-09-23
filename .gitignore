@@ -80,3 +80,6 @@ datasets
 # system_prompt.txt (the prompt the model is trained and served under -- a change to it invalidates
 # a fine-tuned adapter, so it should show up in a diff).
 data/llm/*.jsonl
+# Case-targeted rows written by agents (scripts/llm/cases/README.md). The PROMPT.md that
+# produced them is the spec and is tracked; the rows themselves are data.
+scripts/llm/cases/*/rows.jsonl

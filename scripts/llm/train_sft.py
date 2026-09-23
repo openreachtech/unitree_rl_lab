@@ -5,19 +5,27 @@
 
 What the model is taught, per row:
 
-    <|im_start|>system\\n{system prompt}<|im_end|>          <- masked, loss is not taken here
-    <|im_start|>user\\n{instruction}<|im_end|>              <- masked
-    <|im_start|>assistant\\n<think>\\n\\n</think>\\n\\n      <- masked: the empty think block the
-    {reply}\\n\\nprogram: [...]<|im_end|>                    non-thinking template always inserts
-    <|im_start|>user\\n{next turn}<|im_end|>                 <- masked; the conversation continues as a
-    <|im_start|>assistant\\n<think>...  {next answer}<|im_end|>   raw stream (see chat_format)
+    <|im_start|>system\\n{system prompt}<|im_end|>                            <- masked
+    <|im_start|>user\\n{turn 1}<|im_end|>                                     <- masked, queue dropped
+    <|im_start|>assistant\\n{reply 1}<|im_end|>                               <- masked, program dropped
+    <|im_start|>user\\n{turn 2}\\n\\nqueued programs: [...]<|im_end|>          <- masked
+    <|im_start|>assistant\\n{reply 2}\\n\\nprogram: [...]<|im_end|>            <- the target
 
-Two details decide whether this works at all.
+Three details decide whether this works at all.
 
-**The empty think block.** Qwen3 is a hybrid model; ``enable_thinking=False`` does not remove the
-reasoning channel, it pre-fills it with an empty ``<think></think>``. That block therefore belongs
-to the *prompt*, not to the target -- if it is left in the target the model learns to open a think
-block itself and will sit there reasoning at inference, on a robot, for no reason.
+**One example per assistant turn, not per conversation.** A conversation cannot be a single growing
+sequence. History drops the queue line the moment a turn is past and drops the program line off the
+answer (``chat_format.strip_queue``, and what ``conductor`` keeps) -- so the prompt for turn 3 is
+not the prompt for turn 2 with text appended, it is the same conversation re-rendered shorter. A
+5-turn row therefore becomes 5 examples, each one the exact text the server will send for that turn.
+Turns of one row share its split, so nothing leaks between train and eval.
+
+**No think block.** Qwen3 is a hybrid model; ``enable_thinking=False`` does not remove the reasoning
+channel, it pre-fills the generation prompt with an empty ``<think></think>``. We fine-tune, so the
+format is ours: ``chat_format`` drops that block everywhere and the GBNF forbids a reply opening
+with ``<``. Training has to drop it too -- if the model is trained behind a block the server never
+sends, every turn starts off-distribution. The assert below still compares against the tokenizer's
+template, with that one block removed, so a template change is caught.
 
 **Separate tokenisation.** The prompt and the target are tokenised apart and concatenated, never as
 one string. At inference the model is handed exactly the prompt tokens, so that is the boundary it
@@ -47,14 +55,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from chat_format import conversation_text, first_prompt, render_output, render_user_turn, row_turns  # noqa: E402
 
 IGNORE = -100
+EMPTY_THINK = "<think>\n\n</think>\n\n"
+"""What ``enable_thinking=False`` still inserts. The wire format has no think block; see above."""
 
 
 def build_rows(dataset: str, system_prompt: str, tokenizer, max_len: int, limit: int | None):
-    """Tokenise every row into ``input_ids`` and ``labels``, masking everything but the answers.
+    """Tokenise every assistant turn into ``input_ids`` and ``labels``, masking everything but the answer.
 
-    A row is a conversation; the loss is taken on every assistant turn, each one tokenised apart
-    from the prompt text before it so the boundary is the one inference has. The prompt text is
-    the raw stream `chat_format.conversation_text` describes, checked here against the template.
+    The prompt and the answer are tokenised apart and concatenated; the prompt text is the raw
+    stream `chat_format.conversation_text` describes, checked here against the template.
     """
     eos = tokenizer.convert_tokens_to_ids("<|im_end|>")
     if eos != tokenizer.eos_token_id:
@@ -62,36 +71,32 @@ def build_rows(dataset: str, system_prompt: str, tokenizer, max_len: int, limit:
     templated = tokenizer.apply_chat_template(
         [{"role": "system", "content": system_prompt}, {"role": "user", "content": "x"}],
         tokenize=False, add_generation_prompt=True, enable_thinking=False)
-    assert templated == first_prompt(system_prompt, "x"), "chat_format.first_prompt drifted from the tokenizer's template"
+    assert templated.replace(EMPTY_THINK, "") == first_prompt(system_prompt, "x"), \
+        "chat_format.first_prompt drifted from the tokenizer's template"
 
-    train, evals, dropped = [], [], 0
+    train, evals, dropped, rows = [], [], 0, 0
     for line in open(dataset):
         row = json.loads(line)
-        ids, labels, n_answer = [], [], 0
+        rows += 1
         user_texts, answers = [], []
         for user_text, queue, reply, program in row_turns(row):
             user_texts.append(render_user_turn(user_text, queue))
             prompt = conversation_text(system_prompt, user_texts, answers)
+            answers.append(reply)  # history is the words; the program line is not carried forward
             answer = render_output(reply, program)
-            answers.append(answer)
-            # Only the part of the prompt not yet tokenised: the first turn whole, then each
-            # "<|im_end|>\n<|im_start|>user..." continuation after the previous answer.
-            delta = prompt if not ids else prompt[len(prompt_so_far):]
-            delta_ids = tokenizer(delta, add_special_tokens=False).input_ids
+            prompt_ids = tokenizer(prompt, add_special_tokens=False).input_ids
             answer_ids = tokenizer(answer, add_special_tokens=False).input_ids
-            ids += delta_ids + answer_ids + [eos]
-            labels += [IGNORE] * len(delta_ids) + answer_ids + [eos]
-            n_answer += len(answer_ids) + 1
-            # The <|im_end|> was appended as a token above; the "\n" after it is part of the next delta.
-            prompt_so_far = prompt + answer + "<|im_end|>"
-        if len(ids) > max_len:
-            dropped += 1
-            continue
-        item = {"input_ids": ids, "labels": labels, "n_answer": n_answer, "turns": len(answers)}
-        (evals if row["split"] == "eval" else train).append(item)
+            if len(prompt_ids) + len(answer_ids) + 1 > max_len:
+                dropped += 1
+                continue
+            item = {"input_ids": prompt_ids + answer_ids + [eos],
+                    "labels": [IGNORE] * len(prompt_ids) + answer_ids + [eos],
+                    "n_answer": len(answer_ids) + 1, "turn": len(answers)}
+            (evals if row["split"] == "eval" else train).append(item)
 
+    print(f"  {rows} conversations -> {len(train) + len(evals)} turns")
     if dropped:
-        print(f"  dropped {dropped} rows longer than --max-len {max_len}")
+        print(f"  dropped {dropped} turns longer than --max-len {max_len}")
     if limit:
         train, evals = train[:limit], evals[: max(1, limit // 8)]
     return train, evals
@@ -109,15 +114,14 @@ def collate(batch: list[dict], pad_id: int) -> dict[str, torch.Tensor]:
 
 
 def show_example(tokenizer, item: dict) -> None:
-    """Print one tokenised row with the masked boundary visible -- read this before a long run."""
+    """Print one tokenised turn with the masked boundary visible -- read this before a long run."""
     ids, labels = item["input_ids"], item["labels"]
-    print("\n--- one training row ---")
-    starts = [i for i in range(len(ids)) if labels[i] != IGNORE and (i == 0 or labels[i - 1] == IGNORE)]
-    for k, cut in enumerate(starts):
-        print(f"  turn {k + 1} prompt ends : ...{tokenizer.decode(ids[max(0, cut - 24):cut])!r}")
-        print(f"  turn {k + 1} loss starts : {tokenizer.decode(ids[cut:cut + 20])!r}")
+    cut = next(i for i in range(len(ids)) if labels[i] != IGNORE)
+    print("\n--- one training turn ---")
+    print(f"  prompt ends : ...{tokenizer.decode(ids[max(0, cut - 40):cut])!r}")
+    print(f"  loss starts : {tokenizer.decode(ids[cut:cut + 24])!r}")
     print(f"  loss ends   : ...{tokenizer.decode(ids[-12:])!r}")
-    print(f"  tokens      : {len(ids)} total, {item['n_answer']} supervised over {item['turns']} turn(s)\n")
+    print(f"  tokens      : {len(ids)} total, {item['n_answer']} supervised (turn {item['turn']})\n")
 
 
 def main() -> None:
@@ -132,9 +136,9 @@ def main() -> None:
     parser.add_argument("--alpha", type=int, default=32)
     parser.add_argument("--dropout", type=float, default=0.05)
     parser.add_argument("--lora", action="store_true", help="plain LoRA instead of DoRA, for comparison")
-    parser.add_argument("--batch-size", type=int, default=4, help="8 fitted 1280-token rows; the ~2000-token conversations need 4")
+    parser.add_argument("--batch-size", type=int, default=8, help="16 already OOMs on a 96 GB card: what fills it is the 151k-vocab logits for every position, not the weights")
     parser.add_argument("--grad-accum", type=int, default=4)
-    parser.add_argument("--max-len", type=int, default=2304, help="prompt ~1400 tokens + up to three turns")
+    parser.add_argument("--max-len", type=int, default=1792, help="system prompt 640 tokens + the longest conversation; nothing in the dataset reaches 1100")
     parser.add_argument("--grad-checkpoint", action="store_true",
                         help="recompute activations in the backward pass instead of storing them. "
                              "About 30%% slower and several times smaller: the 1.7B run holds every "
@@ -156,7 +160,7 @@ def main() -> None:
 
     train, evals = build_rows(args.dataset, system_prompt, tokenizer, args.max_len, args.limit)
     lengths = [len(item["input_ids"]) for item in train]
-    print(f"  train {len(train)} / eval {len(evals)}   tokens per row: "
+    print(f"  train {len(train)} / eval {len(evals)}   tokens per turn: "
           f"mean {sum(lengths) / len(lengths):.0f}, max {max(lengths)}   "
           f"supervised {sum(item['n_answer'] for item in train) / len(train):.0f} on average")
     show_example(tokenizer, train[0])
@@ -206,16 +210,21 @@ def main() -> None:
         data_collator=lambda batch: collate(batch, tokenizer.pad_token_id or tokenizer.eos_token_id),
         processing_class=tokenizer,
     )
+    # The prompt is part of the trained artefact and eval_model.py reads it from here, so it is
+    # written before the run rather than after: the per-epoch checkpoints are evaluated while the
+    # run is still going.
+    out.mkdir(parents=True, exist_ok=True)
+    shutil.copy(args.system_prompt, out / "system_prompt.txt")
+
     print(f"\n{total_steps} optimiser steps "
           f"(batch {args.batch_size} x accum {args.grad_accum} = {args.batch_size * args.grad_accum})")
     trainer.train()
 
-    out.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(out / "adapter")
     tokenizer.save_pretrained(out / "adapter")
-    # The prompt is part of the trained artefact: a model fine-tuned under one prompt and served
-    # under another is a silent quality loss, so the exact text travels with the weights.
-    shutil.copy(args.system_prompt, out / "system_prompt.txt")
+    # A model fine-tuned under one prompt and served under another is a silent quality loss, so the
+    # exact text travels with the weights, beside the adapter as well as beside the checkpoints.
+    shutil.copy(args.system_prompt, out / "adapter" / "system_prompt.txt")
     json.dump({**vars(args), "base_model": args.model, "dora": not args.lora,
                "train_rows": len(train), "eval_rows": len(evals), "steps": total_steps},
               open(out / "train_config.json", "w"), indent=2, ensure_ascii=False)

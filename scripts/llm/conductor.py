@@ -31,6 +31,7 @@ import argparse
 import json
 import queue
 import re
+import readline  # noqa: F401 -- gives input() a line buffer Console.say can redraw
 import socket
 import sys
 import threading
@@ -58,6 +59,50 @@ from unitree_rl_lab.program.compiler import COL_FLIP, COL_STANCE, COL_VX, COL_VY
 from unitree_rl_lab.program.grammar import FLIP_MOTION  # noqa: E402
 
 FLIP_BY_CODE = {code: kind for kind, (code, _, _) in FLIP_MOTION.items()}
+
+class Console:
+    """One terminal, four threads -- and an operator typing into the middle of it.
+
+    A line printed while someone is mid-word does not merely look untidy. With a Japanese IME the
+    half-converted text can be dropped, and the sentence that reaches the model is not the one that
+    was typed: 「手前に 戻ってきて」 arrived as 「手戻ってきて」, which the model dutifully answered.
+    A corrupted prompt reads exactly like a model failure, so it is worth handling.
+
+    The obvious fix -- hold other threads' output until the line is submitted -- is worse than the
+    problem: the answer to what you just asked then appears only when you type the *next* line, so
+    the transcript runs a turn behind. So output is never delayed. Instead the prompt line is erased
+    before writing and redrawn after, with whatever had been typed into it, which ``readline`` still
+    holds. Importing ``readline`` is what puts that buffer within reach, and is why it is imported
+    for its side effect alone.
+    """
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.prompt = ""
+        """Non-empty while ``input()`` is waiting; also what has to be drawn back."""
+
+    def say(self, text: str) -> None:
+        """Print from any thread, stepping around the half-typed line rather than through it."""
+        with self.lock:
+            if not self.prompt:
+                print(text, flush=True)
+                return
+            typed = readline.get_line_buffer()
+            sys.stdout.write(f"\r\x1b[2K{text}\n{self.prompt}{typed}")
+            sys.stdout.flush()
+
+    def read(self, prompt: str) -> str:
+        with self.lock:
+            self.prompt = prompt
+        try:
+            return input(prompt)
+        finally:
+            with self.lock:
+                self.prompt = ""
+
+
+console = Console()
+
 STANCE_WORD = {1: "front", -1: "hind", 0: "off"}
 
 QUEUE_LABEL = "queued programs: "
@@ -114,7 +159,7 @@ class RobotLink:
 
     def send(self, line: str) -> None:
         if self.verbose and not line.startswith("VEL"):
-            print(f"  -> {line}", flush=True)
+            console.say(f"  -> {line}")
         try:
             self.tx.sendto((line + "\n").encode(), self.addr)
         except OSError:
@@ -391,7 +436,7 @@ class Executor:
             self.current = self.deferred = None
             self.stance_sent = 0
             self.driving = False
-            print("\n[操作] スペースで停止されました。予定を捨てます。", flush=True)
+            console.say("\n[操作] スペースで停止されました。予定を捨てます。")
             return
 
         job = self.current
@@ -414,7 +459,7 @@ class Executor:
                 self.link.send("STANCE off")
                 self.stance_sent = 0
             self.driving = False
-            print("\n[実行] 完了。", flush=True)
+            console.say("\n[実行] 完了。")
             return
 
         row = job.array[index]
@@ -518,16 +563,14 @@ class LlmClient:
         raw = body.get("content", "")
         if self.trace:
             timings = body.get("timings") or {}
-            print("\n" + "-" * 72)
-            print("--- モデルへ (この1ターンぶん。全文は /prompt) ---")
-            print(user_turn.rstrip())
-            print("--- モデルから (生の出力) ---")
-            print(raw.rstrip())
-            print(f"--- {took:.2f}s  プロンプト {body.get('tokens_evaluated', '?')} tok "
-                  f"(新規に読んだ {timings.get('prompt_n', '?')} / キャッシュ再利用 "
-                  f"{timings.get('cache_n', '?')}) / 生成 {body.get('tokens_predicted', '?')} tok"
-                  + (f" @ {timings.get('predicted_per_second', 0):.1f} tok/s" if timings else "") + " ---")
-            print("-" * 72, flush=True)
+            console.say("\n" + "-" * 72
+                        + "\n--- モデルへ (この1ターンぶん。全文は /prompt) ---\n" + user_turn.rstrip()
+                        + "\n--- モデルから (生の出力) ---\n" + raw.rstrip()
+                        + f"\n--- {took:.2f}s  プロンプト {body.get('tokens_evaluated', '?')} tok "
+                        + f"(新規に読んだ {timings.get('prompt_n', '?')} / キャッシュ再利用 "
+                        + f"{timings.get('cache_n', '?')}) / 生成 {body.get('tokens_predicted', '?')} tok"
+                        + (f" @ {timings.get('predicted_per_second', 0):.1f} tok/s" if timings else "")
+                        + " ---\n" + "-" * 72)
         if self.trace_file is not None:
             record = {
                 "t": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -598,7 +641,7 @@ def shorthand(line: str) -> list[dict] | None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--gguf-dir", default="logs/llm/gguf/v3",
+    parser.add_argument("--gguf-dir", default="logs/llm/gguf/v1",
                         help="where system_prompt.txt and output.gbnf were written by export_gguf.py")
     parser.add_argument("--llm", default=None, help="llama-server base URL, e.g. http://localhost:8080")
     parser.add_argument("--capability", default="data/llm/capability.json")
@@ -655,20 +698,20 @@ def main() -> None:
                 queue = executor.upcoming(lookahead_s=llm.latency_ema)
                 output, took = llm.ask(queue, text)
             except (urllib.error.URLError, TimeoutError) as exc:
-                print(f"\n[LLM] 届かへん: {exc}", flush=True)
+                console.say(f"\n[LLM] 届かへん: {exc}")
                 continue
             except cf.FormatError as exc:
-                print(f"\n[LLM] 返答が読めへん: {exc}", flush=True)
+                console.say(f"\n[LLM] 返答が読めへん: {exc}")
                 continue
-            print(f"\n🤖 {output.reply}", flush=True)
+            console.say(f"\n🤖 {output.reply}")
             try:
                 note = executor.apply(output.program)
             except ProgramError as exc:
                 # The grammar keeps the shape right and the compiler substitutes what it can, so
                 # this is a program that is well-formed and still impossible -- too long, mostly.
-                print(f"[実行] できひん: {exc}", flush=True)
+                console.say(f"[実行] できひん: {exc}")
                 continue
-            print(f"[実行] {note}", flush=True)
+            console.say(f"[実行] {note}")
 
     if llm is not None:
         threading.Thread(target=llm_worker, daemon=True).start()
@@ -676,7 +719,7 @@ def main() -> None:
     try:
         while True:
             try:
-                line = input("> ").strip()
+                line = console.read("> ").strip()
             except EOFError:
                 break
             if not line:

@@ -9,8 +9,8 @@ Three steps, each skipped when its output already exists:
              magnitude vectors are folded into the weights here; the served model is a 1.7B dense
              model with no adapter machinery.
 2. convert   ``llama.cpp/convert_hf_to_gguf.py`` -> ``<out>/model-f16.gguf``
-3. quantize  ``llama-quantize`` -> ``<out>/model-<quant>.gguf`` (default Q4_K_M, the size the Jetson
-             needs; Q8_0 is the reference to compare against if the 4-bit model misbehaves)
+3. quantize  ``llama-quantize`` -> ``<out>/model-<quant>.gguf`` (default Q8_0, which keeps the
+             trained weights nearly intact and still fits the Orin; Q4_K_M only if speed demands it)
 
 The system prompt the adapter was trained under and the GBNF grammar are written next to the
 weights, so the serving side has everything it needs in one directory. ``--test`` then runs
@@ -30,7 +30,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from chat_format import conversation_text, gbnf_grammar, parse_output, render_user_turn, RobotState  # noqa: E402
+from chat_format import conversation_text, gbnf_grammar, parse_output, render_user_turn  # noqa: E402
 
 LLAMA_CPP = Path("/home/tak/isaacsim/llama.cpp")
 
@@ -78,22 +78,24 @@ def quantize(f16: Path, out: Path, quant: str) -> Path:
 
 
 def test(gguf: Path, out: Path, threads: int) -> None:
-    """One conversation through llama-completion with the grammar on; print what came back and the speed."""
-    system_prompt = (out / "system_prompt.txt").read_text()
-    program = [{"skill": "move", "dir": "forward", "speed": "normal", "duration_s": 10.0}]
-    cases = [
-        ([render_user_turn(RobotState.idle(), "5mくらい前に走ってから、そのままハンドスプリングして")], []),
-        ([render_user_turn(RobotState.idle(), "前に10秒歩いて。")], []),
-    ]
-    from chat_format import state_from_timeline
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "source" / "unitree_rl_lab"))
-    from unitree_rl_lab.program import compile_program, program_from_json
-    running = state_from_timeline(program, compile_program(program_from_json(program)), 3.0)
-    first_answer = "了解、前に10秒歩くで。\n\nprogram: " + json.dumps(program, ensure_ascii=False)
-    cases.append(([cases[1][0][0], render_user_turn(running, "バク転して！")], [first_answer]))
-    cases.append(([cases[1][0][0], render_user_turn(running, "ええ天気やなあ")], [first_answer]))
+    """A few turns through llama-completion with the grammar on: what came back, and how fast.
 
-    for user_texts, answers in cases:
+    Four shapes, because they fail differently: a standing start, a two-step instruction, an
+    interruption while a queue is running (the model has to copy the remainder back), and chitchat
+    while running (the queue must come back untouched). The queues are written out by hand -- a
+    queue is just what is left of the program when the reply lands.
+    """
+    system_prompt = (out / "system_prompt.txt").read_text()
+    walking = [{"skill": "move", "dir": "forward", "speed": "normal", "duration_s": 7.0}]
+    cases = [
+        (["前に10秒歩いて。"], [[]], []),
+        (["5mくらい前に走ってから、そのまま前転して"], [[]], []),
+        (["前に10秒歩いて。", "バク転して！"], [[], walking], ["了解、前に10秒歩くで。"]),
+        (["前に10秒歩いて。", "ええ天気やなあ"], [[], walking], ["了解、前に10秒歩くで。"]),
+    ]
+
+    for texts, queues, answers in cases:
+        user_texts = [render_user_turn(text, queue) for text, queue in zip(texts, queues)]
         prompt = conversation_text(system_prompt, user_texts, answers)
         prompt_file = out / "_prompt.txt"
         prompt_file.write_text(prompt)
@@ -104,7 +106,7 @@ def test(gguf: Path, out: Path, threads: int) -> None:
         text = result.stdout.replace("[end of text]", "").strip()
         perf = " ".join(re.sub(r".*common_perf_print:\s*", "", line).strip()
                         for line in result.stderr.splitlines() if "prompt eval time" in line or " eval time" in line)
-        print(f"\n--- {user_texts[-1].splitlines()[-1]}")
+        print(f"\n--- {texts[-1]}   queue {json.dumps(queues[-1], ensure_ascii=False)}")
         print(text)
         try:
             parsed = parse_output(text)
@@ -127,8 +129,15 @@ def main() -> None:
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    trained_prompt = Path(args.adapter).parent / "system_prompt.txt"
-    shutil.copy(trained_prompt if trained_prompt.exists() else "data/llm/system_prompt.txt", out / "system_prompt.txt")
+    # The prompt the adapter was trained under, not whatever data/llm holds today: train_sft.py
+    # saves a copy beside the adapter and another beside the checkpoints.
+    adapter = Path(args.adapter)
+    trained_prompt = next((p for p in (adapter / "system_prompt.txt", adapter.parent / "system_prompt.txt")
+                           if p.exists()), None)
+    if trained_prompt is None:
+        sys.exit(f"no system_prompt.txt beside {adapter} -- serving under a different prompt than the "
+                 f"one trained is a silent quality loss, so this is not guessed")
+    shutil.copy(trained_prompt, out / "system_prompt.txt")
     (out / "output.gbnf").write_text(gbnf_grammar())
 
     merged = merge(args.base, args.adapter, out)

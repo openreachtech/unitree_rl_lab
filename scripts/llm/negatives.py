@@ -17,10 +17,6 @@ from __future__ import annotations
 
 import random
 
-FLIP_LIMIT = 5
-STANCE_MAX_S = 12.0
-PROGRAM_MAX_S = 40.0
-
 Topic = tuple[list[str], list[str], list[str], list[str]]
 """(casual inputs, polite inputs, casual replies, polite replies)"""
 
