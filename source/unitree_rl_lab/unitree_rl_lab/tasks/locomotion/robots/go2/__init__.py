@@ -131,3 +131,30 @@ for _phase in (1, 2, 3, 4):
             "rsl_rl_cfg_entry_point": _PERCEPTIVE_RUNNER,
         },
     )
+
+
+# ===========================================================================
+# Perceptive Phase 5: one wall instead of Phase 4's four, and a goal beyond it.
+#
+# Measured against pinned walls this moved the crossable wall from 20 cm to 30 cm --
+# Phase 4's checkpoints cross 25 cm in 0 % of attempts, this phase's in 100 %, and a
+# 30 cm wall in 100 % (solid) / 96 % (floating). See
+# velocity_env_cfg_perceptive_phase5.py for the design and the measurements.
+#
+#   python scripts/rsl_rl/train.py --task Go2-Perceptive-Mid360-Phase5 --headless \
+#       --max_iterations 2000 --resume --previous-task Go2-Perceptive-Mid360-Phase2
+# ===========================================================================
+gym.register(
+    id="Go2-Perceptive-Mid360-Phase5",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": (
+            f"{_CFG}.velocity_env_cfg_perceptive_phase5:RobotEnvCfgPerceptiveMid360Phase5"
+        ),
+        "play_env_cfg_entry_point": (
+            f"{_CFG}.velocity_env_cfg_perceptive_phase5:RobotPlayEnvCfgPerceptiveMid360Phase5"
+        ),
+        "rsl_rl_cfg_entry_point": _PERCEPTIVE_RUNNER,
+    },
+)

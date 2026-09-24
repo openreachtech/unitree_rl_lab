@@ -7,6 +7,7 @@ try:
     from isaaclab.utils.math import quat_apply_inverse
 except ImportError:
     from isaaclab.utils.math import quat_rotate_inverse as quat_apply_inverse
+import isaaclab.utils.math as math_utils
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
@@ -1069,3 +1070,275 @@ def wall_approach_commit_reward(
     reward = torch.sum(reward, dim=-1) * valid_rays.any(dim=1).float()
     return reward * (cmd_norm > min_cmd_norm).float()
     return reward
+
+
+"""
+Goal-directed traversal, ported from the Go2W Phase 5 campaign (feat/go2w).
+
+Direct ports of ANYmal Parkour's (Hoeller/Rudin et al. 2023) Table S2 goal-tracking
+terms plus Table S3's arrival term, and the wall-height term that campaign added on top
+of them. Each carries its own paper mapping in its docstring. They all read the goal
+from ``MixedGoalVelocityCommand``, so they only make sense against that command term.
+"""
+
+
+def _rough_env_mask(command_term) -> torch.Tensor | None:
+    """MixedGoalVelocityCommand exposes rough_env_mask; plain GoalDirectedVelocityCommand
+    (no "rough"/"wall" column split -- every env is goal-directed) does not. Returns None
+    in the latter case so callers can skip the "rough" exemption entirely."""
+    return getattr(command_term, "rough_env_mask", None)
+
+
+def goal_move_in_direction_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str = "base_velocity",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Table S2 "Move in direction": cos<v_b, r*-r>, weight +1 in the paper.
+
+    No time/arrival gating on wall envs -- a stationary robot (v_b ~ 0) contributes ~0 by
+    construction (see the division below), and the low-speed regime this can be noisy in
+    is already covered by ``goal_dont_wait_penalty``'s much larger per-step pressure,
+    exactly as in the paper. Explicitly zeroed on "rough" envs, if the command term has
+    that concept -- see the module-level docstring above.
+    """
+    command_term = env.command_manager.get_term(command_name)
+    asset = env.scene[asset_cfg.name]
+    goal_vec_w = command_term.goal_pos_w - asset.data.root_pos_w[:, :2]
+    goal_dir_w = goal_vec_w / torch.norm(goal_vec_w, dim=-1, keepdim=True).clamp(min=1e-6)
+    vel_w = asset.data.root_lin_vel_w[:, :2]
+    vel_dir_w = vel_w / torch.norm(vel_w, dim=-1, keepdim=True).clamp(min=1e-6)
+    reward = (vel_dir_w * goal_dir_w).sum(dim=-1)
+    rough_env_mask = _rough_env_mask(command_term)
+    if rough_env_mask is None:
+        return reward
+    return torch.where(rough_env_mask, torch.zeros_like(reward), reward)
+
+
+def goal_position_tracking_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str = "base_velocity",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    arrival_deadline_s: float = 8.0,
+    activation_window: float = 1.0,
+) -> torch.Tensor:
+    """Table S2 "Position tracking": 1[t*<1] * (1 - 0.5*||r_xy - r_xy*||), weight +10.
+
+    t* is remaining time until ``arrival_deadline_s`` -- a deadline *shorter* than the
+    episode, not the episode's own remaining time. Gating on the full episode's remaining
+    time put the only "did you get there" pressure in the episode's final second, with a
+    goal only ~2 m away: most of the episode would be completely free, unhurried travel
+    time before that one window, i.e. no reward for arriving *quickly*, only for
+    eventually being close by the time the episode ends. Decoupling the arrival deadline
+    from the episode length restores urgency while still leaving time after the deadline
+    to test "stays stopped" via ``goal_dont_wait_penalty`` (gated off once arrived) and
+    the existing ``joint_position_penalty``/``track_lin_vel_xy_exp`` -- this term does
+    not need to, and does not, keep firing after the deadline; that is deliberately left
+    to those other terms.
+
+    ``t_star`` goes negative once the deadline has passed (the episode does *not* end
+    there), so ``active`` is explicitly bounded to ``0 <= t_star < activation_window`` --
+    without the lower bound this would fire for the rest of the episode, not just the one
+    window right before the deadline.
+    """
+    command_term = env.command_manager.get_term(command_name)
+    asset = env.scene[asset_cfg.name]
+    distance = torch.norm(command_term.goal_pos_w - asset.data.root_pos_w[:, :2], dim=-1)
+    t_star = arrival_deadline_s - env.episode_length_buf * env.step_dt
+    active = (t_star >= 0.0) & (t_star < activation_window)
+    rough_env_mask = _rough_env_mask(command_term)
+    if rough_env_mask is not None:
+        active = active & ~rough_env_mask
+    return torch.where(active, 1.0 - 0.5 * distance, torch.zeros_like(distance))
+
+
+def goal_heading_tracking_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str = "base_velocity",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    arrival_deadline_s: float = 8.0,
+    activation_window: float = 1.0,
+) -> torch.Tensor:
+    """Table S2 "Heading tracking": 1[t*<1] * (1 - 0.5*|psi - psi*|), weight +5.
+
+    Same ``arrival_deadline_s``/window logic as ``goal_position_tracking_reward`` -- see
+    its docstring. psi* is the bearing toward the goal (matching
+    GoalDirectedVelocityCommand's own ``desired_heading`` computation in
+    ``_update_command``), not a separately commanded orientation -- this task has no
+    independent heading target.
+    """
+    command_term = env.command_manager.get_term(command_name)
+    asset = env.scene[asset_cfg.name]
+    goal_vec_w = command_term.goal_pos_w - asset.data.root_pos_w[:, :2]
+    desired_heading = torch.atan2(goal_vec_w[:, 1], goal_vec_w[:, 0])
+    heading_error = torch.abs(math_utils.wrap_to_pi(desired_heading - asset.data.heading_w))
+    t_star = arrival_deadline_s - env.episode_length_buf * env.step_dt
+    active = (t_star >= 0.0) & (t_star < activation_window)
+    rough_env_mask = _rough_env_mask(command_term)
+    if rough_env_mask is not None:
+        active = active & ~rough_env_mask
+    return torch.where(active, 1.0 - 0.5 * heading_error, torch.zeros_like(heading_error))
+
+
+def goal_arrival_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str = "base_velocity",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    bonus: float = 40.0,
+) -> torch.Tensor:
+    """Table S3 "Position tracking" (Navigation): 1[t_G*=0] * (40*S_N - ||r - r_G*||),
+    weight 0.15. See this module's own docstring for the Table S2 vs Table S3
+    distinction this term exists to fill.
+
+    Fires exactly once per episode -- on the last step, not the fixed early
+    ``arrival_deadline_s`` window ``goal_position_tracking_reward``/
+    ``goal_heading_tracking_reward`` use -- so a slow-but-successful crossing scores
+    identically to a fast one: only whether ``goal_pos_w`` was actually reached by
+    episode end matters, matching the paper's own stated rationale for this term
+    ("allows the policy to explore the terrain to find safer paths and take its time
+    where needed").
+
+    ``t_G*=0`` (the paper's global-target deadline) has no direct analog in this
+    codebase's flat (non-hierarchical) setup -- the natural equivalent is simply the
+    env's own episode running out, so this checks ``episode_length_buf`` against
+    ``max_episode_length`` directly. That check is naturally 0 for envs that terminate
+    early via a *failure* (bad_orientation, base_contact, ...) rather than reaching the
+    end of the episode -- those are already penalised by their own termination and this
+    term isn't meant to double up on that; it only ever fires for the "ran the full
+    episode" case, exactly mirroring ``t_G*=0`` meaning the deadline (not a fall)
+    ended the episode.
+
+    ``S_N`` (paper: ``||r - r_G*|| < 0.4``) reuses ``arrival_radius`` (0.5 in this
+    project's configs) instead of hardcoding the paper's 0.4, for consistency with
+    ``goal_dont_wait_penalty``'s/the command term's own "arrived" definition rather than
+    introducing a second, slightly different threshold.
+    """
+    command_term = env.command_manager.get_term(command_name)
+    asset = env.scene[asset_cfg.name]
+    distance = torch.norm(command_term.goal_pos_w - asset.data.root_pos_w[:, :2], dim=-1)
+    arrived = distance < command_term.cfg.arrival_radius
+    is_last_step = env.episode_length_buf >= (env.max_episode_length - 1)
+    rough_env_mask = _rough_env_mask(command_term)
+    if rough_env_mask is not None:
+        is_last_step = is_last_step & ~rough_env_mask
+    reward = bonus * arrived.float() - distance
+    return torch.where(is_last_step, reward, torch.zeros_like(reward))
+
+
+def goal_dont_wait_penalty_3d(
+    env: ManagerBasedRLEnv,
+    command_name: str = "base_velocity",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    speed_threshold: float = 0.2,
+) -> torch.Tensor:
+    """``goal_dont_wait_penalty`` with the speed test on the full 3-D body-frame velocity
+    rather than its planar part; same arrived/rough gating. A body rising 0.7 m in ~2 s
+    has ~0.35 m/s of vertical speed, so climbing counts as moving while a robot parked at
+    the wall, at any pitch, still counts as waiting. Chosen over a spatial gate because
+    switching the penalty off near the wall would turn parking reared-up inside
+    ``wall_body_height_reward``'s window into a pure income (the Try43 trap)."""
+    command_term = env.command_manager.get_term(command_name)
+    asset = env.scene[asset_cfg.name]
+    distance = torch.norm(command_term.goal_pos_w - asset.data.root_pos_w[:, :2], dim=-1)
+    arrived = distance < command_term.cfg.arrival_radius
+    rough = _rough_env_mask(command_term)
+    if rough is not None:
+        arrived = arrived | rough
+    speed = torch.norm(asset.data.root_lin_vel_b, dim=-1)
+    too_slow = (speed < speed_threshold).float()
+    return torch.where(arrived, torch.zeros_like(too_slow), too_slow)
+
+
+def wall_body_height_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str = "base_velocity",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    wall_height_range: tuple[float, float] = (0.10, 0.60),
+    wall_distance: float = 1.25,
+    gate_width: float = 0.6,
+    gate_width_far: float | None = None,
+    nominal_clearance: float = 0.15,
+    std: float = 0.15,
+    min_target_z: float = 0.0,
+) -> torch.Tensor:
+    """Reward the base for reaching wall-top-plus-clearance height while near the wall
+    and before arriving, on the theory that the policy is failing to climb specifically
+    because nothing tells it to lift its body until a foot is already on top of the
+    wall to push off from (Try26 -> Try34's checkpoint stalls right at the wall face;
+    see sandbox/SUMMARY.md).
+
+    Unlike ``base_height_climb_reward`` (this module, used by the Go2 jump lineage),
+    which senses the terrain height under/around the robot via the nearest
+    ``height_scanner`` ray, this uses the wall's *known* geometry directly -- the exact
+    thing this project's ``MixedGoalVelocityCommand``/terrain generator already have,
+    rather than reconstructing it noisily from a sensor built for continuous terrain
+    (stairs), not a single discrete obstacle. Concretely:
+
+    * "near the wall, not yet crossed" -- gated on distance from the env's own spawn
+      origin landing within ``gate_width`` *before* ``wall_distance`` (the wall ring's
+      own distance from spawn, a fixed property of the terrain layout the caller must
+      pass in to match whichever ``MeshThinWallTerrainCfg``/
+      ``MeshSlopedThinWallTerrainCfg`` is in use -- see that terrain's own
+      ``size``/``border_width``/``wall_spacing`` to derive it, e.g.
+      ``(size - 2*border_width)/2 - 0.5*wall_spacing``) and within ``gate_width_far``
+      *past* it (``gate_width_far`` defaults to ``gate_width``, i.e. a symmetric window,
+      when left unset -- Try36's original behaviour). Distance from spawn is a coarse,
+      direction-agnostic proxy (thin_wall's ring has four sides, and the goal only ever
+      directs a robot toward one of them), not an exact "have you crossed this specific
+      wall" test, but is simple, robust to which terrain variant is active, and doesn't
+      depend on a query point/lookahead direction like a height-scan approach would.
+    * wall height -- not read from a sensor, but recomputed from this env's own
+      ``terrain_levels`` through the *same* ``wall_height_range`` lerp the terrain
+      generator itself used at mesh-generation time (``difficulty = terrain_levels /
+      (max_terrain_level - 1)``), so it always matches whichever row the env is
+      currently on, not a single global constant.
+
+    ``target_z = wall_height + nominal_clearance`` -- deliberately a bit *above* the
+    wall top, not level with it, so the term keeps pulling the body up past the
+    minimum needed to clear the edge, rather than rewarding a base that's merely level
+    with (and likely still catching on) the top surface.
+
+    ``min_target_z`` is a Go2 addition, not in the original. On the quadruped this
+    lineage uses, the wall range is 5-25 cm against a 32 cm nominal base height, so
+    ``wall_height + 0.15`` sits *below* ordinary standing for anything under a 17 cm
+    wall -- the term would spend the lower half of the curriculum paying the robot to
+    crouch, which is the opposite of its purpose. Clamping the target at the nominal
+    standing height makes it inert there and leaves the climb pull intact above it.
+    (The wheeled robot it was written for has a 10-60 cm range and a taller stance, so
+    its target was always above standing and the question never arose.)
+
+    Zeroed on "rough" columns (if the command term has that concept) and once arrived,
+    same as the other goal-directed rewards in this module -- this term's job is done
+    once the robot is past the wall, and it should not fight ``goal_dont_wait_penalty``
+    /``goal_arrival_reward``'s "stop and hold at ordinary standing height" objective
+    after that point.
+    """
+    command_term = env.command_manager.get_term(command_name)
+    asset = env.scene[asset_cfg.name]
+
+    pos_xy = asset.data.root_pos_w[:, :2]
+    origin_xy = env.scene.env_origins[:, :2]
+    signed_distance = torch.norm(pos_xy - origin_xy, dim=-1) - wall_distance
+    far_gate = gate_width if gate_width_far is None else gate_width_far
+    near_wall = (signed_distance > -gate_width) & (signed_distance < far_gate)
+
+    goal_vec_w = command_term.goal_pos_w - pos_xy
+    goal_distance = torch.norm(goal_vec_w, dim=-1)
+    arrived = goal_distance < command_term.cfg.arrival_radius
+
+    terrain = env.scene.terrain
+    if terrain.terrain_origins is None or terrain.cfg.terrain_generator is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    difficulty = terrain.terrain_levels.float() / max(terrain.max_terrain_level - 1, 1)
+    wall_height = wall_height_range[0] + difficulty * (wall_height_range[1] - wall_height_range[0])
+    target_z = torch.clamp(wall_height + nominal_clearance, min=min_target_z)
+
+    base_z = asset.data.root_pos_w[:, 2]
+    reward = torch.exp(-torch.square(base_z - target_z) / std**2)
+
+    active = near_wall & ~arrived
+    rough_env_mask = _rough_env_mask(command_term)
+    if rough_env_mask is not None:
+        active = active & ~rough_env_mask
+
+    return torch.where(active, reward, torch.zeros_like(reward))

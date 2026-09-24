@@ -102,3 +102,70 @@ def custom_terrain_levels_climb(
     move_down = (distance < 0.5) & (~move_up)
     terrain.update_env_origins(env_ids, move_up, move_down)
     return torch.mean(terrain.terrain_levels.float())
+
+
+def terrain_levels_climb_demote_on_fail(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int] | slice,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    fail_termination_names: tuple[str, ...] = ("base_contact", "bad_orientation"),
+    promote_distance: float | None = None,
+) -> torch.Tensor:
+    """Terrain-difficulty ratchet: promotes at a reachable fraction of the tile
+    (35 %), demotes either on very low net displacement (< 0.5 m -- didn't even try)
+    or on a genuine failure termination named in ``fail_termination_names``
+    (``base_contact``/``bad_orientation`` by default), regardless of distance
+    travelled.
+
+    ``promote_distance`` (m from spawn) overrides the default ``tile_size * 0.35``
+    promotion rim when set. Added 2026-09-09 for the Go2W Phase5 sandbox (Try50):
+    on the 5.5 m thin_wall tile the default rim is 1.925 m while the wall ring sits
+    at 1.25 m with its far face at 1.45 m, so a robot that cleanly crosses the wall
+    and then stops (as the goal command tells it to) can sit ~0.4 m short of
+    promotion forever. Whatever value is chosen must satisfy
+    ``far_face < promote_distance <= min(goal_radius_range) - arrival_radius`` --
+    the lower bound so that only genuine crossings promote, the upper bound so that a
+    robot which legitimately arrives at the nearest allowed goal is not left
+    unpromoted. Left at ``None`` the behaviour is byte-for-byte the previous one.
+
+    The distance-only version this replaced (folded in 2026-08-25, formerly
+    ``custom_terrain_levels_climb``) left a dead zone between the 0.5 m demotion
+    floor and the 35 % promotion threshold: a robot making real partial progress
+    stays on its level rather than being punished for it, by design -- but an env
+    that gets promoted past its actual ability can crash into the wall
+    (base_contact) or tip over (bad_orientation) after already covering, say, 0.8 m,
+    never clearing 0.5 m and never reaching the promotion threshold either --
+    stuck at a level it is genuinely failing at, for the rest of training, with
+    nothing pulling it back down (suspected as why terrain_levels peaked then
+    declined without recovering -- envs piling up in exactly this dead zone).
+    Demoting on these specific termination causes regardless of distance closes
+    that gap without touching the existing distance-based rule for genuine "just
+    didn't move enough" failures (e.g. time_out at low progress). Measured
+    (Go2w-v1-Phase5): higher terrain_levels *and* a lower base_contact rate than
+    the distance-only version over a comparable training budget -- see
+    sandbox/SUMMARY.md.
+
+    Reads the current step's termination outcome via
+    ``env.termination_manager.get_term(name)`` -- valid here because curriculum
+    ``compute()`` runs from ``_reset_idx``, immediately after termination
+    ``compute()`` populates it for the same step, before anything resets it.
+    """
+    terrain: TerrainImporter = env.scene.terrain
+    if terrain.terrain_origins is None or terrain.cfg.terrain_generator is None:
+        return torch.tensor(0.0, device=env.device)
+
+    asset = env.scene[asset_cfg.name]
+    distance = torch.norm(
+        asset.data.root_pos_w[env_ids, :2] - env.scene.env_origins[env_ids, :2], dim=1
+    )
+    if promote_distance is None:
+        promote_distance = terrain.cfg.terrain_generator.size[0] * 0.35
+    move_up = distance > promote_distance
+
+    failed = torch.zeros_like(move_up)
+    for name in fail_termination_names:
+        failed = failed | env.termination_manager.get_term(name)[env_ids]
+
+    move_down = ((distance < 0.5) | failed) & ~move_up
+    terrain.update_env_origins(env_ids, move_up, move_down)
+    return torch.mean(terrain.terrain_levels.float())
