@@ -3,31 +3,41 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Play a trained policy while bridging the sim to ROS 2 (VLFM nav stack, M1).
+"""Play a trained policy while bridging the sim to ROS 2 (VLFM nav stack).
 
 Runs one environment of a Go2 velocity task and exchanges the robot-layer contract
 (doc/design/vlfm_nav.md §3) with the ROS side:
 
 Publishes (Isaac's bundled rclpy, py3.11 -- so standard messages only):
-  /clock            rosgraph_msgs/Clock       sim time; ROS side runs use_sim_time
-  /sim/joint_states sensor_msgs/JointState    12 joints, named; effort = applied torque
-  /sim/imu          sensor_msgs/Imu           base orientation / gyro / accelerometer
-  /sim/foot_forces  std_msgs/Float32MultiArray  [FR, FL, RR, RL] contact force norms (N)
-  /utlidar/cloud    sensor_msgs/PointCloud2   MID-360 returns in the URDF `radar` frame
+  /clock               rosgraph_msgs/Clock       sim time; ROS side runs use_sim_time
+  /sim/joint_states    sensor_msgs/JointState    12 joints, named; effort = applied torque
+  /sim/imu             sensor_msgs/Imu           base orientation / gyro / accelerometer
+  /sim/foot_forces     std_msgs/Float32MultiArray  [FR, FL, RR, RL] contact force norms (N)
+  /sim/gt_odom         nav_msgs/Odometry         ground truth (topic only), for evaluating
+                                                 whatever odometry actually runs
+  /sim/applied_cmd     geometry_msgs/Twist       the command applied to the policy this step
+  /utlidar/cloud       sensor_msgs/PointCloud2   full MID-360 returns, `radar` frame -- LIO input
+  /utlidar/cloud_band  sensor_msgs/PointCloud2   height-band subset for pointcloud_to_laserscan
 
 Subscribes:
-  /cmd_vel          geometry_msgs/Twist       written into the base_velocity command term,
-                                              clamped to the policy's training limit ranges
+  /cmd_vel             geometry_msgs/Twist       written into the base_velocity command term:
+                                                 clamped to the training limit ranges, small
+                                                 nonzero commands lifted past the policy's
+                                                 stand deadband (--min_walk_speed)
+
+With --gt_odom the ground truth additionally becomes THE odometry (odom->base TF +
+/odometry/filtered); the default is to leave odometry to the ROS side
+(go2_sim.launch.py odom:=lio runs RKO-LIO, the deployment-matching path).
 
 `unitree_go/LowState` itself is composed on the ROS side (go2_nav_bringup
 sim_lowstate_bridge) from the /sim/* topics: the unitree_go Python bindings are built
 for the system Python 3.10 and cannot be imported by Isaac's bundled rclpy.
 
 The task needs the MID-360 scanner in its scene (default task
-Go2-Blind-GRU-Mid360-Phase4). There is no mid360 experiment folder, so pass the base
-phase's checkpoint explicitly:
+Go2-Blind-GRU-Mid360-Explore). There is no mid360/explore experiment folder, so pass
+the base phase's checkpoint explicitly:
 
-    python scripts/ros2/play_ros2.py --task Go2-Blind-GRU-Mid360-Phase4 \
+    python scripts/ros2/play_ros2.py \
         --checkpoint logs/rsl_rl/go2_blind_gru_phase4/<run>/model_7300.pt
 
 Run from the default shell (env_isaaclab venv). Do NOT source ROS: the
@@ -113,11 +123,13 @@ parser.add_argument(
     nargs=2,
     default=(0.15, 0.85),
     metavar=("MIN", "MAX"),
-    help="Keep only returns whose WORLD z lies in this band (m). Gravity-aligned"
-    " pre-filter, standing in for what RKO-LIO's pose gives the real pipeline: without"
-    " it, body pitch tilts the base-frame band and far ground returns leak past the"
-    " 1 m walls, ray-tracing phantom free space outside the building. Pass equal"
-    " values to disable.",
+    help="WORLD-z band (m) for the *_band cloud used by pointcloud_to_laserscan."
+    " Gravity-aligned, standing in for the LIO-posed height filter of the real"
+    " pipeline: a base-frame band tilts with body pitch and far ground returns leak"
+    " past the 1 m walls, ray-tracing phantom free space outside the building."
+    " The full unfiltered cloud is always published too (on --cloud_topic) -- that"
+    " is what LiDAR odometry consumes; a 0.7 m slab has no vertical structure to"
+    " register against. Pass equal values to disable the band topic.",
 )
 parser.add_argument(
     "--cloud_accum_steps",
@@ -202,6 +214,13 @@ class SimBridge(Node):
         self.pub_imu = self.create_publisher(Imu, "/sim/imu", 10)
         self.pub_feet = self.create_publisher(Float32MultiArray, "/sim/foot_forces", 10)
         self.pub_cloud = self.create_publisher(PointCloud2, args_cli.cloud_topic, qos_profile_sensor_data)
+        self.pub_cloud_band = self.create_publisher(
+            PointCloud2, args_cli.cloud_topic + "_band", qos_profile_sensor_data
+        )
+        # Ground truth is always published on /sim/gt_odom (topic only, no TF) so any
+        # odometry source can be evaluated against it. --gt_odom additionally makes it
+        # THE odometry: odom->base TF + the contract topic /odometry/filtered.
+        self.pub_gt = self.create_publisher(Odometry, "/sim/gt_odom", 10)
         if args_cli.gt_odom:
             self.pub_odom = self.create_publisher(Odometry, "/odometry/filtered", 10)
             self.tf_broadcaster = TransformBroadcaster(self)
@@ -271,16 +290,7 @@ class SimBridge(Node):
 
     def publish_gt_odom(self, t: float, pos, quat_wxyz, lin_vel_b, ang_vel_b):
         stamp = _stamp(t)
-        tf = TransformStamped()
-        tf.header.stamp = stamp
-        tf.header.frame_id = "odom"
-        tf.child_frame_id = "base"
-        tf.transform.translation.x, tf.transform.translation.y, tf.transform.translation.z = pos.tolist()
         w, x, y, z = quat_wxyz.tolist()
-        tf.transform.rotation.w, tf.transform.rotation.x = w, x
-        tf.transform.rotation.y, tf.transform.rotation.z = y, z
-        self.tf_broadcaster.sendTransform(tf)
-
         od = Odometry()
         od.header.stamp = stamp
         od.header.frame_id = "odom"
@@ -290,15 +300,34 @@ class SimBridge(Node):
         od.pose.pose.orientation.y, od.pose.pose.orientation.z = y, z
         od.twist.twist.linear.x, od.twist.twist.linear.y, od.twist.twist.linear.z = lin_vel_b.tolist()
         od.twist.twist.angular.x, od.twist.twist.angular.y, od.twist.twist.angular.z = ang_vel_b.tolist()
+        self.pub_gt.publish(od)
+        if not args_cli.gt_odom:
+            return
+
+        tf = TransformStamped()
+        tf.header.stamp = stamp
+        tf.header.frame_id = "odom"
+        tf.child_frame_id = "base"
+        tf.transform.translation.x, tf.transform.translation.y, tf.transform.translation.z = pos.tolist()
+        tf.transform.rotation.w, tf.transform.rotation.x = w, x
+        tf.transform.rotation.y, tf.transform.rotation.z = y, z
+        self.tf_broadcaster.sendTransform(tf)
         self.pub_odom.publish(od)
 
-    def publish_cloud(self, t: float, points_xyz: np.ndarray):
+    def publish_cloud(self, t: float, points_xyz: np.ndarray, band_mask: np.ndarray | None):
         msg = self.cloud_msg
         msg.header.stamp = _stamp(t)
         msg.width = len(points_xyz)
         msg.row_step = msg.point_step * msg.width
-        msg.data = points_xyz.astype(np.float32).tobytes()
+        data = points_xyz.astype(np.float32)
+        msg.data = data.tobytes()
         self.pub_cloud.publish(msg)
+        if band_mask is not None:
+            band = data[band_mask]
+            msg.width = len(band)
+            msg.row_step = msg.point_step * msg.width
+            msg.data = band.tobytes()
+            self.pub_cloud_band.publish(msg)
 
 
 def main():
@@ -419,14 +448,13 @@ def main():
 
         bridge.publish_clock(sim_t)
         bridge.publish_state(sim_t, q, dq, tau, quat.cpu().numpy(), gyro, acc_b, feet)
-        if args_cli.gt_odom:
-            bridge.publish_gt_odom(
-                sim_t,
-                robot.data.root_pos_w[0].cpu().numpy(),
-                quat.cpu().numpy(),
-                robot.data.root_lin_vel_b[0].cpu().numpy(),
-                robot.data.root_ang_vel_b[0].cpu().numpy(),
-            )
+        bridge.publish_gt_odom(
+            sim_t,
+            robot.data.root_pos_w[0].cpu().numpy(),
+            quat.cpu().numpy(),
+            robot.data.root_lin_vel_b[0].cpu().numpy(),
+            robot.data.root_ang_vel_b[0].cpu().numpy(),
+        )
 
         # -- point cloud: accumulate one full elevation sweep, publish in `radar` frame --
         # Returns are kept as world-frame points and only projected into the sensor
@@ -437,17 +465,19 @@ def main():
         keep = torch.isfinite(hits_w).all(dim=-1)
         dist = (hits_w - sensor_pos).norm(dim=-1)
         keep &= (dist >= min_range) & (dist < max_range - 1e-3)
-        z_lo, z_hi = args_cli.cloud_z_band
-        if z_hi > z_lo:
-            keep &= (hits_w[:, 2] >= z_lo) & (hits_w[:, 2] <= z_hi)
         cloud_buf.append(hits_w[keep])
         if len(cloud_buf) >= args_cli.cloud_accum_steps:
-            rel_w = torch.cat(cloud_buf) - sensor_pos
+            hits = torch.cat(cloud_buf)
             cloud_buf.clear()
+            rel_w = hits - sensor_pos
             base_quat = scanner.data.quat_w[0]
             p_base = quat_apply_inverse(base_quat.expand(len(rel_w), 4), rel_w)
             p_radar = quat_apply_inverse(mount_quat.expand(len(rel_w), 4), p_base)
-            bridge.publish_cloud(sim_t, p_radar.cpu().numpy())
+            z_lo, z_hi = args_cli.cloud_z_band
+            band_mask = None
+            if z_hi > z_lo:
+                band_mask = ((hits[:, 2] >= z_lo) & (hits[:, 2] <= z_hi)).cpu().numpy()
+            bridge.publish_cloud(sim_t, p_radar.cpu().numpy(), band_mask)
 
         # real-time pacing: the ROS side integrates in /clock time, but Nav2's watchdogs
         # and the human at the teleop live in wall time.

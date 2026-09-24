@@ -19,7 +19,7 @@ import math
 import numpy as np
 import rclpy
 import tf2_ros
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Point, Twist
 from nav_msgs.msg import OccupancyGrid
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile
@@ -114,6 +114,12 @@ class VlfmNode(Node):
             if self._grid is not None and self._robot_xy() is not None and self._nav.server_ready():
                 self._spin_end = self._now() + float(self._pget("spin_duration_s"))
                 self._transition("SPIN", "map/TF/Nav2 ready; initial 360")
+            else:
+                self.get_logger().info(
+                    f"WAIT: map={self._grid is not None}"
+                    f" tf={self._robot_xy() is not None} nav={self._nav.server_ready()}",
+                    throttle_duration_sec=10.0,
+                )
         elif self._state == "SPIN":
             if self._now() >= self._spin_end:
                 self._cmd_pub.publish(Twist())  # stop
@@ -231,8 +237,6 @@ class VlfmNode(Node):
 
 
 def _pt(x, y):
-    from geometry_msgs.msg import Point
-
     p = Point()
     p.x, p.y = float(x), float(y)
     return p

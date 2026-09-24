@@ -25,6 +25,7 @@ setup(
     entry_points={
         "console_scripts": [
             "sim_lowstate_bridge = go2_nav_bringup.sim_lowstate_bridge:main",
+            "gt_map_compare = go2_nav_bringup.gt_map_compare:main",
         ],
     },
 )

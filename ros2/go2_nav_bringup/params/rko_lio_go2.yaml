@@ -1,0 +1,29 @@
+# RKO-LIO on the Go2 sim bridge topics -- the deployment-matching odometry path
+# (both the Go2 height-map stack and Anaguma run RKO-LIO on hardware).
+#
+# Everything lives in this file (topics included): rko_lio's launch only accepts
+# per-parameter overrides from its own command line (it reads context.argv), so
+# arguments forwarded by an IncludeLaunchDescription are ignored -- config_file is
+# the one input that passes through. Extrinsics come from TF: robot_state_publisher
+# provides base->radar (lidar) and base->imu from go2.urdf.
+
+imu_topic: /sim/imu
+lidar_topic: /utlidar/cloud
+base_frame: base
+autodetect: false
+rviz: false
+
+odom_topic: /odometry/filtered # the robot-layer contract topic
+odom_frame: odom
+publish_local_map: false
+publish_deskewed_scan: false
+
+# The sim cloud is already motion-corrected into the end-of-sweep pose and carries
+# no per-point timestamps -- deskewing is neither possible nor needed.
+deskew: false
+double_downsample: false
+initialization_phase: true # robot stands at spawn; lets gravity/bias converge
+voxel_size: 0.3 # indoor rooms; the 1.0 default is outdoor scale
+min_range: 0.3
+max_range: 20.0
+max_num_threads: 2

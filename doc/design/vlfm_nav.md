@@ -67,7 +67,7 @@ colcon ワークスペースは `~/isaacsim/go2_nav_ws`。`src/` には上記 `r
 
 | 提供物 | 型/形式 | Go2 | Anaguma |
 |---|---|---|---|
-| `odom→base_link` TF + オドメトリ | tf2 + `nav_msgs/Odometry` | sim開発: `--gt_odom`(sim直出し)/ 実機: RKO-LIO 予定 / go2_odometry (InEKF) は検証用に維持※ | rko_lio (既存) |
+| `odom→base_link` TF + オドメトリ | tf2 + `nav_msgs/Odometry` | **rko_lio**(sim実装済み: `go2_sim.launch.py odom:=lio` デフォルト。実機も同構成予定)/ `--gt_odom`=sim直出し / go2_odometry (InEKF) は検証用※ | rko_lio (既存) |
 | LiDAR 点群 | `sensor_msgs/PointCloud2` | sim bridge / L1 実機 | livox driver (既存) |
 | RGB カメラ | `sensor_msgs/Image` + `CameraInfo` | sim bridge / 実機 | 実機カメラ |
 | 速度コマンド受理 | `geometry_msgs/Twist` on `/cmd_vel` | sim: play_ros2.py が購読 / 実機: deploy C++ に DDS 購読追加 | twist→joy 変換ノード (§6) |
@@ -90,6 +90,7 @@ Nav2/slam_toolbox のパラメータは「共通 yaml + ロボット別 yaml で
 | clone + patch | unitree_ros2 (unitree_go/unitree_api msgのみ), rosidl_dds (humble) | `ros2/patches/README.md` 参照 |
 | clone + patch | invariant-ekf (inria fork) | 同上 |
 | clone | unitree_description (inria fork), go2_odometry | — |
+| clone + build flag | rko_lio (PRBonn) — `colcon build --packages-select rko_lio --cmake-args -DRKO_LIO_FETCH_CONTENT_DEPS=ON -DCMAKE_BUILD_TYPE=Release` | github.com/PRBonn/rko_lio |
 | pip (システム) | pin (pinocchio, 導入済み), torch + BLIP-2/CLIP 系 (VLM 実装時に確定) | — |
 
 パッチ(upstream 更新時は再適用):
@@ -150,7 +151,9 @@ sim/実機で go2_odometry・slam_toolbox・Nav2・VLFM は無改造で共用す
 数分を超える探索で slam_toolbox の探索窓を超えて地図がフォークした。実機計画は
 Go2(height-mapスタック)/Anaguma とも RKO-LIO なので、sim 開発は `--gt_odom` +
 `go2_sim.launch.py use_inekf:=false` で本番相当のオドメトリ品質に揃える。
-将来: sim の /utlidar/cloud + /sim/imu に本物の rko_lio を掛ければ経路が完全一致する。
+2026-09-24: 本物の rko_lio を sim に統合済み(`odom:=lio`、点群は生/バンドの2系統に分離)。
+実測誤差 1.9cm / 1.0°(2.87m歩行)。この構成でフロンティア探索 17/19 ゴール・
+カバレッジ99.3%を確認。正解地図との比較は `gt_map_compare` ノード(/gt_map)。
 
 ## 7. MLモデル構成(2026-09-20 確定)
 

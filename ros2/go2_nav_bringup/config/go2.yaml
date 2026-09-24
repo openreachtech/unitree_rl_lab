@@ -10,7 +10,8 @@
       lidar_frame: "radar"      # L1 mount link in go2.urdf; sim cloud is stamped with it
 
     topics:
-      pointcloud: "/utlidar/cloud"
+      pointcloud: "/utlidar/cloud" # full returns -- RKO-LIO input
+      pointcloud_band: "/utlidar/cloud_band" # height-band subset -- pointcloud_to_laserscan input
       odometry: "/odometry/filtered"
       cmd_vel: "/cmd_vel"
 
