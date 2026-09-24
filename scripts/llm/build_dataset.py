@@ -31,11 +31,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "source" / "unitree_rl_lab"))
 
-import chat_format as cf  # noqa: E402
 import dialogues  # noqa: E402
 import negatives as ng  # noqa: E402
 import phrasebank as pb  # noqa: E402
-from unitree_rl_lab.program import CapabilityTable, CompilerConfig, compile_program, program_from_json  # noqa: E402
+from unitree_rl_lab.program import CapabilityTable, CompilerConfig  # noqa: E402
 
 SYSTEM_PROMPT = """あなたは四足歩行ロボット Go2 です。人の日本語を聞き、短い返事と、これから実行する手順を返します。
 会話は続きます。前のやりとりを覚えていて、「もう一回」「やめて」「それでいい」のような言葉は前の流れから解釈します。

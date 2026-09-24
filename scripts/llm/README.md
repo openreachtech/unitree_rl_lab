@@ -86,11 +86,11 @@ python scripts/llm/roundtrip_check.py data/llm/dataset.jsonl data/llm/reparse.js
 python scripts/llm/chat_format.py --check data/llm/dataset.jsonl
 
 # 7. Fine-tune (env_llm).
-python scripts/llm/train_sft.py --out logs/llm/qwen3-1.7b-dora-v2
+python scripts/llm/train_sft.py --out logs/llm/qwen3-1.7b-dora
 
 # 8. Fold the adapter in, convert to GGUF, quantize, and run the grammar through the real sampler.
 #    llama.cpp lives in /home/tak/isaacsim/llama.cpp (CPU build); the Jetson gets its own CUDA build.
-python scripts/llm/export_gguf.py --adapter logs/llm/qwen3-1.7b-dora-v3/adapter --out logs/llm/gguf/v3 --test
+python scripts/llm/export_gguf.py --adapter logs/llm/qwen3-1.7b-dora/checkpoint-888 --out logs/llm/gguf/v1 --test
 ```
 
 `<out>/` then holds `model-Q8_0.gguf` (~1.75 GB; Q8 keeps the trained weights nearly intact and the Orin has the memory), `output.gbnf` and the `system_prompt.txt` the
@@ -151,7 +151,7 @@ whole shape is in [SYSTEM.md](SYSTEM.md).
 cd ~/unitree/unitree_mujoco/simulate/build && ./unitree_mujoco     # interface: lo
 
 # 2. the model
-~/isaacsim/llama.cpp/build/bin/llama-server -m logs/llm/gguf/v3/model-Q8_0.gguf \
+~/isaacsim/llama.cpp/build/bin/llama-server -m logs/llm/gguf/v1/model-Q8_0.gguf \
     --port 8080 -t 16 -c 4096 --keep -1
 
 # 3. the controller             [1] FixStand, then [6] Multitask

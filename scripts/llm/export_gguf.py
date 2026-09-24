@@ -1,7 +1,7 @@
 """Fold the DoRA adapter into the base weights and produce the GGUF the robot runs.
 
     source /home/tak/isaacsim/env_llm/bin/activate
-    python scripts/llm/export_gguf.py --adapter logs/llm/qwen3-1.7b-dora-v3/adapter --out logs/llm/gguf/v3
+    python scripts/llm/export_gguf.py --adapter logs/llm/qwen3-1.7b-dora/checkpoint-888 --out logs/llm/gguf/v1
 
 Three steps, each skipped when its output already exists:
 

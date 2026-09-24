@@ -30,7 +30,6 @@ from __future__ import annotations
 import argparse
 import json
 import queue
-import re
 import readline  # noqa: F401 -- gives input() a line buffer Console.say can redraw
 import socket
 import sys

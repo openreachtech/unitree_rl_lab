@@ -96,10 +96,9 @@ from unitree_rl_lab.program import (  # noqa: E402
     Turn,
     compile_program,
     program_from_json,
-    program_to_json,
 )
 from unitree_rl_lab.program.compiler import COL_FLIP, COL_STANCE, Segment  # noqa: E402
-from unitree_rl_lab.program.grammar import FLIP_MOTION, STANCE_SIGN, step_to_dict  # noqa: E402
+from unitree_rl_lab.program.grammar import FLIP_MOTION, step_to_dict  # noqa: E402
 from unitree_rl_lab.tasks.dynamic.mdp.commands import JumpCommand  # noqa: E402
 from unitree_rl_lab.utils.parser_cfg import parse_env_cfg  # noqa: E402
 
@@ -517,7 +516,6 @@ def main():
     if args_cli.running_recover_s is not None:
         compiler.running_recover_s = args_cli.running_recover_s
 
-    timelines = []
     for record in records:
         record["timeline"] = compile_program(record["program"], compiler)
     steps = max(record["timeline"].num_steps for record in records)

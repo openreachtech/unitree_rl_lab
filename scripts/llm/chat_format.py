@@ -61,13 +61,13 @@ from typing import NamedTuple
 
 try:
     from unitree_rl_lab.program.grammar import (
-        DIRECTIONS, FLIP_KINDS, JA, SPEEDS, STANCE_KINDS, TURN_DIRECTIONS,
+        DIRECTIONS, FLIP_KINDS, SPEEDS, STANCE_KINDS, TURN_DIRECTIONS,
         program_from_json, program_to_json,
     )
 except ModuleNotFoundError:  # the fine-tuning venv has no Isaac Lab install; the package is pure Python
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "source" / "unitree_rl_lab"))
     from unitree_rl_lab.program.grammar import (
-        DIRECTIONS, FLIP_KINDS, JA, SPEEDS, STANCE_KINDS, TURN_DIRECTIONS,
+        DIRECTIONS, FLIP_KINDS, SPEEDS, STANCE_KINDS, TURN_DIRECTIONS,
         program_from_json, program_to_json,
     )
 
@@ -140,41 +140,6 @@ def render_user_turn(text: str, queue: list[dict]) -> str:
 def strip_queue(user_text: str) -> str:
     """The person's words alone -- how the turn is rendered once it is history."""
     return _QUEUE_RE.sub("", user_text).rstrip()
-
-
-# --- Describing a program to a person ---------------------------------------------------------
-
-
-def _amount(value: float, unit: str) -> str:
-    return f"{value:g}{unit}"
-
-
-def describe_step(step: dict) -> str:
-    """A step in a few Japanese characters, for the console. Not the reply's wording."""
-    skill = step["skill"]
-    if skill == "move":
-        speed = "" if step.get("speed", "normal") == "normal" else JA[step["speed"]]
-        amount = _amount(step["distance_m"], "m") if "distance_m" in step else _amount(step["duration_s"], "秒")
-        return f"{speed}{JA[step['dir']]}へ{amount}"
-    if skill == "turn":
-        speed = "" if step.get("speed", "normal") == "normal" else JA[step["speed"]]
-        amount = _amount(step["angle_deg"], "度") if "angle_deg" in step else _amount(step["duration_s"], "秒")
-        return f"{speed}{JA[step['dir']]}回り{amount}"
-    if skill == "flip":
-        running = "(走りながら)" if step.get("running") else ""
-        return f"{JA[step['kind']]}×{step.get('count', 1)}{running}"
-    if skill == "stance":
-        amount = _amount(step["duration_s"], "秒") if step.get("duration_s") is not None else "ずっと"
-        return f"{JA[step['kind']]}{amount}"
-    raise ValueError(f"unknown skill {skill!r}")
-
-
-def describe_program(program: list[dict]) -> str:
-    """Steps joined with arrows."""
-    return " → ".join(describe_step(step) for step in program) if program else "(なし)"
-
-
-# --- The grammar llama.cpp samples under ---------------------------------------------------------
 
 
 def _alt(values) -> str:

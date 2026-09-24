@@ -348,10 +348,8 @@ def compile_program(program: Program, cfg: CompilerConfig | None = None, *, cont
             else:
                 if step.distance_m is not None:
                     duration = cfg.duration_for_length(key, math.hypot(vx, vy), step.distance_m)
-                    what = f"step {index} ({step.dir} {step.distance_m:g} m): duration {duration:.1f} s"
                 else:
                     duration = step.duration_s
-                    what = f"step {index} ({step.dir}): duration"
                 duration = max(duration, cfg.min_move_s)
                 b.add("move", duration, vx=vx, vy=vy, step_index=index, label=f"{step.dir} {step.speed}")
 

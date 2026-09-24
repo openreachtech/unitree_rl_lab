@@ -55,9 +55,9 @@ def stats(rows: list[dict]) -> None:
     total = len(utterances)
     print(f"会話 {len(rows)}  発話 {total}（1ターン目 {len(first)} / 2ターン目以降 {len(later)}）")
 
-    print(f"\nターン数        " + "  ".join(f"{n}:{c}" for n, c in
+    print("\nターン数        " + "  ".join(f"{n}:{c}" for n, c in
                                           sorted(Counter(len(r["turns"]) // 2 for r in rows).items())))
-    print(f"style          " + "  ".join(f"{s}:{c}" for s, c in Counter(
+    print("style          " + "  ".join(f"{s}:{c}" for s, c in Counter(
         r.get("style") for r in rows).most_common()))
 
     tails = Counter(u.rstrip("。!?！？ ")[-4:] for u in utterances)

@@ -58,8 +58,6 @@ TURN_MARKERS = r"回っ|回り|回る|回れ|旋回|向きを変え|回転|周|�
 # A move or a stance with no end: 「止めるまで歩いてて」「ずっと倒立」「倒立のまま」. A move with no
 # amount and no marker at all is open-ended too -- that is the grammar's rule, so it is the default
 # and these words only have to be kept out of the *amount* search.
-OPEN_MARKERS = r"ずっと|しばらく|止めるまで|止まるまで|ストップ.{0,3}まで|続け|そのまま|のまま|したまま|キープ"
-
 # Fired out of the preceding run rather than from standing.
 RUNNING_MARKERS = r"そのまま|進んだまま|止まら[ずんな]|走りながら|走って|勢い|助走"
 

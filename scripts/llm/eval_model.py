@@ -1,8 +1,8 @@
 """Score a fine-tuned adapter the way the robot will use it: one program per turn.
 
     source /home/tak/isaacsim/env_llm/bin/activate
-    python scripts/llm/eval_model.py logs/llm/qwen3-1.7b-dora/adapter
-    python scripts/llm/eval_model.py logs/llm/qwen3-1.7b-dora/checkpoint-444 --show 20
+    python scripts/llm/eval_model.py logs/llm/qwen3-1.7b-dora/checkpoint-888
+    python scripts/llm/eval_model.py logs/llm/qwen3-1.7b-dora/checkpoint-888 --show 20 --limit 200
 
 Every assistant turn of the eval split is one question. The prompt is built by
 ``chat_format.conversation_text`` -- byte-identical to what ``conductor`` sends -- the model
