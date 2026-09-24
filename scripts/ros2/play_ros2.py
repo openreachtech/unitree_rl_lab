@@ -113,12 +113,15 @@ parser.add_argument(
     "--cloud_z_band",
     type=float,
     nargs=2,
-    default=(0.15, 0.85),
+    default=(0.30, 0.85),
     metavar=("MIN", "MAX"),
     help="WORLD-z band (m) for the *_band cloud used by pointcloud_to_laserscan."
     " Gravity-aligned, standing in for the LIO-posed height filter of the real"
     " pipeline: a base-frame band tilts with body pitch and far ground returns leak"
     " past the 1 m walls, ray-tracing phantom free space outside the building."
+    " The 0.30 m floor is deliberate: the blind policy climbs steps up to ~0.30 m,"
+    " so anything lower is terrain for the locomotion layer (which sees it through"
+    " its own height scan), not a wall for Nav2/SLAM to route around."
     " The full unfiltered cloud is always published too (on --cloud_topic) -- that"
     " is what LiDAR odometry consumes; a 0.7 m slab has no vertical structure to"
     " register against. Pass equal values to disable the band topic.",

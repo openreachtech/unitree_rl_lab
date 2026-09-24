@@ -8,8 +8,10 @@ Pairs with scripts/ros2/play_ros2.py on the Isaac side:
      -> RKO-LIO on /utlidar/cloud + /sim/imu
      -> odom->base TF, /odometry/filtered
 
-Odometry is RKO-LIO (the same system the hardware runs on both Go2 and Anaguma);
-odom:=external instead leaves odometry to the sim (play_ros2.py --gt_odom).
+Odometry is RKO-LIO (the same system the hardware runs on both Go2 and Anaguma).
+odom:=external is a DEBUG mode only: nothing here publishes odometry and the sim
+supplies ground truth instead (pair with play_ros2.py --gt_odom) -- use it to rule
+odometry out when isolating a mapping/exploration fault, never as the normal path.
 
 The earlier leg-kinematics InEKF path (go2_odometry + /lowstate composition) was
 removed 2026-09-24: its foot-contact assumption breaks when the blind policy
