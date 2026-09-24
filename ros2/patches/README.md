@@ -36,3 +36,9 @@ git apply <unitree_rl_lab>/ros2/patches/unitree_ros2-msg-build-deps.patch
 cd ~/isaacsim/go2_nav_ws/src/invariant-ekf
 git apply <unitree_rl_lab>/ros2/patches/invariant-ekf-cmake-colcon.patch
 ```
+
+---
+
+**注記(2026-09-24)**: InEKF オドメトリ経路の廃止(RKO-LIO へ一本化)に伴い、
+上記パッチが対象とする unitree_ros2 / invariant-ekf は sim スタックの依存から
+外れた。これらのパッチは InEKF 経路(go2_odometry)を復活させる場合にのみ必要。

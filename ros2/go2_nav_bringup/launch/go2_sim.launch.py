@@ -2,39 +2,38 @@
 
 Pairs with scripts/ros2/play_ros2.py on the Isaac side:
 
-  [Isaac] /clock /sim/joint_states /sim/imu /sim/foot_forces /utlidar/cloud{,_band}
-     -> sim_lowstate_bridge -> /lowstate
-     -> robot_state_publisher (base->radar/imu TF) + state_converter (/joint_states)
-     -> odometry (see below) -> odom->base TF, /odometry/filtered
+  [Isaac] /clock /sim/joint_states /sim/imu /utlidar/cloud{,_band}
+     -> robot_state_publisher (go2.urdf: base->radar/imu and leg TF,
+        fed by /sim/joint_states directly)
+     -> RKO-LIO on /utlidar/cloud + /sim/imu
+     -> odom->base TF, /odometry/filtered
 
-Odometry source (odom:=...):
-  lio      RKO-LIO on /utlidar/cloud + /sim/imu -- the deployment-matching path
-           (hardware runs RKO-LIO on both Go2 and Anaguma). Default.
-  inekf    go2_odometry's leg-kinematics InEKF on /lowstate. Works for short runs;
-           yaw drifts under wall contact and forks the SLAM map on long ones
-           (measured 2026-09-20) -- kept for comparison.
-  external Nothing here publishes odometry; the sim does (play_ros2.py --gt_odom).
+Odometry is RKO-LIO (the same system the hardware runs on both Go2 and Anaguma);
+odom:=external instead leaves odometry to the sim (play_ros2.py --gt_odom).
 
-  ros2 launch go2_nav_bringup go2_sim.launch.py odom:=lio
+The earlier leg-kinematics InEKF path (go2_odometry + /lowstate composition) was
+removed 2026-09-24: its foot-contact assumption breaks when the blind policy
+brushes walls, the resulting yaw jumps forked the SLAM map on every long run,
+and the hardware plan never used it. See doc/design/vlfm_nav.md §6 and git
+history if it needs resurrecting.
+
+  ros2 launch go2_nav_bringup go2_sim.launch.py
 """
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.conditions import LaunchConfigurationEquals, LaunchConfigurationNotEquals
+from launch.conditions import LaunchConfigurationEquals
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import PathJoinSubstitution
 from launch_ros.actions import Node, SetParameter
 from launch_ros.substitutions import FindPackageShare
+from unitree_description import GO2_DESCRIPTION_URDF_PATH
 
 
 def generate_launch_description():
-    odom = LaunchConfiguration("odom")
-    inekf_launch = PathJoinSubstitution(
-        [FindPackageShare("go2_odometry"), "launch", "go2_inekf_odometry.launch.py"]
-    )
-    state_pub_launch = PathJoinSubstitution(
-        [FindPackageShare("go2_odometry"), "launch", "go2_state_publisher.launch.py"]
-    )
+    with open(GO2_DESCRIPTION_URDF_PATH) as f:
+        robot_desc = f.read()
+
     lio_launch = PathJoinSubstitution([FindPackageShare("rko_lio"), "launch", "odometry.launch.py"])
     lio_config = PathJoinSubstitution(
         [FindPackageShare("go2_nav_bringup"), "params", "rko_lio_go2.yaml"]
@@ -42,24 +41,17 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
-            DeclareLaunchArgument("odom", default_value="lio", description="lio | inekf | external"),
+            DeclareLaunchArgument("odom", default_value="lio", description="lio | external"),
             # Applies to every node below, included launch files too.
             SetParameter(name="use_sim_time", value=True),
             Node(
-                package="go2_nav_bringup",
-                executable="sim_lowstate_bridge",
-                name="sim_lowstate_bridge",
+                package="robot_state_publisher",
+                executable="robot_state_publisher",
+                name="robot_state_publisher",
                 output="screen",
-            ),
-            # inekf's launch already includes the state publisher; the other modes
-            # need it separately (base->radar TF and /joint_states).
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource([inekf_launch]),
-                condition=LaunchConfigurationEquals("odom", "inekf"),
-            ),
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource([state_pub_launch]),
-                condition=LaunchConfigurationNotEquals("odom", "inekf"),
+                parameters=[{"robot_description": robot_desc}],
+                # The sim publishes named joint states directly; no LowState detour.
+                remappings=[("joint_states", "/sim/joint_states")],
             ),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource([lio_launch]),

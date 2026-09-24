@@ -12,7 +12,6 @@ Publishes (Isaac's bundled rclpy, py3.11 -- so standard messages only):
   /clock               rosgraph_msgs/Clock       sim time; ROS side runs use_sim_time
   /sim/joint_states    sensor_msgs/JointState    12 joints, named; effort = applied torque
   /sim/imu             sensor_msgs/Imu           base orientation / gyro / accelerometer
-  /sim/foot_forces     std_msgs/Float32MultiArray  [FR, FL, RR, RL] contact force norms (N)
   /sim/gt_odom         nav_msgs/Odometry         ground truth (topic only), for evaluating
                                                  whatever odometry actually runs
   /sim/applied_cmd     geometry_msgs/Twist       the command applied to the policy this step
@@ -27,11 +26,7 @@ Subscribes:
 
 With --gt_odom the ground truth additionally becomes THE odometry (odom->base TF +
 /odometry/filtered); the default is to leave odometry to the ROS side
-(go2_sim.launch.py odom:=lio runs RKO-LIO, the deployment-matching path).
-
-`unitree_go/LowState` itself is composed on the ROS side (go2_nav_bringup
-sim_lowstate_bridge) from the /sim/* topics: the unitree_go Python bindings are built
-for the system Python 3.10 and cannot be imported by Isaac's bundled rclpy.
+(go2_sim.launch.py runs RKO-LIO, the same odometry the hardware uses).
 
 The task needs the MID-360 scanner in its scene (default task
 Go2-Blind-GRU-Mid360-Explore). There is no mid360/explore experiment folder, so pass
@@ -93,12 +88,9 @@ parser.add_argument(
     action="store_true",
     default=False,
     help="Publish ground-truth odometry (odom->base TF + /odometry/filtered) straight"
-    " from the sim, instead of leaving odometry to go2_odometry's leg-kinematics InEKF."
-    " Matches the deployed stack's odometry class better than the InEKF does -- both the"
-    " Go2 height-map pipeline and Anaguma run RKO-LIO (LiDAR-inertial), whose yaw does"
-    " not drift the way leg odometry's does; the InEKF path forked the SLAM map on every"
-    " run longer than a few minutes. Pair with go2_sim.launch.py use_inekf:=false so"
-    " there is exactly one odom->base publisher.",
+    " from the sim, instead of leaving odometry to RKO-LIO on the ROS side. Debug/eval"
+    " tool. Pair with go2_sim.launch.py odom:=external so there is exactly one"
+    " odom->base publisher.",
 )
 parser.add_argument(
     "--min_walk_speed",
@@ -168,7 +160,6 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import Imu, JointState, PointCloud2, PointField
-from std_msgs.msg import Float32MultiArray
 from tf2_ros import TransformBroadcaster
 
 from unitree_rl_lab.assets.models.modules.runners import UnitreeOnPolicyRunner
@@ -190,9 +181,6 @@ SDK_JOINT_NAMES = [
     "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint",
     "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint",
 ]
-# unitree_go/LowState.foot_force order, matched by go2_odometry's `f_unitree[i] for i in
-# [1, 0, 3, 2]` -> [FL, FR, RL, RR] against foot frames [FL, FR, RL, RR].
-SDK_FOOT_ORDER = ["FR_foot", "FL_foot", "RR_foot", "RL_foot"]
 
 GRAVITY = 9.81
 
@@ -212,7 +200,6 @@ class SimBridge(Node):
         self.pub_clock = self.create_publisher(Clock, "/clock", 10)
         self.pub_joints = self.create_publisher(JointState, "/sim/joint_states", 10)
         self.pub_imu = self.create_publisher(Imu, "/sim/imu", 10)
-        self.pub_feet = self.create_publisher(Float32MultiArray, "/sim/foot_forces", 10)
         self.pub_cloud = self.create_publisher(PointCloud2, args_cli.cloud_topic, qos_profile_sensor_data)
         self.pub_cloud_band = self.create_publisher(
             PointCloud2, args_cli.cloud_topic + "_band", qos_profile_sensor_data
@@ -269,7 +256,7 @@ class SimBridge(Node):
         msg.linear.x, msg.linear.y, msg.angular.z = float(cmd[0]), float(cmd[1]), float(cmd[2])
         self.pub_applied.publish(msg)
 
-    def publish_state(self, t: float, q, dq, tau, quat_wxyz, gyro, acc, feet):
+    def publish_state(self, t: float, q, dq, tau, quat_wxyz, gyro, acc):
         stamp = _stamp(t)
         self.joint_msg.header.stamp = stamp
         self.joint_msg.position = q.tolist()
@@ -284,9 +271,6 @@ class SimBridge(Node):
         m.linear_acceleration.x, m.linear_acceleration.y, m.linear_acceleration.z = acc.tolist()
         self.pub_imu.publish(m)
 
-        feet_msg = Float32MultiArray()
-        feet_msg.data = feet.tolist()
-        self.pub_feet.publish(feet_msg)
 
     def publish_gt_odom(self, t: float, pos, quat_wxyz, lin_vel_b, ang_vel_b):
         stamp = _stamp(t)
@@ -380,12 +364,10 @@ def main():
             " (e.g. Go2-Blind-GRU-Mid360-Phase4) so there is a cloud to publish."
         )
     scanner = scene.sensors["mid360_scanner"]
-    contact = scene.sensors["contact_forces"]
 
     device = env.unwrapped.device
     # articulation joint order -> SDK order
     sdk_joint_ids = [robot.data.joint_names.index(n) for n in SDK_JOINT_NAMES]
-    foot_body_ids = [contact.find_bodies(n)[0][0] for n in SDK_FOOT_ORDER]
     # mount rotation, to express returns in the URDF `radar` link frame
     mount_quat = torch.tensor(list(scanner.cfg.offset.rot), device=device)
     min_range = float(getattr(scanner.cfg, "min_range", 0.0))
@@ -444,10 +426,9 @@ def main():
         acc_w = (lin_vel_w - prev_lin_vel_w) / dt + gravity_w
         prev_lin_vel_w = lin_vel_w.clone()
         acc_b = quat_apply_inverse(quat.unsqueeze(0), acc_w.unsqueeze(0))[0].cpu().numpy()
-        feet = contact.data.net_forces_w[0, foot_body_ids].norm(dim=-1).cpu().numpy()
 
         bridge.publish_clock(sim_t)
-        bridge.publish_state(sim_t, q, dq, tau, quat.cpu().numpy(), gyro, acc_b, feet)
+        bridge.publish_state(sim_t, q, dq, tau, quat.cpu().numpy(), gyro, acc_b)
         bridge.publish_gt_odom(
             sim_t,
             robot.data.root_pos_w[0].cpu().numpy(),

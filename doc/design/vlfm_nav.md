@@ -67,7 +67,7 @@ colcon ワークスペースは `~/isaacsim/go2_nav_ws`。`src/` には上記 `r
 
 | 提供物 | 型/形式 | Go2 | Anaguma |
 |---|---|---|---|
-| `odom→base_link` TF + オドメトリ | tf2 + `nav_msgs/Odometry` | **rko_lio**(sim実装済み: `go2_sim.launch.py odom:=lio` デフォルト。実機も同構成予定)/ `--gt_odom`=sim直出し / go2_odometry (InEKF) は検証用※ | rko_lio (既存) |
+| `odom→base_link` TF + オドメトリ | tf2 + `nav_msgs/Odometry` | **rko_lio**(`go2_sim.launch.py` デフォルト。実機も同構成予定)/ `--gt_odom`=sim直出し(デバッグ用)※ | rko_lio (既存) |
 | LiDAR 点群 | `sensor_msgs/PointCloud2` | sim bridge / L1 実機 | livox driver (既存) |
 | RGB カメラ | `sensor_msgs/Image` + `CameraInfo` | sim bridge / 実機 | 実機カメラ |
 | 速度コマンド受理 | `geometry_msgs/Twist` on `/cmd_vel` | sim: play_ros2.py が購読 / 実機: deploy C++ に DDS 購読追加 | twist→joy 変換ノード (§6) |
@@ -122,13 +122,12 @@ VLFM Core と VLM 推論 (BLIP-2/CLIP) はプロセス分離 (ROS service/action
 
 | | Sim | 実機 |
 |---|---|---|
-| LowState | play_ros2.py が標準msg(/sim/joint_states, /sim/imu, /sim/foot_forces)を publish → go2_nav_bringup の `sim_lowstate_bridge`(py3.10側)が `/lowstate` に合成。unitree_go の Python バインディングは py3.10 ビルドで Isaac 同梱 rclpy (py3.11) から import できないため | unitree_ros2 |
+| 関節/IMU | play_ros2.py が標準msg(/sim/joint_states, /sim/imu)を publish。robot_state_publisher は /sim/joint_states を直接購読 | 実機ブリングアップ時に /lowstate→/joint_states 変換を用意(unitree_go msg が py3.10 側で必要になるのはこのとき) |
 | 点群 | RollingLivoxSensor (velocity_env_cfg_mid360.py の資産) から publish | L1/MID-360 ドライバ |
 | /cmd_vel | play_ros2.py が購読しポリシーの command term へ | deploy C++ が DDS (`rt/cmd_vel`) で購読 — 既存 HeightScanUpdater と同じ dds_wrapper パターン |
 | clock | `/clock` publish, ROS 側 `use_sim_time: true` | 実時間 |
 
-sim/実機で go2_odometry・slam_toolbox・Nav2・VLFM は無改造で共用する
-(そのために sim でも実機と同じ LowState 型で出す)。
+sim/実機で rko_lio・slam_toolbox・Nav2・VLFM は無改造で共用する。
 
 ## 6. Anaguma 移植
 
@@ -147,10 +146,10 @@ sim/実機で go2_odometry・slam_toolbox・Nav2・VLFM は無改造で共用す
 
 ### オドメトリの実測メモ(2026-09-20)
 
-※ 脚運動学 InEKF は短時間走行では機能するが、壁接触時の足滑りでヨーが飛び、
-数分を超える探索で slam_toolbox の探索窓を超えて地図がフォークした。実機計画は
-Go2(height-mapスタック)/Anaguma とも RKO-LIO なので、sim 開発は `--gt_odom` +
-`go2_sim.launch.py use_inekf:=false` で本番相当のオドメトリ品質に揃える。
+※ 脚運動学 InEKF(go2_odometry)は短時間走行では機能したが、壁接触時の足滑りで
+ヨーが飛び、数分を超える探索で slam_toolbox の探索窓を超えて地図がフォークした。
+実機計画は Go2(height-mapスタック)/Anaguma とも RKO-LIO のため、2026-09-24 に
+InEKF 経路と /lowstate 合成チェーンを削除し RKO-LIO に一本化(git 履歴に実装あり)。
 2026-09-24: 本物の rko_lio を sim に統合済み(`odom:=lio`、点群は生/バンドの2系統に分離)。
 実測誤差 1.9cm / 1.0°(2.87m歩行)。この構成でフロンティア探索 17/19 ゴール・
 カバレッジ99.3%を確認。正解地図との比較は `gt_map_compare` ノード(/gt_map)。
