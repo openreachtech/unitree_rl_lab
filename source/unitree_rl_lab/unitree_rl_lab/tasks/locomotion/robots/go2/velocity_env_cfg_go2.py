@@ -79,8 +79,6 @@ class ObservationsCfgGo2(ObservationsCfg):
 
 @configclass
 class RewardsCfgGo2(RewardsCfg):
-    foot_clearance_torso_relative = None  # disabled: replaced by terrain-adaptive version below
-
     # -- Fix 2 (revised): terrain-relative foot clearance, now a POSITIVE, capped,
     #    swing+command-gated reward. The previous exp(-penalty) form scored its maximum
     #    (1.0) for a fully-planted standing robot, giving no gradient to step and
@@ -95,7 +93,12 @@ class RewardsCfgGo2(RewardsCfg):
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_foot"),
             "sensor_cfg": SceneEntityCfg("height_scanner"),
             "contact_sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"),
-            "target_clearance": 0.08,
+            # Trial (2026-07-05): raised 0.08 -> 0.15. Actual stairs go up to
+            # step_height_range=(0.05, 0.23); a 0.08 target capped full credit at
+            # the shallowest steps only, giving zero extra incentive to lift higher
+            # for the harder ~0.15-0.23 steps. This does not touch terrain/curriculum,
+            # only demands a more confident step from the reward side.
+            "target_clearance": 0.15,
             "command_name": "base_velocity",
         },
     )
@@ -125,11 +128,16 @@ class RewardsCfgGo2(RewardsCfg):
     # -- Fix 3: relax rewards that directly contradict stair climbing. Climbing
     #    requires body pitch, vertical motion and large joint excursions; the stock
     #    weights penalised all three so hard that "don't climb" was the local optimum.
-    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)      # was -2.5
+    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-0.5)      # was -2.5
     base_linear_velocity = RewTerm(func=mdp.lin_vel_z_l2, weight=-1.0)            # was -2.0
     joint_pos = RewTerm(
         func=mdp.joint_position_penalty,
-        weight=-0.4,                                                              # was -0.7
+        # Trial (2026-07-05): -0.4 -> -0.2. target_clearance=0.15 alone left
+        # terrain_levels flat (~5.0, no gain over the 0.25-demote baseline).
+        # joint_pos still penalises exactly the large hip/knee excursions needed
+        # to actually clear a 0.15-0.23m step with confidence; halving it again
+        # is the next isolated reward-side lever (was -0.7 -> -0.4 already).
+        weight=-0.2,
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
             "stand_still_scale": 5.0,
@@ -174,7 +182,16 @@ class RobotEnvCfgGo2(RobotEnvCfg):
 class RobotPlayEnvCfgGo2(RobotEnvCfgGo2):
     def __post_init__(self):
         super().__post_init__()
-        self.scene.num_envs = 32
-        self.scene.terrain.terrain_generator.num_rows = 2
-        self.scene.terrain.terrain_generator.num_cols = 4
+        # --- realterrain (W1-2): 生成地形の代わりに福岡造船ブロックの実地形USDを読む ---
+        # 衝突判定を焼き込んだ実地形USDを GUI で作って下記パスに保存しておく。
+        # 元に戻すときは下の usd 用3行を削除し、num_rows/num_cols の2行を復活させる。
+        self.scene.num_envs = 1
+        self.scene.terrain.terrain_type = "usd"
+        self.scene.terrain.usd_path = "/home/tanaka/isaacsim/unitree_rl_lab/realterrain/assets/fukuoka_collider.usd"
+        self.scene.terrain.terrain_generator = None
+        # 5S1ブロックの「平らなデッキ（上面 z≈1.59, y<0 側）」の上にスポーン。
+        # レイキャスト実測: 中央(0,0)は空隙、y=0 は溝(z≈0.2)、y>0側は開口(穴)、y<0側が平面デッキ。
+        self.scene.robot.init_state.pos = (-17.0, -6.0, 2.2)
+        # self.scene.terrain.terrain_generator.num_rows = 2
+        # self.scene.terrain.terrain_generator.num_cols = 4
         self.commands.base_velocity.ranges = PLAY_VEL_RANGES

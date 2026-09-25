@@ -41,22 +41,23 @@ def _new_height_scan_term() -> ObsTerm:
 
 # Per manual curriculum_level: starting command ranges and in-phase expansion caps.
 #
-# Level 3 (stairs) is FORWARD-BIASED on purpose: lin_vel_x stays positive and the
-# yaw range is shrunk. The terrain curriculum advances a robot by net displacement
-# from its spawn, but a zero-mean (symmetric +/-) command makes the robot wander in
-# place with ~0 net displacement, so it could never satisfy the move-up threshold on
-# stairs. A forward-biased command turns "track the command well" into "actually make
-# forward progress up the stairs", which is what we need.
+# Level 3 (stairs) was previously FORWARD-BIASED (lin_vel_x positive-only, narrow
+# yaw/lateral) to guarantee net displacement for the distance-based terrain-promotion
+# threshold. That produced a policy that could not walk backward, strafe, or turn in
+# deploy. Switched to go2-blind's symmetric, wide ranges instead: full command
+# coverage is prioritized over guaranteed terrain promotion. Phase2 data confirms
+# this tradeoff is survivable -- terrain_levels dips on a terrain-type transition
+# and then climbs back to a stable plateau even without directional bias.
 PHASE_VEL_START: dict[int, Ranges] = {
     1: Ranges(lin_vel_x=(-0.1, 0.1), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-1.0, 1.0)),
     2: Ranges(lin_vel_x=(-0.2, 0.2), lin_vel_y=(-0.15, 0.15), ang_vel_z=(-1.0, 1.0)),
-    3: Ranges(lin_vel_x=(0.1, 0.4), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-0.5, 0.5)),
+    3: Ranges(lin_vel_x=(-0.1, 0.1), lin_vel_y=(-0.15, 0.15), ang_vel_z=(-0.5, 0.5)),
 }
 
 PHASE_VEL_LIMIT: dict[int, Ranges] = {
     1: Ranges(lin_vel_x=(-1.0, 1.0), lin_vel_y=(-0.5, 0.5), ang_vel_z=(-1.0, 1.0)),
     2: Ranges(lin_vel_x=(-0.8, 0.8), lin_vel_y=(-0.35, 0.35), ang_vel_z=(-1.0, 1.0)),
-    3: Ranges(lin_vel_x=(0.1, 0.6), lin_vel_y=(-0.15, 0.15), ang_vel_z=(-0.5, 0.5)),
+    3: Ranges(lin_vel_x=(-1.0, 1.2), lin_vel_y=(-0.7, 0.7), ang_vel_z=(-1.2, 1.2)),
 }
 
 # Play / deploy: fixed command ranges (keyboard W/S uses lin_vel_x min/max).
@@ -81,15 +82,22 @@ def apply_phase_terrain_settings(env_cfg) -> None:
 
 
 def apply_phase_height_scanner(env_cfg) -> None:
-    """Enable RayCaster + height_scan (policy: single-frame, critic: history) for all levels."""
+    """Enable RayCaster + critic-only height_scan for all levels. Policy stays blind
+    (proprioception only) so the trained model can be deployed on mujoco/hardware,
+    where the deploy controller does not supply height_scan observations."""
+    env_cfg.observations.policy.height_scan = None
     if env_cfg.curriculum_level <= 1:
-        env_cfg.observations.policy.height_scan = _new_height_scan_term()
         env_cfg.observations.critic.height_scan = _new_height_scan_term()
         env_cfg.observations.critic.history_length = CRITIC_HISTORY_LENGTH_FLAT
     else:
-        env_cfg.observations.policy.height_scan = _new_height_scan_term()
         env_cfg.observations.critic.height_scan = _new_height_scan_term()
         env_cfg.observations.critic.history_length = CRITIC_HISTORY_LENGTH_ROUGH
+
+
+def apply_phase_foot_clearance_reward(env_cfg) -> None:
+    """Foot-clearance reward only pays out on stairs (level 3); levels 1-2 have no steps to clear."""
+    level = env_cfg.curriculum_level
+    env_cfg.rewards.foot_clearance_terrain_adaptive.weight = 0.5 if level == 3 else 0.0
 
 
 def apply_manual_curriculum_level(env_cfg) -> None:
@@ -97,6 +105,7 @@ def apply_manual_curriculum_level(env_cfg) -> None:
     apply_phase_terrain_settings(env_cfg)
     apply_phase_velocity_ranges(env_cfg)
     apply_phase_height_scanner(env_cfg)
+    apply_phase_foot_clearance_reward(env_cfg)
 
 
 def _column_indices_by_sub_terrain(terrain_generator_cfg: TerrainGeneratorCfg, num_cols: int) -> dict[str, list[int]]:
@@ -129,35 +138,34 @@ def terrain_levels_climb(
     env_ids: Sequence[int],
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
-    """Terrain-difficulty ratchet tuned for slow, hard terrain (stairs).
+    """Terrain-difficulty ratchet, identical to the IsaacLab default ``terrain_levels_vel``.
 
-    Replacement for ``mdp.terrain_levels_vel``. The stock function:
-      * move_up  when distance-from-spawn > terrain_size/2  (= 4.0 m)
-      * move_down when distance < commanded_speed * episode_time * 0.5
+      * move_up   when distance-from-spawn > terrain_size / 2.
+      * move_down when the robot walked less than half the distance its commanded
+        velocity should have covered, and did not qualify for move_up.
 
-    On stairs at a throttled command speed, a 4.0 m net displacement inside one
-    episode is essentially unreachable, while the velocity-scaled move_down floor
-    fires almost every reset -> levels collapse to 0 (observed: 0.057).
-
-    This version:
-      * move_up  at a reachable fraction of the tile (35 % = ~2.8 m), so a robot
-        that genuinely climbs a few steps forward is promoted.
-      * move_down only when the robot barely moved (< 0.5 m), i.e. it actually
-        failed. A robot making partial progress stays on its level and keeps
-        practising instead of being demoted. This turns the curriculum into a
-        one-way ratchet that tracks real skill instead of net wandering.
+    Previously used a softened 0.25 demote fraction on stairs (level 3) instead of
+    the stock 0.5. Reverted (2026-07-07, user directive) to keep the curriculum's
+    promotion/demotion judgment itself un-modified -- only the reward function and
+    its weights should change terrain_levels outcomes, not how leniently progress
+    is measured.
     """
     terrain: TerrainImporter = env.scene.terrain
     if terrain.terrain_origins is None or terrain.cfg.terrain_generator is None:
         return torch.tensor(0.0, device=env.device)
 
+    demote_fraction = 0.5
+
     asset = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command("base_velocity")
     distance = torch.norm(
         asset.data.root_pos_w[env_ids, :2] - env.scene.env_origins[env_ids, :2], dim=1
     )
-    tile_size = terrain.cfg.terrain_generator.size[0]
-    move_up = distance > tile_size * 0.35
-    move_down = (distance < 0.5) & (~move_up)
+    # robots that walked far enough progress to harder terrains
+    move_up = distance > terrain.cfg.terrain_generator.size[0] / 2
+    # robots that walked less than `demote_fraction` of their required distance go to simpler terrains
+    move_down = distance < torch.norm(command[env_ids, :2], dim=1) * env.max_episode_length_s * demote_fraction
+    move_down *= ~move_up
     terrain.update_env_origins(env_ids, move_up, move_down)
     return torch.mean(terrain.terrain_levels.float())
 

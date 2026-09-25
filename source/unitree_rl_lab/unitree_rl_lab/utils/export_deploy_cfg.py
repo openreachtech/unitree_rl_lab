@@ -63,6 +63,39 @@ def export_deploy_cfg(
             ranges[item_name] = list(ranges[item_name])
         cfg["commands"]["base_velocity"]["ranges"] = ranges
 
+    # 2026-09-03: export the jump command's timing too. Without this the deploy side
+    # (State_RLBase.cpp's jump_command / jump_time observations) silently falls back to
+    # its own defaults -- jump_hold_time_s 1.0 s and max_jump_duration_s 1.5 s -- while
+    # training has used max_jump_duration_s = 2.2 s since v5. The jump_time observation
+    # is ``time_since_trigger / max_jump_duration_s``, so a 1.5 vs 2.2 mismatch feeds the
+    # policy a phase signal 1.47x too large: at 0.3 s into a jump it is told 0.20 when
+    # training would have said 0.14. Everything the policy times off that signal --
+    # crucially when to reach the legs down -- is therefore early. tanaka's mujoco report
+    # on v6b's model_5300 was "the height was tremendous, but it could not land, it fell
+    # every time", which is what a mistimed landing looks like.
+    if hasattr(env.cfg.commands, "jump_command"):
+        jump_cfg = env.cfg.commands.jump_command
+        cfg["commands"]["jump_command"] = {
+            "max_jump_duration_s": float(jump_cfg.max_jump_duration_s),
+            # NOT max_jump_duration_s: that is a timeout the training window almost
+            # never reaches, since JumpCommand clears the command on landing. Holding
+            # for the timeout leaves the deployed policy in jump mode long after it has
+            # landed. See JumpCommandCfg.deploy_hold_time_s.
+            "jump_hold_time_s": float(getattr(jump_cfg, "deploy_hold_time_s", 0.7)),
+        }
+
+        # 2026-09-06: export the orientation termination's relax window too. The deploy
+        # FSM runs mdp::bad_orientation every control step and switches to Passive when
+        # it fires, but training's bad_orientation_grounded suspends that check for
+        # relax_window_s after the jump trigger -- a jump pitches past the limit on
+        # essentially every attempt. Without this key the robot went limp mid-air and
+        # toppled (tanaka's mujoco report on model_24600). State_RLBase.cpp defaults to
+        # 1.0 s when the key is absent, so old exports keep working.
+        orient_term = getattr(env.cfg.terminations, "bad_orientation", None)
+        relax_window_s = getattr(orient_term, "params", {}).get("relax_window_s") if orient_term else None
+        if relax_window_s is not None:
+            cfg["commands"]["jump_command"]["orientation_relax_window_s"] = float(relax_window_s)
+
     # --- actions ---
     action_names = env.action_manager.active_terms
     action_terms = zip(action_names, env.action_manager._terms.values())
@@ -133,5 +166,21 @@ def export_deploy_cfg(
     if not isinstance(cfg, dict):
         cfg = class_to_dict(cfg)
     cfg = format_value(cfg)
+
+    # 2026-09-16: tuple を list に落としてから書く。
+    # deploy.yaml を読むのは C++ の yaml-cpp と python の `yaml.safe_load` で、
+    # どちらも `!!python/tuple` タグを読めない。tuple 型のフィールドを持つ項を1つ
+    # 足しただけで（`DelayedJointPositionActionCfg.delay_steps_range`）、
+    # mujoco 評価が全滅した（着地 0% が並び、壊れたポリシーと見分けがつかなかった）。
+    def _no_tuples(v):
+        if isinstance(v, tuple):
+            return [_no_tuples(x) for x in v]
+        if isinstance(v, list):
+            return [_no_tuples(x) for x in v]
+        if isinstance(v, dict):
+            return {k: _no_tuples(x) for k, x in v.items()}
+        return v
+
+    cfg = _no_tuples(cfg)
     with open(filename, "w") as f:
         yaml.dump(cfg, f, default_flow_style=None, sort_keys=False)

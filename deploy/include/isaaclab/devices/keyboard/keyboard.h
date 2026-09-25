@@ -87,6 +87,16 @@ public:
     return _velocity_stop_requested.exchange(false);
   }
 
+  /** @brief True once after the jump key ('j'); does NOT clear latched motion
+   *  keys, so a running long jump keeps the forward-velocity key held
+   *  through the jump. Mirrors consume_velocity_stop()'s exchange-based
+   *  one-shot pattern. See REGISTER_OBSERVATION(jump_command) in
+   *  State_RLBase.cpp for how this drives the trained jump_command bit. */
+  bool consume_jump_trigger()
+  {
+    return _jump_requested.exchange(false);
+  }
+
   /**
    * @brief Get the String object from keyboard 
    * 
@@ -195,6 +205,14 @@ public:
       _velocity_stop_requested = true;
       return;
     }
+    if (key == "j")
+    {
+      // One-shot jump trigger: unlike space, does not clear _pressed_keys
+      // (the approach-run velocity keys, e.g. "f", should stay held
+      // through the jump).
+      _jump_requested = true;
+      return;
+    }
     if (!key.empty())
     {
       _pressed_keys.insert(key);
@@ -208,6 +226,7 @@ public:
   mutable std::mutex _pressed_mutex;
   std::unordered_set<std::string> _pressed_keys;
   std::atomic<bool> _velocity_stop_requested{false};
+  std::atomic<bool> _jump_requested{false};
 
   termios _oldSettings, _newSettings;
   timeval _tv;

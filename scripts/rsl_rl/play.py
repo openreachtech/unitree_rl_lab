@@ -61,6 +61,7 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper, expor
 from isaaclab_tasks.utils import get_checkpoint_path
 
 import unitree_rl_lab.tasks  # noqa: F401
+from unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ee import ActorCriticEE, export_actor_critic_ee
 from unitree_rl_lab.utils.parser_cfg import parse_env_cfg
 
 
@@ -148,8 +149,17 @@ def main():
 
     # export policy to onnx/jit
     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
-    export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
-    export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
+    if isinstance(policy_nn, ActorCriticEE):
+        # The generic exporters below only wrap policy.actor behind a
+        # normalizer -- for ActorCriticEE that bakes in a graph expecting
+        # [actor_obs, estimator(actor_obs)] concatenated, silently
+        # mismatched against deploy-side's actor_obs-only observation
+        # vector (see _ActorCriticEEOnnxExporter's docstring). Use the
+        # estimator-aware exporter instead.
+        export_actor_critic_ee(policy_nn, export_model_dir)
+    else:
+        export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
+        export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
 
     dt = env.unwrapped.step_dt
 

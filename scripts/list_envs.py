@@ -87,7 +87,9 @@ def main():
     index = 0
     # acquire all Isaac environments names
     for task_spec in gym.registry.values():
-        if "Unitree" in task_spec.id and "Isaac" not in task_spec.id:
+        # Anaguma is an ALTs machine, not a Unitree one, so an id-prefix filter would
+        # drop it. Match anything this repository registers instead.
+        if ("Unitree" in task_spec.id or "Anaguma" in task_spec.id) and "Isaac" not in task_spec.id:
             # add details to table
             table.add_row([index + 1, task_spec.id, task_spec.entry_point, task_spec.kwargs["env_cfg_entry_point"]])
             # increment count

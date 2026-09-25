@@ -192,6 +192,15 @@ class CommandsCfg:
         asset_name="robot",
         resampling_time_range=(10.0, 10.0),
         rel_standing_envs=0.1,
+        # heading_command=True was tried (2026-07-06/07) to close the
+        # backward-climbing exploit (see mdp.heading_drift_penalty for the
+        # reward-only replacement) but reverted: forcing ang_vel_z to a
+        # continuous heading-error correction for most/all envs measurably
+        # degraded general locomotion quality (lateral movement broke even on
+        # flat ground, straight-line walking drifted) in ways the training
+        # metrics (terrain_levels, bad_orientation) did not surface. Back to
+        # plain free sampling; the exploit is now discouraged via a reward
+        # term instead, which does not alter the command distribution itself.
         debug_vis=True,
         ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
             lin_vel_x=(-0.1, 0.1), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-1, 1)
