@@ -35,7 +35,16 @@ def export_deploy_cfg(
     env: ManagerBasedRLEnv,
     log_dir,
     observation_renames: dict[str, str] | None = None,
+    policy_obs_groups: list[str] | None = None,
 ):
+    """Write the deploy-side view of this environment to ``params/deploy.yaml``.
+
+    ``policy_obs_groups`` names the observation groups the actor reads, in the order it
+    concatenates them, and defaults to ``["policy"]``. The perceptive tasks put the height
+    map in a second group, so exporting only ``policy`` there produced a deploy.yaml
+    describing 45 of the 654 inputs the ONNX actually wants -- the controller then had no
+    way to know the map belonged on the end, and no term to build it with.
+    """
     asset: Articulation = env.scene["robot"]
     joint_sdk_names = env.cfg.scene.robot.joint_sdk_names
     joint_ids_map, _ = resolve_matching_names(asset.data.joint_names, joint_sdk_names, preserve_order=True)
@@ -96,8 +105,16 @@ def export_deploy_cfg(
             cfg["actions"][action_name]["joint_ids"] = action_term._joint_ids
 
     # --- observations ---
-    obs_names = env.observation_manager.active_terms["policy"]
-    obs_cfgs = env.observation_manager._group_obs_term_cfgs["policy"]
+    groups = policy_obs_groups or ["policy"]
+    obs_names, obs_cfgs = [], []
+    for group in groups:
+        obs_names += list(env.observation_manager.active_terms[group])
+        obs_cfgs += list(env.observation_manager._group_obs_term_cfgs[group])
+    if len(set(obs_names)) != len(obs_names):
+        raise ValueError(
+            f"duplicate observation term names across groups {groups}: {obs_names} --"
+            " deploy.yaml is a flat mapping and cannot hold two terms of the same name"
+        )
     obs_terms = zip(obs_names, obs_cfgs)
     cfg["observations"] = {}
     for obs_name, obs_cfg in obs_terms:

@@ -28,46 +28,23 @@ void HeightScanUpdater::init()
 std::vector<float> HeightScanUpdater::get() const
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    return exclude_under_body(height_scan_);
-}
-
-std::vector<float> HeightScanUpdater::exclude_under_body(const std::vector<float>& scan)
-{
-    // Grid is centered at the LiDAR; convert cell xy → base frame and keep
-    // only cells outside the same rectangle as height_scan_excluding_body.
-    if (static_cast<int>(scan.size()) != kHeightScanRawSize)
+    // Silence is indistinguishable from flat ground once the map is in the observation:
+    // height_scan_ starts at the flat-ground fill, so a policy that never receives a
+    // message walks into walls exactly as if the terrain were empty. Say so rather than
+    // letting that look like a locomotion failure.
+    if (msg_count_ == 0)
     {
-        return make_default_height_scan();
-    }
-
-    std::vector<float> out;
-    out.reserve(kHeightScanSize);
-    const float half_x = 0.5f * kHeightScanSizeX;
-    const float half_y = 0.5f * kHeightScanSizeY;
-    const float eps = kHeightScanResolution * 1.0e-4f;
-
-    for (int ix = 0; ix < kHeightScanGridNx; ++ix)
-    {
-        for (int iy = 0; iy < kHeightScanGridNy; ++iy)
+        static bool warned = false;
+        if (!warned)
         {
-            const float x_cell = -half_x + static_cast<float>(ix) * kHeightScanResolution;
-            const float y_cell = -half_y + static_cast<float>(iy) * kHeightScanResolution;
-            const float x_base = kGridCenterOffsetX + x_cell;
-            const float y_base = kGridCenterOffsetY + y_cell;
-            const bool under_body =
-                std::abs(x_base) <= kExcludeHalfExtentX + eps
-                && std::abs(y_base) <= kExcludeHalfExtentY + eps;
-            if (!under_body)
-            {
-                out.push_back(scan[ix * kHeightScanGridNy + iy]);
-            }
+            spdlog::warn(
+                "HeightScanUpdater: no message on {} yet -- the policy is being fed flat "
+                "ground ({:.4f} everywhere). Is the simulator/mapper publishing?",
+                kHeightScanTopic, kHeightScanFlatDefault);
+            warned = true;
         }
     }
-    if (static_cast<int>(out.size()) != kHeightScanSize)
-    {
-        return make_default_height_scan();
-    }
-    return out;
+    return height_scan_;
 }
 
 void HeightScanUpdater::on_height_scan(const sensor_msgs::msg::dds_::PointCloud2_& msg)
@@ -80,6 +57,7 @@ void HeightScanUpdater::on_height_scan(const sensor_msgs::msg::dds_::PointCloud2
 
     std::lock_guard<std::mutex> lock(mutex_);
     height_scan_ = std::move(scan);
+    ++msg_count_;
 }
 
 bool HeightScanUpdater::parse_height_scan(
@@ -94,7 +72,7 @@ bool HeightScanUpdater::parse_height_scan(
 
     const uint32_t point_step = msg.point_step();
     if (point_step < sizeof(float)
-        || msg.data().size() < static_cast<size_t>(kHeightScanRawSize) * point_step)
+        || msg.data().size() < static_cast<size_t>(kHeightScanSize) * point_step)
     {
         return false;
     }
@@ -109,9 +87,9 @@ bool HeightScanUpdater::parse_height_scan(
         }
     }
 
-    out.resize(kHeightScanRawSize);
+    out.resize(kHeightScanSize);
     const uint8_t* buffer = msg.data().data();
-    for (int i = 0; i < kHeightScanRawSize; ++i)
+    for (int i = 0; i < kHeightScanSize; ++i)
     {
         std::memcpy(
             &out[i],

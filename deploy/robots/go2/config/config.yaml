@@ -56,4 +56,4 @@ FSM:
     # MID-360 height map, so this run's deploy.yaml lists height_scan last and the ONNX
     # takes 654 inputs. Pointing this at a blind run will load a 45-input network and the
     # height map will go nowhere.
-    policy_dir: ../../../logs/rsl_rl/go2_perceptive_mid360_phase5/2026-09-24_16-55-47
+    policy_dir: ../../../logs/rsl_rl/go2_perceptive_mid360_phase5

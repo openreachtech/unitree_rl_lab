@@ -1089,6 +1089,48 @@ def _rough_env_mask(command_term) -> torch.Tensor | None:
     return getattr(command_term, "rough_env_mask", None)
 
 
+def _wall_height_range_per_env(env, override: tuple[float, float] | None):
+    """Each env's own ``wall_height_range``, from the sub-terrain it is standing on.
+
+    ``terrain_levels`` moves an env up and down rows but never across columns, so the
+    sub-terrain an env sits on is fixed and this can be cached. Returns a pair of
+    per-env tensors (low, high). Falls back to the override, or to a scalar pair, when
+    the terrain cannot supply one.
+    """
+    if override is not None:
+        return (
+            torch.full((env.num_envs,), override[0], device=env.device),
+            torch.full((env.num_envs,), override[1], device=env.device),
+        )
+
+    cached = getattr(env, "_wall_height_range_cache", None)
+    if cached is not None:
+        return cached
+
+    terrain = env.scene.terrain
+    gen = terrain.cfg.terrain_generator
+    names = list(gen.sub_terrains.keys())
+    proportions = torch.tensor(
+        [gen.sub_terrains[n].proportion for n in names], dtype=torch.float32
+    )
+    proportions = proportions / proportions.sum()
+    cumsum = torch.cumsum(proportions, dim=0)
+    # Same column -> sub-terrain assignment TerrainGenerator itself uses.
+    col_lo = torch.zeros(gen.num_cols)
+    col_hi = torch.zeros(gen.num_cols)
+    for col in range(gen.num_cols):
+        idx = int(torch.nonzero(col / gen.num_cols + 0.001 < cumsum, as_tuple=False)[0])
+        rng = getattr(gen.sub_terrains[names[idx]], "wall_height_range", (0.0, 0.0))
+        col_lo[col], col_hi[col] = float(rng[0]), float(rng[1])
+
+    out = (
+        col_lo.to(env.device)[terrain.terrain_types],
+        col_hi.to(env.device)[terrain.terrain_types],
+    )
+    env._wall_height_range_cache = out
+    return out
+
+
 def goal_move_in_direction_reward(
     env: ManagerBasedRLEnv,
     command_name: str = "base_velocity",
@@ -1253,7 +1295,7 @@ def wall_body_height_reward(
     env: ManagerBasedRLEnv,
     command_name: str = "base_velocity",
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    wall_height_range: tuple[float, float] = (0.10, 0.60),
+    wall_height_range: tuple[float, float] | None = None,
     wall_distance: float = 1.25,
     gate_width: float = 0.6,
     gate_width_far: float | None = None,
@@ -1298,6 +1340,12 @@ def wall_body_height_reward(
     minimum needed to clear the edge, rather than rewarding a base that's merely level
     with (and likely still catching on) the top surface.
 
+    ``wall_height_range`` is read from the terrain itself when left at ``None``, which is
+    the only correct thing to do once the columns stop agreeing: this lineage caps the
+    floating wall lower than the solid one, because a tall enough floating tread can be
+    walked under rather than climbed over. A single range passed in by the caller would be
+    wrong for one column or the other. Pass an explicit range only to override that.
+
     ``min_target_z`` is a Go2 addition, not in the original. On the quadruped this
     lineage uses, the wall range is 5-25 cm against a 32 cm nominal base height, so
     ``wall_height + 0.15`` sits *below* ordinary standing for anything under a 17 cm
@@ -1330,7 +1378,8 @@ def wall_body_height_reward(
     if terrain.terrain_origins is None or terrain.cfg.terrain_generator is None:
         return torch.zeros(env.num_envs, device=env.device)
     difficulty = terrain.terrain_levels.float() / max(terrain.max_terrain_level - 1, 1)
-    wall_height = wall_height_range[0] + difficulty * (wall_height_range[1] - wall_height_range[0])
+    lo, hi = _wall_height_range_per_env(env, wall_height_range)
+    wall_height = lo + difficulty * (hi - lo)
     target_z = torch.clamp(wall_height + nominal_clearance, min=min_target_z)
 
     base_z = asset.data.root_pos_w[:, 2]

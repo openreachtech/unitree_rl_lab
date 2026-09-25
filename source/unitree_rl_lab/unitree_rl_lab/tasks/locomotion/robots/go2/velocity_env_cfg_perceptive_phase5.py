@@ -91,12 +91,26 @@ PHASE5_WALL_CORNER = PHASE5_WALL_DISTANCE * math.sqrt(2)
 """2.12 m: the ring is a *square*, so its corner is this far out. A robot heading
 diagonally reaches this radius while still inside -- see PHASE5_PROMOTE_DISTANCE."""
 
-PHASE5_WALL_HEIGHT_RANGE = (0.10, 0.30)
-"""Raised from Phase 4's (0.05, 0.25) once the goal-directed policy was measured clearing
-25 cm -- the old ceiling -- on 100 % of attempts, and 30 cm on 88 % despite never having
-seen one. The floor comes up too: 15 cm was crossed 100 % of the time on both wall types,
-so the bottom rows were no longer teaching anything. One constant feeds both the terrain
-and ``wall_body_height``'s own lerp, so they cannot drift apart."""
+PHASE5_WALL_HEIGHT_RANGE = (0.10, 0.40)
+"""Solid wall. Raised twice: from Phase 4's (0.05, 0.25) once the goal-directed policy
+measured 100 % at 25 cm, then to 40 cm once it measured 98 % at 30 cm as well. The floor
+came up with it -- 15 cm was crossed 100 % of the time on both wall types, so the bottom
+rows had stopped teaching anything."""
+
+PHASE5_FLOATING_HEIGHT_RANGE = (0.10, 0.30)
+"""Floating wall, capped 10 cm below the solid one, because a tall enough floating tread
+stops being a wall to climb and becomes a bar to walk under. The gap beneath it is
+``height - tread_thickness`` = ``height - 0.04``, against a trunk whose underside sits at
+about 26.5 cm at nominal stance:
+
+    30 cm wall -> 26 cm gap, does not fit
+    35 cm wall -> 31 cm gap, walks under standing
+
+Ducking would still clear ``promote_distance``, so the curriculum would promote a policy
+that never learned to climb -- the same "terrain_levels says yes, the robot says no"
+failure this phase was built to get away from. ``wall_body_height_reward`` reads each
+column's own range off the terrain, so the two caps do not have to be reconciled by
+hand."""
 
 PHASE5_WALL_THICKNESS_RANGE = (0.15, 0.05)
 """Unchanged. Height and thickness still move together, so the hardest row is both the
@@ -124,12 +138,11 @@ PHASE5_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
             border_width=PHASE5_TERRAIN_BORDER,
         ),
         # The same wall hollowed out: a tread hovering at wall_height with an open gap
-        # underneath. At this height range the gap is never large enough to walk under --
-        # 25 cm of wall leaves 21 cm of gap against a trunk whose underside sits at about
-        # 26.5 cm when standing -- so it is a wall to clear, not a bar to duck.
+        # underneath. Capped lower than the solid wall so the gap never opens up enough to
+        # walk under -- see PHASE5_FLOATING_HEIGHT_RANGE.
         "floating_thin_wall": terrains.MeshFloatingThinWallTerrainCfg(
             proportion=1.0,
-            wall_height_range=PHASE5_WALL_HEIGHT_RANGE,
+            wall_height_range=PHASE5_FLOATING_HEIGHT_RANGE,
             wall_thickness_range=PHASE5_WALL_THICKNESS_RANGE,
             wall_spacing=PHASE5_WALL_SPACING,
             platform_width=PHASE5_PLATFORM_WIDTH,
@@ -327,7 +340,9 @@ class RewardsCfgPhase5(RewardsCfgPhase4):
         weight=1.0,
         params={
             "command_name": "base_velocity",
-            "wall_height_range": PHASE5_WALL_HEIGHT_RANGE,
+            # wall_height_range left unset: the term reads each column's own range off
+            # the terrain, which is the only way to serve a solid column capped at 40 cm
+            # and a floating one capped at 30 cm from one term.
             "wall_distance": PHASE5_WALL_DISTANCE,
             "gate_width": 0.6,
             "gate_width_far": 1.5,
@@ -360,11 +375,10 @@ class RobotEnvCfgPerceptiveMid360Phase5(_RobotEnvCfgPhase5):
 # ---------------------------------------------------------------------------
 # Play: the same single ring at four pinned heights, one row each, ascending.
 #
-# The band starts at 15 cm rather than the training range's 5 cm because the measured
-# policy clears everything below that without difficulty -- 100 % at 15 cm on both wall
-# types -- so the lower rows would show nothing. It ends at 30 cm, which is past the
-# training range's 25 cm: that is where the measured success rate finally breaks (88 %
-# solid, 61 % floating at 5 cm thickness), so the top row is the one worth watching.
+# The two columns are pinned to different bands, because they are capped differently in
+# training: the solid wall runs 25 / 30 / 35 / 40 cm, the floating one 15 / 20 / 25 / 30.
+# A row therefore does *not* show the same height on both sides -- it shows each column at
+# the same fraction of its own range, which is what the curriculum means by a level.
 #
 # curriculum=True is set explicitly. RobotEnvCfg.__post_init__ sets that flag, but on
 # whichever generator is attached when it runs -- a play config that swaps the generator
@@ -372,8 +386,9 @@ class RobotEnvCfgPerceptiveMid360Phase5(_RobotEnvCfgPhase5):
 # sampled per tile with the rows meaning nothing.
 #
 # Rows are bands, not single heights: difficulty is (row + jitter)/num_rows with the
-# jitter uniform on [0, 1), so an exact height cannot be requested. Over 4 rows a range
-# of (0.125, 0.325) centres the bands on 15 / 20 / 25 / 30 cm.
+# jitter uniform on [0, 1), so an exact height cannot be requested. Over 4 rows the band
+# centres sit at difficulty 0.125 / 0.375 / 0.625 / 0.875, and the ranges below put those
+# centres on the heights above.
 # ---------------------------------------------------------------------------
 PLAY_TERRAIN_CFG_PHASE5 = PHASE5_TERRAIN_CFG.replace(
     num_rows=4,
@@ -383,15 +398,19 @@ PLAY_TERRAIN_CFG_PHASE5 = PHASE5_TERRAIN_CFG.replace(
         # Equal proportions: columns are handed out by cumulative proportion, so the
         # training mix's 2:1 over two columns would put the solid wall in both and the
         # floating tread nowhere.
-        name: cfg.replace(
+        "thin_wall": PHASE5_TERRAIN_CFG.sub_terrains["thin_wall"].replace(
             proportion=1.0,
-            wall_height_range=(0.125, 0.325),
+            wall_height_range=(0.225, 0.425),  # centres on 25 / 30 / 35 / 40 cm
             wall_thickness_range=(0.05, 0.05),
-        )
-        for name, cfg in PHASE5_TERRAIN_CFG.sub_terrains.items()
+        ),
+        "floating_thin_wall": PHASE5_TERRAIN_CFG.sub_terrains["floating_thin_wall"].replace(
+            proportion=1.0,
+            wall_height_range=(0.125, 0.325),  # centres on 15 / 20 / 25 / 30 cm
+            wall_thickness_range=(0.05, 0.05),
+        ),
     },
 )
-"""2 x 4: solid wall | floating tread, rows centred on 15 / 20 / 25 / 30 cm.
+"""2 x 4: solid wall 25 / 30 / 35 / 40 cm | floating tread 15 / 20 / 25 / 30 cm.
 
 Thickness is pinned at 5 cm -- the training mix's thinnest -- so height is the only thing
 that changes down a column, and every row is as hard as that height gets."""
