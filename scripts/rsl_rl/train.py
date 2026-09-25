@@ -247,7 +247,21 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     observation_renames = None
     if args_cli.deploy_keyboard_commands:
         observation_renames = {"velocity_commands": "keyboard_velocity_commands"}
-    export_deploy_cfg(env.unwrapped, log_dir, observation_renames=observation_renames)
+    # The actor's own group list, so a task that feeds it more than one group (the
+    # perceptive lineage adds the height map as a second) exports all of them, in the
+    # order the network concatenates them. Runners that never set ``obs_groups`` (it is
+    # MISSING on the base cfg, and only the perceptive runner fills it) leave this None,
+    # which is export_deploy_cfg's own ["policy"] default.
+    obs_groups = getattr(agent_cfg, "obs_groups", None)
+    policy_obs_groups = None
+    if isinstance(obs_groups, dict) and "policy" in obs_groups:
+        policy_obs_groups = list(obs_groups["policy"])
+    export_deploy_cfg(
+        env.unwrapped,
+        log_dir,
+        observation_renames=observation_renames,
+        policy_obs_groups=policy_obs_groups,
+    )
     # copy the environment configuration file to the log directory
     shutil.copy(
         inspect.getfile(env_cfg.__class__),

@@ -34,10 +34,12 @@ FSM:
       Passive: LT + B.on_pressed
     keyboard_transitions:
       Passive: "0"
-    # Debug: ignore LiDAR pipeline for policy input; all 492 retained cells = flat_value.
+    # Debug: ignore the LiDAR pipeline for policy input; all 609 cells = flat_value.
+    # 0.046825 is GO2_FLAT_SCAN_VALUE -- what a cell reads on flat ground at nominal
+    # stance -- so the override stands in for "flat terrain", not for "zero".
     height_scan:
       flat_override: false
-      flat_value: 0.0
+      flat_value: 0.046825
       # Optional MuJoCo robustness test. Added before observation clipping,
       # gaussian style (matches Isaac Lab's Gnoise, not Unoise) with a
       # per-session bias on top, mirroring POLICY_HEIGHT_SCAN_CFG's
@@ -50,4 +52,8 @@ FSM:
         std: 0.071
         bias_std: 0.05
         seed: 0
-    policy_dir: ../../../logs/rsl_rl/go2_blind_gru_phase2
+    # Perceptive Phase 5. The policy reads 45 proprioceptive values plus the 609-cell
+    # MID-360 height map, so this run's deploy.yaml lists height_scan last and the ONNX
+    # takes 654 inputs. Pointing this at a blind run will load a 45-input network and the
+    # height map will go nowhere.
+    policy_dir: ../../../logs/rsl_rl/go2_perceptive_mid360_phase5/2026-09-24_16-55-47
