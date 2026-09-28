@@ -18,25 +18,30 @@ This phase changes three things and keeps everything else:
   3. **A ratchet that can actually fire** (``terrain_levels_climb_demote_on_fail``),
      with ``promote_distance`` set from this terrain's geometry rather than half a tile.
 
-Measured against pinned walls, the first version of this phase moved the wall the policy
-can clear from 20 cm to 30 cm: the Phase 4 checkpoints cross a 25 cm wall in 0 % of
-attempts, this phase's in 100 %, and a 30 cm wall -- which it had never seen -- in 88 %.
-Wall height and thickness are ``PHASE5_WALL_HEIGHT_RANGE``/``..._THICKNESS_RANGE``,
-raised from Phase 4's once that was measured.
+Measured against pinned walls, 5 cm thick, 256 robots driven straight at one:
+
+    wall     30 cm   35 cm   40 cm   45 cm   50 cm
+    crossed  95 %    92 %    91 %    86 %    79 %
+
+against Phase 4's checkpoints, which cross a 25 cm wall in 0 % of attempts. The body is
+lifted to 0.60 m to clear the 50 cm wall, from a 0.32 m stance. 50 cm is where it starts
+to cost -- the only height with falls (6 %) -- and is treated as the practical ceiling.
 
 ``base_contact`` is relaxed from Phase 4's, and only in its direction test -- see
 ``TerminationsCfgPhase5``. Phase 4's flat 1 N rule was ending the episodes in which the
-robot puts its weight on the wall's top edge, which is how it gets over a 30 cm wall
-rather than a failure to avoid one.
+robot puts its weight on the wall's top edge, which is how it gets over the wall rather
+than a failure to avoid one. That and ``wall_body_height`` were trained and measured
+separately before being folded together; neither works alone, because the reward asks the
+robot to put its body on the wall and the strict rule reads that as a crash.
 
-The relaxed termination and ``wall_body_height`` were each trained and measured
-separately before being folded together here; see ``RewardsCfgPhase5`` for the numbers.
-Neither works alone -- the reward asks the robot to put its body on the wall, and the
-strict rule reads that as a crash -- which is why the first comparison ranked them
-backwards.
+One thing not to trust here: ``terrain_levels`` does not rank checkpoints. Across three
+runs it has been higher on the better policy, higher on the worse one, and -- in the run
+this config's numbers come from -- 6.96 at the end on a checkpoint that crosses *nothing*
+at any height, while the peak-era checkpoint clears 50 cm in 79 % of attempts. Pick by
+measured crossing rate.
 
     python scripts/rsl_rl/train.py --task Go2-Perceptive-Mid360-Phase5 --headless \\
-        --max_iterations 2000 --resume --previous-task Go2-Perceptive-Mid360-Phase2
+        --max_iterations 1500 --resume --previous-task Go2-Perceptive-Mid360-Phase2
 """
 
 from __future__ import annotations
@@ -91,11 +96,18 @@ PHASE5_WALL_CORNER = PHASE5_WALL_DISTANCE * math.sqrt(2)
 """2.12 m: the ring is a *square*, so its corner is this far out. A robot heading
 diagonally reaches this radius while still inside -- see PHASE5_PROMOTE_DISTANCE."""
 
-PHASE5_WALL_HEIGHT_RANGE = (0.10, 0.40)
-"""Solid wall. Raised twice: from Phase 4's (0.05, 0.25) once the goal-directed policy
-measured 100 % at 25 cm, then to 40 cm once it measured 98 % at 30 cm as well. The floor
-came up with it -- 15 cm was crossed 100 % of the time on both wall types, so the bottom
-rows had stopped teaching anything."""
+PHASE5_WALL_HEIGHT_RANGE = (0.20, 0.50)
+"""Solid wall. Raised each time the policy outgrew the last ceiling: Phase 4's
+(0.05, 0.25) -> (0.10, 0.30) at 100 % on 25 cm -> (0.10, 0.40) at 98 % on 30 cm ->
+(0.20, 0.50) after 94 % on 40 cm with no falls. It has stopped here: 50 cm is crossed
+79 % of the time and is the first height that produces falls, so the ceiling and the
+ability now sit in about the same place.
+
+The floor rises with the ceiling because ten rows have to stretch across it: at a 10 cm
+floor the bottom four rows are 12-24 cm, which this policy clears without noticing, and
+each promotion is then a 4 cm jump where it matters. From 20 cm the step is 3 cm and every
+row is doing work -- while row 0 is still 21.5 cm, which is crossed 100 % of the time, so
+an env that demotes all the way down lands somewhere it can recover from."""
 
 PHASE5_FLOATING_HEIGHT_RANGE = (0.10, 0.30)
 """Floating wall, capped 10 cm below the solid one, because a tall enough floating tread
@@ -108,9 +120,15 @@ about 26.5 cm at nominal stance:
 
 Ducking would still clear ``promote_distance``, so the curriculum would promote a policy
 that never learned to climb -- the same "terrain_levels says yes, the robot says no"
-failure this phase was built to get away from. ``wall_body_height_reward`` reads each
-column's own range off the terrain, so the two caps do not have to be reconciled by
-hand."""
+failure this phase was built to get away from.
+
+The floor deliberately does *not* rise with the solid column's. The solid one starts at
+20 cm because ten rows have to reach 50 and anything below that is wasted on a policy
+this far along -- but that reasoning leaves nothing practising a low wall at all. This
+column is capped at 30 either way, so it is the natural place to keep that: 10-30 cm at
+2 cm a step here, 20-50 cm at 3 cm a step there, and between them the curriculum still
+spans the whole range it used to. ``wall_body_height_reward`` reads each column's own
+range off the terrain, so the two floors and two caps need no reconciling by hand."""
 
 PHASE5_WALL_THICKNESS_RANGE = (0.15, 0.05)
 """Unchanged. Height and thickness still move together, so the hardest row is both the
@@ -273,17 +291,24 @@ class RewardsCfgPhase5(RewardsCfgPhase4):
     """Phase 4's rewards plus the goal-tracking set: ANYmal Parkour's Table S2 terms and
     Table S3's arrival term, ported from the Go2W Phase 5 campaign.
 
-    Weights are that campaign's, which were tuned against its own reward set rather than
-    this one -- ``goal_position_tracking`` at 10.0 sits next to this lineage's
-    ``track_lin_vel_xy`` at 1.5. They are a starting point to be read off the first few
-    hundred iterations' per-term contributions, not a transplant that is known to balance.
+    Weights are that campaign's, tuned against its own reward set rather than this one --
+    ``goal_position_tracking`` at 10.0 sits next to this lineage's ``track_lin_vel_xy`` at
+    1.5. They were never retuned, and the phase reached its ceiling anyway, so they are
+    left alone.
 
-    ``goal_position_tracking``/``goal_heading_tracking`` only fire in a 1 s window at
-    ``arrival_deadline_s``. The 8 s default comes from a wheeled robot; here the goal sits
-    2.8-3.0 m out with a wall at 1.50 m, so 8 s asks for about 0.35 m/s of average
-    progress. That should be comfortable, but it has not been confirmed on this gait, and
-    a crossing that takes longer earns nothing from either term for the rest of the
-    episode -- which is the failure ``goal_arrival`` exists to cover.
+    What the per-term contributions actually say, though, is that the arrival half of this
+    set does almost nothing here. Averaged over a run: ``goal_move_in_direction`` +0.38 and
+    ``wall_body_height`` +0.24 carry it, while ``goal_arrival`` sits at ~0.00 from the
+    first iteration to the last and ``Metrics/goal_distance`` never falls below ~3.0 m --
+    the goal is placed 2.8-3.0 m out, so the robots are crossing the wall without going on
+    to arrive. ``goal_position_tracking``/``goal_heading_tracking`` only fire in a 1 s
+    window at ``arrival_deadline_s`` (8 s, from a wheeled robot), so they are mostly
+    inert for the same reason.
+
+    That is worth knowing before tuning any of them: what makes this phase work is being
+    *pointed* at something past the wall and being paid to lift the body over it, not the
+    arrival bonus. Dropping the arrival terms has not been tried -- they are cheap, and
+    they are what stops ``wall_body_height`` paying to rear up against the wall forever.
 
     ``wall_body_height`` is the only term here that reads the body's *height*; the five
     goal terms all measure horizontal progress, heading or speed, so without it a robot
@@ -341,7 +366,7 @@ class RewardsCfgPhase5(RewardsCfgPhase4):
         params={
             "command_name": "base_velocity",
             # wall_height_range left unset: the term reads each column's own range off
-            # the terrain, which is the only way to serve a solid column capped at 40 cm
+            # the terrain, which is the only way to serve a solid column capped at 50 cm
             # and a floating one capped at 30 cm from one term.
             "wall_distance": PHASE5_WALL_DISTANCE,
             "gate_width": 0.6,
@@ -376,7 +401,9 @@ class RobotEnvCfgPerceptiveMid360Phase5(_RobotEnvCfgPhase5):
 # Play: the same single ring at four pinned heights, one row each, ascending.
 #
 # The two columns are pinned to different bands, because they are capped differently in
-# training: the solid wall runs 25 / 30 / 35 / 40 cm, the floating one 15 / 20 / 25 / 30.
+# training: the solid wall runs 35 / 40 / 45 / 50 cm, the floating one 15 / 20 / 25 / 30
+# -- which is also the split the training terrain uses, the floating column holding the
+# low end the solid one has grown out of.
 # A row therefore does *not* show the same height on both sides -- it shows each column at
 # the same fraction of its own range, which is what the curriculum means by a level.
 #
@@ -400,7 +427,7 @@ PLAY_TERRAIN_CFG_PHASE5 = PHASE5_TERRAIN_CFG.replace(
         # floating tread nowhere.
         "thin_wall": PHASE5_TERRAIN_CFG.sub_terrains["thin_wall"].replace(
             proportion=1.0,
-            wall_height_range=(0.225, 0.425),  # centres on 25 / 30 / 35 / 40 cm
+            wall_height_range=(0.325, 0.525),  # centres on 35 / 40 / 45 / 50 cm
             wall_thickness_range=(0.05, 0.05),
         ),
         "floating_thin_wall": PHASE5_TERRAIN_CFG.sub_terrains["floating_thin_wall"].replace(
@@ -410,7 +437,7 @@ PLAY_TERRAIN_CFG_PHASE5 = PHASE5_TERRAIN_CFG.replace(
         ),
     },
 )
-"""2 x 4: solid wall 25 / 30 / 35 / 40 cm | floating tread 15 / 20 / 25 / 30 cm.
+"""2 x 4: solid wall 35 / 40 / 45 / 50 cm | floating tread 15 / 20 / 25 / 30 cm.
 
 Thickness is pinned at 5 cm -- the training mix's thinnest -- so height is the only thing
 that changes down a column, and every row is as hard as that height gets."""
