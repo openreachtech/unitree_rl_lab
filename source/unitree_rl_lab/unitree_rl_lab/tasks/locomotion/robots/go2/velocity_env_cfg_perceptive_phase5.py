@@ -18,14 +18,33 @@ This phase changes three things and keeps everything else:
   3. **A ratchet that can actually fire** (``terrain_levels_climb_demote_on_fail``),
      with ``promote_distance`` set from this terrain's geometry rather than half a tile.
 
-Measured against pinned walls, 5 cm thick, 256 robots driven straight at one:
+The terrain grew a third wall type on the way here. ``razor_wall`` is the same solid wall
+thinned towards 1 cm, at the edge of what a 5 cm-cell map can resolve; it was added
+because the two original columns left a hole at the *bottom*, not the top. The solid
+column started at 21.5 cm and the floating one at 11 cm, so a low obstacle was something
+the policy had never met: it crossed a 5.5 cm wall in 18.8 % of attempts while crossing a
+14.5 cm one at 1 cm thick in 98.8 %. Thinness was never the difficulty; low height was.
 
-    wall     30 cm   35 cm   40 cm   45 cm   50 cm
-    crossed  95 %    92 %    91 %    86 %    79 %
+Measured against pinned walls, 256 robots driven straight at one, each column on its own
+height-and-thickness pairing (``model_4700``, 1000 iterations from Phase 2):
 
-against Phase 4's checkpoints, which cross a 25 cm wall in 0 % of attempts. The body is
-lifted to 0.60 m to clear the 50 cm wall, from a 0.32 m stance. 50 cm is where it starts
-to cost -- the only height with falls (6 %) -- and is treated as the practical ceiling.
+    solid       25      30      35      40      45      50   cm
+                100 %   100 %   100 %   98.8 %  89.8 %  0.4 %
+    floating    10      15      20      25      30
+                100 %   100 %   100 %   98.0 %  99.2 %
+    razor       20      25      30      35      40      45
+                100 %   100 %   100 %   100 %   90.6 %  85.5 %
+
+against Phase 4's checkpoints, which cross a 25 cm wall in 0 % of attempts.
+
+Two results worth keeping. The razor column reaches 45 cm at 1 cm thick (85.5 %) against
+the solid wall's 89.8 % at the same height, so thickness has stopped being most of the
+difficulty -- and no crossing at any height passes the foot-inside-the-slab test, so these
+are real steps rather than the solver letting a thin box through. And raising the razor
+cap from 30 to 40 cm improved the columns it does not touch: solid 45 cm went 5.1 % ->
+89.8 % and floating 30 cm went 73.4 % -> 99.2 % across that one change. Practising a wall
+that cannot be seen until late appears to train the leg-lift itself. Single run, so it is
+a lead rather than a finding.
 
 ``base_contact`` is relaxed from Phase 4's, and only in its direction test -- see
 ``TerminationsCfgPhase5``. Phase 4's flat 1 N rule was ending the episodes in which the
@@ -34,14 +53,24 @@ than a failure to avoid one. That and ``wall_body_height`` were trained and meas
 separately before being folded together; neither works alone, because the reward asks the
 robot to put its body on the wall and the strict rule reads that as a crash.
 
-One thing not to trust here: ``terrain_levels`` does not rank checkpoints. Across three
-runs it has been higher on the better policy, higher on the worse one, and -- in the run
-this config's numbers come from -- 6.96 at the end on a checkpoint that crosses *nothing*
-at any height, while the peak-era checkpoint clears 50 cm in 79 % of attempts. Pick by
-measured crossing rate.
+One thing not to trust here: ``terrain_levels`` does not rank checkpoints, and the reason
+is mechanical rather than statistical. ``terrain_levels_climb_demote_on_fail`` promotes
+past ``promote_distance`` and demotes on ``distance < 0.5`` or a named failure
+termination. The failure this task converges to when it goes wrong is *neither*: the
+robot walks to about 1.1 m, stops in front of the wall, and times out. That clears the
+0.5 m floor and is not a listed termination, so the env is neither promoted nor demoted
+and parks on a row it cannot cross, for the rest of training.
+
+The consequence is that the level can sit at its maximum while the policy crosses nothing.
+One run ended at 6.96 on a checkpoint that cleared no wall at any height, while a
+mid-run checkpoint from the same run cleared 50 cm 79 % of the time; another held 6.85 for
+800 iterations straight through a collapse from 89.8 % to 0 % on a 40 cm wall. Nothing
+else in the logs moves either -- reward, entropy, noise_std and termination rates are all
+smooth across that cliff. Pick checkpoints by measured crossing rate, and measure several:
+the useful one has repeatedly been a few hundred iterations before the end.
 
     python scripts/rsl_rl/train.py --task Go2-Perceptive-Mid360-Phase5 --headless \\
-        --max_iterations 1500 --resume --previous-task Go2-Perceptive-Mid360-Phase2
+        --max_iterations 1000 --resume --previous-task Go2-Perceptive-Mid360-Phase2
 """
 
 from __future__ import annotations
@@ -96,39 +125,85 @@ PHASE5_WALL_CORNER = PHASE5_WALL_DISTANCE * math.sqrt(2)
 """2.12 m: the ring is a *square*, so its corner is this far out. A robot heading
 diagonally reaches this radius while still inside -- see PHASE5_PROMOTE_DISTANCE."""
 
-PHASE5_WALL_HEIGHT_RANGE = (0.20, 0.50)
+PHASE5_WALL_HEIGHT_RANGE = (0.20, 0.45)
 """Solid wall. Raised each time the policy outgrew the last ceiling: Phase 4's
 (0.05, 0.25) -> (0.10, 0.30) at 100 % on 25 cm -> (0.10, 0.40) at 98 % on 30 cm ->
-(0.20, 0.50) after 94 % on 40 cm with no falls. It has stopped here: 50 cm is crossed
-79 % of the time and is the first height that produces falls, so the ceiling and the
-ability now sit in about the same place.
+(0.20, 0.50) after 94 % on 40 cm with no falls -- and then back down to 0.45.
 
-The floor rises with the ceiling because ten rows have to stretch across it: at a 10 cm
-floor the bottom four rows are 12-24 cm, which this policy clears without noticing, and
-each promotion is then a 4 cm jump where it matters. From 20 cm the step is 3 cm and every
-row is doing work -- while row 0 is still 21.5 cm, which is crossed 100 % of the time, so
-an env that demotes all the way down lands somewhere it can recover from."""
+50 cm turned out to be the wrong place to stop. It was crossed 79 % of the time, which
+looked like a ceiling matched to the ability, but it is also the first height that
+produces falls, and the razor run showed what that costs: 50 cm was the *first* thing
+lost, and it went by the policy trying and falling (61.7 % falls at iteration 6300)
+before it stopped approaching tall walls at all. A top row the policy can only reach by
+failing is a top row that teaches it to stop trying. 45 cm keeps the hardest row inside
+what the policy actually lands.
 
-PHASE5_FLOATING_HEIGHT_RANGE = (0.10, 0.30)
-"""Floating wall, capped 10 cm below the solid one, because a tall enough floating tread
+The floor stays at 20 cm. Ten rows have to stretch across the range: at a 10 cm floor the
+bottom four rows are 12-24 cm, which this policy clears without noticing, and each
+promotion is then a 4 cm jump where it matters. From 20 cm the step is 2.5 cm and every
+row is doing work -- while row 0 is still 21.25 cm, crossed 100 % of the time, so an env
+that demotes all the way down lands somewhere it can recover from."""
+
+PHASE5_RAZOR_HEIGHT_RANGE = (0.05, 0.40)
+PHASE5_RAZOR_THICKNESS_RANGE = (0.05, 0.01)
+"""A wall too thin to reliably see. Started at (0.05, 0.15), where the height was
+deliberately trivial so the only difficulty was perceiving the wall; the cap rose to 0.30
+and then 0.40 as each was measured solved. Rows now run 6.8 cm at 4.8 cm thick to 38.2 cm
+at 1.2 cm, so the column asks for both: notice a wall the map can barely resolve, *and*
+clear a real height once it is noticed.
+
+One thing to know before moving this cap again: thickness lerps across the same ten rows,
+so stretching the height axis carries every thickness onto a taller wall rather than
+simply adding a harder row on top. Going 30 -> 40 moved 1.2 cm from a 28.7 cm wall to a
+38.2 cm one, and 28 cm went from 1.2 cm thick to 2.4 cm. The thin-at-moderate-height case
+is replaced, not kept alongside, so a skill measured at the old cap has to be re-measured
+rather than assumed.
+
+The map bins into 5 cm cells, so a 1 cm wall occupies a fifth of the cell it falls in and
+is only registered when a ray happens to land on that fifth. With the sensor putting about
+175 returns into the grid's 609 cells each step, that works out at a 5.7 % chance per step
+of the wall showing up in its own cell, against 29 % for a 5 cm one:
+
+    thickness   seen in its cell, per step   95 % seen after
+       5 cm              29 %                  0.18 s
+       3 cm              17 %                  0.32 s
+       1 cm               5.7 %                1.01 s
+
+A wall 1.5 m out enters the grid's 0.7 m reach about 0.8 s before contact at 1 m/s, so at
+1 cm the map is still deciding whether the wall exists when the robot arrives. That is the
+point: the hold makes it stick once seen, and some approaches will not see it in time.
+
+Row 0 stays at 6.8 cm and 4.8 cm thick, which is the low obstacle nothing else in the
+terrain provides -- the gap that cost this lineage an 18.8 % crossing rate on a 5.5 cm
+wall before this column existed."""
+
+PHASE5_FLOATING_HEIGHT_RANGE = (0.05, 0.25)
+"""Floating wall, capped well below the solid one, because a tall enough floating tread
 stops being a wall to climb and becomes a bar to walk under. The gap beneath it is
 ``height - tread_thickness`` = ``height - 0.04``, against a trunk whose underside sits at
 about 26.5 cm at nominal stance:
 
-    30 cm wall -> 26 cm gap, does not fit
+    25 cm wall -> 21 cm gap, does not fit, with margin
+    30 cm wall -> 26 cm gap, does not fit, but only just
     35 cm wall -> 31 cm gap, walks under standing
 
 Ducking would still clear ``promote_distance``, so the curriculum would promote a policy
 that never learned to climb -- the same "terrain_levels says yes, the robot says no"
-failure this phase was built to get away from.
+failure this phase was built to get away from. The cap was 30 cm, which is inside that
+limit only by 0.5 cm, and that margin is measured against a *nominal* stance -- a robot
+that crouches at all turns the hardest row of this column into a walk-under. 25 cm buys
+5 cm of margin, and the height it gives up is covered by the razor column, which now
+reaches 38.2 cm.
 
 The floor deliberately does *not* rise with the solid column's. The solid one starts at
-20 cm because ten rows have to reach 50 and anything below that is wasted on a policy
-this far along -- but that reasoning leaves nothing practising a low wall at all. This
-column is capped at 30 either way, so it is the natural place to keep that: 10-30 cm at
-2 cm a step here, 20-50 cm at 3 cm a step there, and between them the curriculum still
-spans the whole range it used to. ``wall_body_height_reward`` reads each column's own
-range off the terrain, so the two floors and two caps need no reconciling by hand."""
+20 cm because ten rows have to reach 45 and anything below that is wasted on a policy
+this far along. This column runs 5-25 cm at 2 cm a step, against 20-45 cm at 2.5 cm a
+step there and 5-40 cm at 3.5 cm in the razor column, so between the three the curriculum
+spans the whole range at a useful resolution everywhere -- and two of the three now start
+low enough to keep the low-obstacle case in the mix, which is the gap that cost this
+lineage a 18.8 % crossing rate on a 5.5 cm wall before the razor column existed.
+``wall_body_height_reward`` reads each column's own range off the terrain, so the three
+floors and three caps need no reconciling by hand."""
 
 PHASE5_WALL_THICKNESS_RANGE = (0.15, 0.05)
 """Unchanged. Height and thickness still move together, so the hardest row is both the
@@ -137,9 +212,17 @@ tallest and the thinnest."""
 PHASE5_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
     size=(PHASE5_TILE_SIZE, PHASE5_TILE_SIZE),
     border_width=20.0,
-    # 3 columns at 2:1 -- solid wall in columns 0-1, floating in column 2. Rows stay at
-    # 10 so a terrain level maps to the same wall as it does in Phase 4.
-    num_cols=3,
+    # 6 columns at 1:1:1 -- solid wall in 0-1, floating in 2-3, razor in 4-5. Was 3:2:1,
+    # which gave the razor column a sixth of the envs on the grounds that it was a
+    # perception exercise rather than a locomotion one; it is now a full wall in its own
+    # right (up to 38.2 cm) and gets an equal share.
+    #
+    # Columns are handed out by *cumulative* proportion (column i takes the first
+    # sub-terrain whose running total passes i / num_cols), so the column count and the
+    # proportions have to be chosen together: 4 columns at 1:1:1 would give the last
+    # sub-terrain one column and the first two more. 6 divides by 3 exactly. The assert
+    # below is what keeps that honest. Rows stay at 10.
+    num_cols=6,
     num_rows=10,
     horizontal_scale=0.1,
     vertical_scale=0.005,
@@ -148,7 +231,7 @@ PHASE5_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
     use_cache=False,
     sub_terrains={
         "thin_wall": terrains.MeshThinWallTerrainCfg(
-            proportion=2.0,
+            proportion=1.0,
             wall_height_range=PHASE5_WALL_HEIGHT_RANGE,
             wall_thickness_range=PHASE5_WALL_THICKNESS_RANGE,
             wall_spacing=PHASE5_WALL_SPACING,
@@ -162,6 +245,15 @@ PHASE5_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
             proportion=1.0,
             wall_height_range=PHASE5_FLOATING_HEIGHT_RANGE,
             wall_thickness_range=PHASE5_WALL_THICKNESS_RANGE,
+            wall_spacing=PHASE5_WALL_SPACING,
+            platform_width=PHASE5_PLATFORM_WIDTH,
+            border_width=PHASE5_TERRAIN_BORDER,
+        ),
+        # Same solid wall, thinned until the map can barely resolve it.
+        "razor_wall": terrains.MeshThinWallTerrainCfg(
+            proportion=1.0,
+            wall_height_range=PHASE5_RAZOR_HEIGHT_RANGE,
+            wall_thickness_range=PHASE5_RAZOR_THICKNESS_RANGE,
             wall_spacing=PHASE5_WALL_SPACING,
             platform_width=PHASE5_PLATFORM_WIDTH,
             border_width=PHASE5_TERRAIN_BORDER,
@@ -185,6 +277,38 @@ PHASE5_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
 PHASE5_GOAL_RADIUS_RANGE = (2.8, 3.0)
 PHASE5_ARRIVAL_RADIUS = 0.4
 PHASE5_PROMOTE_DISTANCE = 2.30
+
+def _assigned_columns(cfg) -> dict[str, int]:
+    """How many columns each sub-terrain actually gets, by TerrainGenerator's own rule.
+
+    Column ``i`` takes the first sub-terrain whose running proportion total passes
+    ``i / num_cols``, so a sub-terrain can be listed, given a proportion, and still be
+    generated zero times -- silently. That has happened twice in this lineage: Phase 4's
+    play course put the solid wall in both of its columns and the floating tread in
+    neither, and 4 columns at the 1:1:1 used here would hand the razor wall one column
+    while the other two take three between them.
+    """
+    names = list(cfg.sub_terrains)
+    total = sum(c.proportion for c in cfg.sub_terrains.values())
+    cumsum, running = [], 0.0
+    for c in cfg.sub_terrains.values():
+        running += c.proportion / total
+        cumsum.append(running)
+    counts = {n: 0 for n in names}
+    for col in range(cfg.num_cols):
+        idx = next(i for i, t in enumerate(cumsum) if col / cfg.num_cols + 0.001 < t)
+        counts[names[idx]] += 1
+    return counts
+
+
+_PHASE5_COLUMNS = _assigned_columns(PHASE5_TERRAIN_CFG)
+assert all(n > 0 for n in _PHASE5_COLUMNS.values()), (
+    f"a sub-terrain is never generated: {_PHASE5_COLUMNS}"
+)
+assert len(set(_PHASE5_COLUMNS.values())) == 1, (
+    f"the three wall types are meant to get equal shares, got {_PHASE5_COLUMNS}"
+)
+
 
 assert PHASE5_WALL_CORNER < PHASE5_PROMOTE_DISTANCE <= (
     PHASE5_GOAL_RADIUS_RANGE[0] - PHASE5_ARRIVAL_RADIUS
@@ -366,8 +490,8 @@ class RewardsCfgPhase5(RewardsCfgPhase4):
         params={
             "command_name": "base_velocity",
             # wall_height_range left unset: the term reads each column's own range off
-            # the terrain, which is the only way to serve a solid column capped at 50 cm
-            # and a floating one capped at 30 cm from one term.
+            # the terrain, which is the only way to serve three columns capped at 45, 25
+            # and 40 cm and floored at 20, 5 and 5 from one term.
             "wall_distance": PHASE5_WALL_DISTANCE,
             "gate_width": 0.6,
             "gate_width_far": 1.5,
@@ -400,11 +524,11 @@ class RobotEnvCfgPerceptiveMid360Phase5(_RobotEnvCfgPhase5):
 # ---------------------------------------------------------------------------
 # Play: the same single ring at four pinned heights, one row each, ascending.
 #
-# The two columns are pinned to different bands, because they are capped differently in
-# training: the solid wall runs 35 / 40 / 45 / 50 cm, the floating one 15 / 20 / 25 / 30
-# -- which is also the split the training terrain uses, the floating column holding the
-# low end the solid one has grown out of.
-# A row therefore does *not* show the same height on both sides -- it shows each column at
+# The three columns are pinned to different bands, because they are capped differently in
+# training: the solid wall runs 30 / 35 / 40 / 45 cm, the floating tread 10 / 15 / 20 /
+# 25, the razor wall 25 / 30 / 35 / 40 -- which is also the split the training terrain
+# uses.
+# A row therefore does *not* show the same height across the row -- it shows each column at
 # the same fraction of its own range, which is what the curriculum means by a level.
 #
 # curriculum=True is set explicitly. RobotEnvCfg.__post_init__ sets that flag, but on
@@ -419,28 +543,35 @@ class RobotEnvCfgPerceptiveMid360Phase5(_RobotEnvCfgPhase5):
 # ---------------------------------------------------------------------------
 PLAY_TERRAIN_CFG_PHASE5 = PHASE5_TERRAIN_CFG.replace(
     num_rows=4,
-    num_cols=2,
+    num_cols=3,
     curriculum=True,
     sub_terrains={
-        # Equal proportions: columns are handed out by cumulative proportion, so the
-        # training mix's 2:1 over two columns would put the solid wall in both and the
-        # floating tread nowhere.
+        # One column each: three equal proportions over three columns, so the cumulative
+        # rule hands out exactly one apiece. num_cols has to move with the number of wall
+        # types -- at 2 columns the razor wall would simply not be generated.
         "thin_wall": PHASE5_TERRAIN_CFG.sub_terrains["thin_wall"].replace(
             proportion=1.0,
-            wall_height_range=(0.325, 0.525),  # centres on 35 / 40 / 45 / 50 cm
+            wall_height_range=(0.275, 0.475),  # centres on 30 / 35 / 40 / 45 cm
             wall_thickness_range=(0.05, 0.05),
         ),
         "floating_thin_wall": PHASE5_TERRAIN_CFG.sub_terrains["floating_thin_wall"].replace(
             proportion=1.0,
-            wall_height_range=(0.125, 0.325),  # centres on 15 / 20 / 25 / 30 cm
+            wall_height_range=(0.075, 0.275),  # centres on 10 / 15 / 20 / 25 cm
             wall_thickness_range=(0.05, 0.05),
+        ),
+        "razor_wall": PHASE5_TERRAIN_CFG.sub_terrains["razor_wall"].replace(
+            proportion=1.0,
+            wall_height_range=(0.225, 0.425),  # centres on 25 / 30 / 35 / 40 cm
+            wall_thickness_range=(0.01, 0.01),
         ),
     },
 )
-"""2 x 4: solid wall 35 / 40 / 45 / 50 cm | floating tread 15 / 20 / 25 / 30 cm.
+"""3 x 4: solid 30 / 35 / 40 / 45 cm | floating tread 10 / 15 / 20 / 25 | razor 25 / 30 /
+35 / 40 at 1 cm thick.
 
-Thickness is pinned at 5 cm -- the training mix's thinnest -- so height is the only thing
-that changes down a column, and every row is as hard as that height gets."""
+Thickness is pinned at each column's thinnest -- 5 cm for the first two, 1 cm for the
+razor -- so height is the only thing that changes down a column, and every row is as hard
+as that height gets."""
 
 
 def _play(train_cls):
