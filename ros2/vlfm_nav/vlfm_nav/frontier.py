@@ -52,6 +52,23 @@ def find_clusters(grid: np.ndarray, min_cells: int = 8) -> list[Cluster]:
     return clusters
 
 
+def has_frontier_near(grid: np.ndarray, row: int, col: int, radius_cells: int) -> bool:
+    """Is there any frontier cell within ``radius_cells`` (square window) of (row, col)?
+
+    Used while NAVIGATING: a goal exists to look past a frontier, so once no
+    frontier is left near it -- consumed by the scans made en route -- the goal
+    has served its purpose without being reached. The window is padded by one
+    cell so the free/unknown adjacency at the window edge is judged correctly.
+    """
+    h, w = grid.shape
+    r0, r1 = max(0, row - radius_cells - 1), min(h, row + radius_cells + 2)
+    c0, c1 = max(0, col - radius_cells - 1), min(w, col + radius_cells + 2)
+    sub = grid[r0:r1, c0:c1]
+    free = (sub >= 0) & (sub <= FREE_MAX)
+    unknown = sub == -1
+    return bool((free & ndimage.binary_dilation(unknown, structure=_EIGHT)).any())
+
+
 def clearance_cells(grid: np.ndarray) -> np.ndarray:
     """Per-cell distance (in cells) to the nearest occupied cell."""
     occ = grid >= OCC_MIN
@@ -64,15 +81,27 @@ def goal_for_cluster(
     clearance: np.ndarray,
     min_clearance_cells: float,
     search_radius_cells: int,
+    near: np.ndarray | None = None,
 ) -> np.ndarray | None:
     """A navigable stand-in for the cluster: the free cell with enough clearance
-    nearest to the cluster centroid, searched within ``search_radius_cells``.
+    near the cluster, searched within ``search_radius_cells``.
+
+    Anchored on the cluster cell closest to ``near`` (the robot), NOT the
+    centroid: right after the initial spin the frontier is a RING around the
+    robot, whose centroid is the robot itself -- a goal there is inside the
+    min-goal-distance and exploration deadlocks before its first move
+    (observed 2026-09-28). Anchoring on the nearest frontier cell puts the goal
+    at the ring's edge, and for ordinary clusters merely on their near side.
 
     Returns (row, col) or None when the whole neighborhood is cramped -- such a
     cluster (e.g. a sliver of frontier in a wall gap) is not worth a goal.
     """
     h, w = grid.shape
-    cy, cx = cluster.centroid
+    if near is not None:
+        k = int(np.argmin(((cluster.cells - near) ** 2).sum(axis=1)))
+        cy, cx = cluster.cells[k]
+    else:
+        cy, cx = cluster.centroid
     y0, y1 = max(0, int(cy) - search_radius_cells), min(h, int(cy) + search_radius_cells + 1)
     x0, x1 = max(0, int(cx) - search_radius_cells), min(w, int(cx) + search_radius_cells + 1)
     sub = grid[y0:y1, x0:x1]

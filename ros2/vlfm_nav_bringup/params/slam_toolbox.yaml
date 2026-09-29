@@ -5,6 +5,8 @@ slam_toolbox:
   ros__parameters:
     solver_plugin: solver_plugins::CeresSolver
     ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    # default is 50; Ceres here is compiled for max 20 and warns on every solve
+    ceres_num_threads: 16
     ceres_preconditioner: SCHUR_JACOBI
     ceres_trust_strategy: LEVENBERG_MARQUARDT
 

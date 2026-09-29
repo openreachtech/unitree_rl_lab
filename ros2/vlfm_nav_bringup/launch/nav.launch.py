@@ -32,7 +32,17 @@ def generate_launch_description():
     common_params = PathJoinSubstitution(
         [FindPackageShare("vlfm_nav_bringup"), "params", "nav2_common.yaml"]
     )
-    params = [common_params, robot_params_file, {"use_sim_time": use_sim_time}]
+    # Fail-fast tree: one retry, costmap clears as the only recovery. The exploration
+    # layer owns failure handling (blacklist + escape); see the XML header. Passed
+    # here because a yaml file cannot carry a package-relative path.
+    bt_xml = PathJoinSubstitution(
+        [FindPackageShare("vlfm_nav_bringup"), "behavior_trees", "navigate_to_pose_fail_fast.xml"]
+    )
+    params = [
+        common_params,
+        robot_params_file,
+        {"use_sim_time": use_sim_time, "default_nav_to_pose_bt_xml": bt_xml},
+    ]
 
     nodes = [
         Node(

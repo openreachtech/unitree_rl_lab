@@ -21,9 +21,27 @@ publish_deskewed_scan: false
 # The sim cloud is already motion-corrected into the end-of-sweep pose and carries
 # no per-point timestamps -- deskewing is neither possible nor needed.
 deskew: false
-double_downsample: false
-initialization_phase: true # robot stands at spawn; lets gravity/bias converge
+# ON: 2 threads then 6 both processed 10 Hz clouds at only 3.8 Hz; every dropped
+# frame during motion (worst: the initial 360 spin) registers returns at a lagged
+# pose and sprinkles phantom occupied cells -- including onto the floor around
+# the robot, whose inflated cost then kills the planner start (2026-09-29).
+double_downsample: true
+# OFF, deliberately (2026-09-28). The init phase estimates the accel/gyro bias
+# from the ~3 IMU samples between the first two scans, assuming the robot is
+# static -- and that window lands exactly in the ROS-launch CPU spike. One dirty
+# sample gives a catastrophic bias (observed: z bias 7.88 m/s^2 = half of
+# gravity absorbed as "bias"), a tilted odometry, and a shredded SLAM map.
+# The sim IMU has NO true bias (gravity + finite difference, no bias term), so
+# skipping estimation starts at the exact truth. A REAL robot (Anaguma overlay)
+# should keep this true -- its IMU bias is real.
+initialization_phase: false
 voxel_size: 0.3 # indoor rooms; the 1.0 default is outdoor scale
 min_range: 0.3
-max_range: 20.0
-max_num_threads: 2
+# 15 m covers the longest indoor sight line in kujiale (16x14 m flat); 20 m only
+# added registration cost for stray far returns.
+max_range: 15.0
+# 2 threads processed 10 Hz clouds at only 3.8 Hz once the robot cruised at
+# ~1 m/s (Phase1, no deadband lift): 60% of frames dropped, odometry undershot
+# real motion by ~1/3 and the SLAM map compressed/warped (measured 2026-09-28).
+# The box has 20 cores at load ~4; give the odometry what it needs.
+max_num_threads: 6

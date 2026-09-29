@@ -29,9 +29,10 @@
 
     # pointcloud_to_laserscan z band, in base_frame coordinates. Deliberately wide:
     # the real height selection happens upstream in a gravity-aligned frame (sim:
-    # play_ros2.py --cloud_z_band, world z 0.30-0.85 m -- floor at 0.30 because the
-    # blind policy climbs steps up to ~0.30 m, so lower structure is walkable terrain,
-    # not a wall; real robot: RKO-LIO-posed filter),
+    # play_ros2.py --cloud_z_band, world z 0.15-0.85 m -- floor at 0.15 assuming a
+    # flat-ground policy: anything taller is a wall. (History: 0.30 for clean-step
+    # climbing, 0.20 after a sofa seat defeated it, 0.15 for flat-walking policies;
+    # real robot: RKO-LIO-posed filter),
     # because a base-frame band tilts with body pitch and leaks far ground returns
     # past walls. This band only cuts gross outliers that survive that filter.
     scan_band:

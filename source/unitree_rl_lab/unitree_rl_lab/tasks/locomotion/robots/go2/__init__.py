@@ -113,3 +113,22 @@ gym.register(
         "rsl_rl_cfg_entry_point": _RUNNER,
     },
 )
+
+
+# ===========================================================================
+# Mid360-Explore inside an InteriorAgent (kujiale_0003) apartment: real floorplan,
+# real furniture, colliders applied at spawn, LiDAR raycasting the merged scene.
+# See velocity_env_cfg_kujiale.py. Dataset dir override: INTERIOR_AGENT_DIR.
+#   python scripts/ros2/play_ros2.py --task Go2-Blind-GRU-Mid360-Kujiale \
+#       --checkpoint logs/rsl_rl/go2_blind_gru_phase4/<run>/model_7300.pt
+# ===========================================================================
+gym.register(
+    id="Go2-Blind-GRU-Mid360-Kujiale",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_kujiale:RobotEnvCfgMid360Kujiale",
+        "play_env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_kujiale:RobotPlayEnvCfgMid360Kujiale",
+        "rsl_rl_cfg_entry_point": _RUNNER,
+    },
+)

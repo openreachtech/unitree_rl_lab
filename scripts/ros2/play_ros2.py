@@ -95,33 +95,39 @@ parser.add_argument(
 parser.add_argument(
     "--min_walk_speed",
     type=float,
-    default=0.6,
+    default=0.8,
     help="Minimum linear speed the policy reliably walks at (m/s). The Phase4 policy has"
-    " a stand deadband -- measured on 2026-09-20: vx<=0.5 stands, 0.7 trots -- a side"
-    " effect of rel_standing_envs training. A nonzero /cmd_vel with a smaller linear"
-    " norm is scaled up to this, keeping direction, so Nav2's slow approach commands"
-    " actually move the robot. 0 disables the shaping.",
+    " a wide stand deadband (rel_standing_envs side effect). Step-response measured"
+    " 2026-09-28 (model_7300, raw commands): vx<=0.5 stands COMPLETELY, 0.6 barely"
+    " creeps (0.14 m/s), 0.7 tracks 67%, 0.8 tracks ~85%, 1.0 ~90%. A nonzero"
+    " /cmd_vel with a smaller linear norm is scaled up to this, keeping direction,"
+    " so Nav2's slow approach commands actually move the robot. 0 disables shaping.",
 )
 parser.add_argument(
     "--min_walk_wz",
     type=float,
-    default=0.5,
+    default=0.9,
     help="Same shaping for pure rotations: |wz| below this (and above the 0.05 dead"
-    " zone) is raised to it. Only applied when the linear command is ~zero.",
+    " zone) is raised to it. Only applied when the linear command is ~zero."
+    " Measured 2026-09-28: pure wz<=0.5 does NOT rotate (0.04 rad/s over 8 s!),"
+    " 0.7 tracks 25-60%%, 0.9 tracks 50-80%% (right turns better than left)."
+    " While WALKING the policy turns fine (vx 0.8 + wz 0.5 -> 0.45 tracked);"
+    " only in-place rotation is this dead.",
 )
 parser.add_argument(
     "--cloud_z_band",
     type=float,
     nargs=2,
-    default=(0.30, 0.85),
+    default=(0.15, 0.85),
     metavar=("MIN", "MAX"),
     help="WORLD-z band (m) for the *_band cloud used by pointcloud_to_laserscan."
     " Gravity-aligned, standing in for the LIO-posed height filter of the real"
     " pipeline: a base-frame band tilts with body pitch and far ground returns leak"
     " past the 1 m walls, ray-tracing phantom free space outside the building."
-    " The 0.30 m floor is deliberate: the blind policy climbs steps up to ~0.30 m,"
-    " so anything lower is terrain for the locomotion layer (which sees it through"
-    " its own height scan), not a wall for Nav2/SLAM to route around."
+    " The 0.15 m floor assumes a flat-ground policy (no step climbing): anything"
+    " taller than 0.15 m counts as a wall for Nav2/SLAM. History: 0.30 (Phase4"
+    " climbs clean 0.30 m steps) -> 0.20 (a ~0.20 m sofa seat defeated it,"
+    " 2026-09-28) -> 0.15 (flat-walking policies)."
     " The full unfiltered cloud is always published too (on --cloud_topic) -- that"
     " is what LiDAR odometry consumes; a 0.7 m slab has no vertical structure to"
     " register against. Pass equal values to disable the band topic.",
@@ -330,8 +336,9 @@ def main():
     # -- overrides for a continuous, externally-commanded rollout --
     env_cfg.scene.num_envs = 1
     # SLAM/odometry cannot survive a teleport; make the episode effectively endless.
-    # Fall terminations stay -- a fallen robot has to reset, and the ROS side just has
-    # to be restarted after one.
+    # Fall terminations stay, but a reset now ENDS the run (see the dones[] check in
+    # the loop) -- continuing after the teleport overlaid a second, misregistered
+    # floor plan on the map.
     env_cfg.episode_length_s = 1.0e9
     cmd_cfg = env_cfg.commands.base_velocity
     cmd_cfg.resampling_time_range = (1.0e9, 1.0e9)  # never resample over /cmd_vel
@@ -414,8 +421,13 @@ def main():
         sim_t += dt
 
         if dones[0]:
-            prev_lin_vel_w = robot.data.root_lin_vel_w[0].clone()
-            print("[WARN] Environment reset (fall). Odometry/SLAM state on the ROS side is now invalid; restart it.")
+            # A reset teleports the robot home. LIO cannot track a teleport, so every
+            # scan after this would be registered at a wrong pose and overlaid on the
+            # good map (two superimposed floor plans, observed 2026-09-28). The run is
+            # unrecoverable -- stop cleanly instead of corrupting it further.
+            print("[ERROR] Environment reset (fall/termination). The map cannot survive a"
+                  " teleport -- ending the run. Restart Isaac AND the ROS launch to retry.")
+            break
 
         # -- robot state --
         q = robot.data.joint_pos[0, sdk_joint_ids].cpu().numpy()

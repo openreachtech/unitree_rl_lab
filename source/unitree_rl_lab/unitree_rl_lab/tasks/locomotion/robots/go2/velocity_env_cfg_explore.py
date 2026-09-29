@@ -16,7 +16,8 @@ What changes against the phase config, and why:
 * **base_contact termination off**: a blind robot exploring rooms will brush walls and
   furniture. A termination teleports it home, which silently invalidates the map and
   odometry; better stuck than reset. ``bad_orientation`` stays -- a flipped robot is a
-  failed run either way, and the ROS side is warned on reset (see play_ros2.py).
+  failed run either way, and play_ros2.py ends the run on any reset (a teleport
+  overlays a second, misregistered floor plan on the SLAM map).
 * **Curriculum off**: one terrain level, commands come from /cmd_vel, nothing to ratchet.
 
 Episode length, command resampling and standing envs are handled by play_ros2.py at

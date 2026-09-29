@@ -46,8 +46,10 @@ import numpy as np
 import os
 import torch
 
+from isaaclab.sensors import RayCaster
 from isaaclab.utils import configclass
 from isaaclab.utils.math import quat_apply
+from isaaclab.utils.warp import convert_to_warp_mesh
 
 from .lidar_sensor import LidarSensor
 from .lidar_sensor_cfg import LidarSensorCfg
@@ -59,6 +61,68 @@ every sensor type in its table maps to ``<sensor_type>.npy``."""
 
 class RollingLivoxSensor(LidarSensor):
     """``LidarSensor`` with the scan window advancing once per sensor update."""
+
+    def _initialize_warp_meshes(self):
+        """Optionally merge every mesh under the target prim into one raycast mesh.
+
+        The stock ``RayCaster`` takes the *first* ``Mesh`` child of each entry in
+        ``mesh_prim_paths`` -- correct for a generated terrain (one big mesh), useless
+        for an imported scene like InteriorAgent's apartments, where the geometry is
+        hundreds of furniture/wall meshes under one Xform. With
+        ``cfg.combine_scene_meshes`` every ``UsdGeom.Mesh`` in the subtree is gathered
+        (world-transformed, faces fan-triangulated -- scene assets carry quads/ngons,
+        which the stock reader would misindex) into a single warp mesh, cached under
+        the same key so any other RayCaster pointed at the path reuses it.
+        """
+        if not getattr(self.cfg, "combine_scene_meshes", False):
+            return super()._initialize_warp_meshes()
+
+        import omni.usd
+        from pxr import Usd, UsdGeom
+
+        stage = omni.usd.get_context().get_stage()
+        for mesh_prim_path in self.cfg.mesh_prim_paths:
+            if mesh_prim_path in RayCaster.meshes:
+                continue
+            root = stage.GetPrimAtPath(mesh_prim_path)
+            if not root.IsValid():
+                raise RuntimeError(f"Invalid mesh prim path: {mesh_prim_path}")
+            points_all, tris_all, base = [], [], 0
+            for prim in Usd.PrimRange(root):
+                if prim.GetTypeName() != "Mesh":
+                    continue
+                mesh = UsdGeom.Mesh(prim)
+                pts = np.asarray(mesh.GetPointsAttr().Get(), dtype=np.float64)
+                if pts.size == 0:
+                    continue
+                tm = np.array(omni.usd.get_world_transform_matrix(prim)).T
+                pts = pts @ tm[:3, :3].T + tm[:3, 3]
+                counts = np.asarray(mesh.GetFaceVertexCountsAttr().Get())
+                idx = np.asarray(mesh.GetFaceVertexIndicesAttr().Get())
+                tris = _fan_triangulate(counts, idx)
+                if tris is None:
+                    continue
+                points_all.append(pts)
+                tris_all.append(tris + base)
+                base += len(pts)
+            if not points_all:
+                raise RuntimeError(f"No meshes found under: {mesh_prim_path}")
+            points = np.concatenate(points_all).astype(np.float32)
+            tris = np.concatenate(tris_all)
+            # Double-side every face: scene assets are single-sided (walls carry
+            # doubleSided=False with normals facing into their room), and the warp
+            # raycast only hits front faces -- from the wrong side a wall was
+            # INVISIBLE to the LiDAR while PhysX (double-sided trimesh colliders)
+            # still blocked the robot: Nav2 walked it into "free" space that was
+            # solid (observed 2026-09-25). Appending the flipped winding makes the
+            # raycast see exactly what physics collides with.
+            tris = np.concatenate([tris, tris[:, ::-1]])
+            indices = tris.reshape(-1)
+            RayCaster.meshes[mesh_prim_path] = convert_to_warp_mesh(points, indices, device=self.device)
+            print(
+                f"[RollingLivoxSensor] merged {len(points_all)} meshes under {mesh_prim_path}:"
+                f" {len(points)} vertices, {len(indices) // 3} triangles (double-sided)."
+            )
 
     def _initialize_rays_impl(self):
         super()._initialize_rays_impl()
@@ -144,3 +208,24 @@ class RollingLivoxSensorCfg(LidarSensorCfg):
     """
 
     class_type: type = RollingLivoxSensor
+
+    combine_scene_meshes: bool = False
+    """Merge every mesh under each ``mesh_prim_paths`` entry into one raycast target.
+
+    For imported multi-mesh scenes (e.g. InteriorAgent apartments); leave False for
+    generated terrains, whose single mesh the stock reader already handles."""
+
+
+def _fan_triangulate(counts: np.ndarray, indices: np.ndarray) -> np.ndarray | None:
+    """Faces of arbitrary vertex count -> (N, 3) triangle array (fan per face)."""
+    if counts.size == 0 or indices.size == 0:
+        return None
+    if (counts == 3).all():
+        return indices.reshape(-1, 3)
+    tris = []
+    ofs = 0
+    for c in counts:
+        for k in range(1, c - 1):
+            tris.append((indices[ofs], indices[ofs + k], indices[ofs + k + 1]))
+        ofs += c
+    return np.asarray(tris, dtype=indices.dtype)
