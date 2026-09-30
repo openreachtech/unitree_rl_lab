@@ -42,23 +42,25 @@ State machine (every arrow is logged as "FROM -> TO: why"):
   DONE      terminal; reached via "no frontiers left" (none detected, or all
             remaining ones blacklisted) or a failed escape (physically stuck).
 
-Failure memory (decision.FrontierSelector): a goal is blacklisted in EXACTLY one
-case -- Nav2 aborted it (could not plan or drive there) WHILE the robot's own
-cell was feasible. An abort with an inscribed/lethal start cell is the start's
-fault, not the goal's, and blacklists nothing. The entry is a permanent
-disc (blacklist_radius_m); nothing expires. Reached goals are not blacklisted
-(scanning from there consumes the frontier in the map itself), and getting stuck
-en route is not final either -- it leads to escape + contact marks, which wall
-the route off until Nav2 aborts. The one amnesty: when everything is
+Two kinds of memory (decision.FrontierSelector), both permanent:
+BLACKLIST (failures) -- a goal Nav2 aborted while the robot's own cell was
+feasible (an abort with an inscribed/lethal start is the start's fault and
+records nothing); a small disc (blacklist_radius_m) that goal selection skips.
+VISITED (successes) -- a goal the robot arrived at; its retire_radius_m
+neighborhood is excluded from FRONTIER DETECTION itself, so it stops producing
+frontier cells and goals entirely. A goal consumed en route leaves no entry --
+the robot never stood there; the map records that outcome. Getting stuck en
+route is not final either -- escape + contact marks wall the route off until
+Nav2 aborts. The one amnesty: when everything is
 blacklisted, the most recent entries (likely accrued while the robot's own
 position was bad, not the goals' fault) are dropped once before concluding.
 
     ros2 run vlfm_nav vlfm_node --ros-args -p use_sim_time:=true
 
 Observability: /vlfm/markers shows frontier cells (cyan points), candidate goals
-(blue spheres), the current goal (green sphere), contact obstacles (red cubes) and
-blacklist exclusion zones (translucent orange discs at the true exclusion radius --
-a blue candidate inside a disc is currently ineligible).
+(blue spheres), the current goal (green sphere), contact obstacles (red cubes),
+blacklist zones (orange discs, true radius) and visited zones (large translucent
+green discs, the areas retired from frontier detection).
 """
 
 from __future__ import annotations
@@ -81,7 +83,12 @@ from std_msgs.msg import Header
 from visualization_msgs.msg import Marker, MarkerArray
 
 from vlfm_nav.decision import FrontierSelector
-from vlfm_nav.frontier import clearance_cells, find_clusters, goal_for_cluster, has_frontier_near
+from vlfm_nav.frontier import (
+    exclusion_mask,
+    find_clusters,
+    goal_for_cluster,
+    has_frontier_near,
+)
 from vlfm_nav.nav_bridge import NavBridge, NavState
 from vlfm_nav.value_map import UniformValueMap
 
@@ -124,13 +131,21 @@ class VlfmNode(Node):
                 # now outbids a nearby scrap, cutting cross-apartment backtracking.
                 ("frontier_size_weight", 0.0015),
                 ("frontier_size_cap_cells", 600),
-                ("min_clearance_m", 0.40),
-                ("goal_search_radius_m", 0.9),
-                # A goal is done when NO frontier cell remains within this radius of
-                # it -- consumed by the scans made en route; the goal was only ever
-                # an excuse to look past that frontier. Matches goal_search_radius_m
-                # (the goal was placed within that distance of its cluster).
-                ("goal_frontier_radius_m", 0.9),
+                # The goal IS the frontier cell (goal_for_cluster), so both radii
+                # below are centred ON the frontier -- no goal<->frontier gap to span.
+                # "Consumed en route": the goal is done when NO frontier remains
+                # within this radius of it -- i.e. the scans en route filled the
+                # unknown and it stopped being a frontier. A read only; removes
+                # nothing, so small is fine.
+                ("consumed_radius_m", 0.15),
+                # VISITED retire: an arrived-at (unconsumable) frontier excludes this
+                # radius from frontier detection so it is never re-selected. Set equal
+                # to goal_reached_m (0.40) so "what counted as reached" == "what gets
+                # retired": a smaller radius leaves an un-retired ring that choose()
+                # skips as already-reached yet detection keeps as frontier, so the
+                # robot drifts back to it. Visits are permanent, so a long unconsumable
+                # frontier is chewed off 0.40 m per arrival and never grows back.
+                ("retire_radius_m", 0.40),
                 # -------- goal monitoring (NAVIGATE) --------
                 # Deliberately NO goal timeout and NO progress watchdog: a goal that
                 # cannot be reached stops the robot sooner or later, and then stuck
@@ -140,10 +155,13 @@ class VlfmNode(Node):
                 # deadband, fixed at the policy/shaping layer, not here.)
                 #
                 # goal_reached_m is the arrival radius AND the selection floor (a
-                # goal closer than this is by definition already reached). 0.15 m =
-                # actually dock; assumes a policy that tracks low speeds (Phase1).
-                # Keep equal to Nav2's general_goal_checker.xy_goal_tolerance.
-                ("goal_reached_m", 0.15),
+                # goal closer than this is by definition already reached). 0.40 m:
+                # the goal IS a frontier cell (in/near inflation), so the robot must
+                # count as arrived while still standing off it in clear space -- it
+                # never docks on the frontier itself. Usually consumption ends the
+                # goal first; this is the fallback for a frontier that persists
+                # (glass/wall) so the robot doesn't grind toward an unreachable cell.
+                ("goal_reached_m", 0.40),
                 # -------- initial spin --------
                 # Slow, deliberately: rotation is the worst case for a lagging LIO
                 # (angular error amplifies with range -- the fast 0.9 rad/s spin
@@ -374,18 +392,19 @@ class VlfmNode(Node):
             return
         grid = self._grid
         res, ox, oy = self._grid_meta
-        clearance = clearance_cells(grid)
-        min_clear_cells = float(self._pget("min_clearance_m")) / res
-        search_cells = int(float(self._pget("goal_search_radius_m")) / res)
 
-        clusters = find_clusters(grid, int(self._pget("min_cluster_cells")))
+        visited = self._selector.visited_entries()
+        excl = None
+        if visited:
+            cells = [(int((vy - oy) / res), int((vx - ox) / res)) for vx, vy in visited]
+            excl = exclusion_mask(grid.shape, cells, int(float(self._pget("retire_radius_m")) / res))
+        clusters = find_clusters(grid, int(self._pget("min_cluster_cells")), exclusion=excl)
         robot_cell = np.array([(robot[1] - oy) / res, (robot[0] - ox) / res])
         goals, sizes = [], []
         for c in clusters:
-            g = goal_for_cluster(c, grid, clearance, min_clear_cells, search_cells, near=robot_cell)
-            if g is not None:
-                goals.append([ox + (g[1] + 0.5) * res, oy + (g[0] + 0.5) * res])
-                sizes.append(c.size)
+            g = goal_for_cluster(c, near=robot_cell)
+            goals.append([ox + (g[1] + 0.5) * res, oy + (g[0] + 0.5) * res])
+            sizes.append(c.size)
         goals = np.array(goals) if goals else np.zeros((0, 2))
 
         if len(goals) == 0:
@@ -435,7 +454,10 @@ class VlfmNode(Node):
         self._goal_xy = (gx, gy)
         self._nav.go_to(gx, gy, yaw)
         self._goals_sent += 1
-        self._travel_log = []
+        # NOTE: _travel_log is NOT reset here -- stuck detection must span goal
+        # churn. When the start cell is infeasible every goal insta-aborts in ~2 s,
+        # so a per-goal window would never fill; "hasn't moved for stuck_window_s"
+        # is the truth regardless of how many goals were tried in that time.
         # markers go out AFTER the new goal is set -- published before selection,
         # the green sphere always showed the PREVIOUS goal (one update behind)
         self._publish_markers(clusters, goals, res, ox, oy)
@@ -445,15 +467,21 @@ class VlfmNode(Node):
             f" (largest {max(sizes)} cells)",
         )
 
-    def _goal_reached(self, why: str):
-        """Wrap up the current goal as reached and select the next immediately.
+    def _goal_reached(self, why: str, arrived: bool):
+        """Wrap up the current goal and select the next immediately.
 
-        No blacklist on success: scanning from here consumes the frontier in the
-        map itself, which is the honest mechanism. (Known trade-off: a frontier
-        that CANNOT be consumed by standing next to it -- seen through a window --
-        never fails and never disappears, so it can be revisited; the blacklist is
-        reserved strictly for Nav2 aborts by design, 2026-09-29.)"""
+        ``arrived`` = the robot actually stood at the goal: the spot is VISITED --
+        recorded separately from the blacklist, and excluded at the FRONTIER level
+        (its retire_radius_m neighborhood stops being frontier at all -- that radius
+        reaches the frontier the goal was placed off of).
+        Without this, two adjacent unconsumable frontiers ping-pong forever --
+        observed 2026-09-29: goals 48-62 alternated between two spots 0.35 m apart
+        with the map not growing a single cell. A goal consumed EN ROUTE leaves no
+        entry: the robot never stood there; the map already records the outcome."""
         self._goals_reached += 1
+        if arrived:
+            self._selector.visit(*self._goal_xy, self._now())
+            why += " -> visited; frontier around it retired"
         self._transition("SELECT", why)
         self._select()  # no dead tick: pick the next frontier immediately
 
@@ -464,7 +492,7 @@ class VlfmNode(Node):
         res, ox, oy = self._grid_meta
         row = int((self._goal_xy[1] - oy) / res)
         col = int((self._goal_xy[0] - ox) / res)
-        radius = int(float(self._pget("goal_frontier_radius_m")) / res)
+        radius = int(float(self._pget("consumed_radius_m")) / res)
         return not has_frontier_near(self._grid, row, col, radius)
 
     def _monitor(self):
@@ -474,7 +502,7 @@ class VlfmNode(Node):
             # the scans made en route revealed what was behind the frontier; the
             # goal has served its purpose without being reached
             self._nav.cancel()
-            self._goal_reached("frontier consumed en route")
+            self._goal_reached("frontier consumed en route", arrived=False)
             return
         # Arrival fallback: standing AT the goal while its frontier persists (e.g.
         # visible through a window) -- nothing more to gain here, move on.
@@ -486,15 +514,20 @@ class VlfmNode(Node):
             < float(self._pget("goal_reached_m"))
         ):
             self._nav.cancel()
-            self._goal_reached("goal reached (proximity)")
+            self._goal_reached("goal reached (proximity)", arrived=True)
             return
         if s is NavState.SUCCEEDED:
-            self._goal_reached("goal reached")
+            self._goal_reached("goal reached", arrived=True)
         elif s is NavState.ABORTED:
             if self._start_infeasible():
                 # The START is the problem (robot cell inscribed/lethal): the goal
-                # was never genuinely attempted -- blacklisting it here poisoned
-                # dozens of untried goals within a minute (observed 2026-09-29).
+                # was never genuinely attempted, so it is NOT blacklisted. But if
+                # the robot has ALSO not moved for stuck_window_s, it is wedged --
+                # every goal insta-aborts and no NAVIGATE runs long enough for the
+                # ordinary stuck check, so drive the escape from here.
+                if self._stuck():
+                    self._begin_escape_from_stuck()
+                    return
                 self._transition("SELECT", "goal aborted -- START infeasible, goal NOT blacklisted")
             else:
                 self._selector.blacklist(*self._goal_xy, self._now())
@@ -508,24 +541,26 @@ class VlfmNode(Node):
             self._bt_state = None
             self._transition("WAIT", "goal rejected; waiting for a healthy Nav2")
         elif self._stuck():
-            # Mark the MEAN COMMANDED direction of the stuck window as a contact:
-            # "pushed that way for stuck_window_s, did not move" is the same grade
-            # of physical evidence as a failed escape probe. Without this mark the
-            # loop never converges: the escape usually exits backward, Nav2 replans
-            # the same route (nothing in the costmap changed), and the robot
-            # re-stucks at the same spot forever. Skipped when the window was
-            # mostly rotation (mean drive < 0.1 m/s -- direction meaningless);
-            # never a blind "forward" mark (that variant false-marked under the
-            # Phase4 deadband and penned the robot in, 2026-09-28).
-            if self._cmd_log:
-                a = np.array([(vx, vy) for _, vx, vy in self._cmd_log])
-                mvx, mvy = a.mean(axis=0)
-                if math.hypot(mvx, mvy) >= 0.1:
-                    self._mark_contact(float(mvx), float(mvy))
-            self._start_escape(
-                f"stuck: moved <{self._pget('stuck_min_travel_m')} m"
-                f" in {self._pget('stuck_window_s'):.0f} s"
-            )
+            self._begin_escape_from_stuck()
+
+    def _begin_escape_from_stuck(self):
+        """Mark the mean commanded direction of the stuck window as a contact, then
+        escape. "Pushed that way for stuck_window_s, did not move" is the same grade
+        of physical evidence as a failed escape probe. Without the mark the loop
+        never converges: the escape usually exits backward, Nav2 replans the same
+        route (nothing in the costmap changed), and the robot re-stucks at the same
+        spot. Skipped when the window was mostly rotation (mean drive < 0.1 m/s --
+        direction meaningless); never a blind "forward" mark (that variant
+        false-marked under the Phase4 deadband and penned the robot in, 2026-09-28)."""
+        if self._cmd_log:
+            a = np.array([(vx, vy) for _, vx, vy in self._cmd_log])
+            mvx, mvy = a.mean(axis=0)
+            if math.hypot(mvx, mvy) >= 0.1:
+                self._mark_contact(float(mvx), float(mvy))
+        self._start_escape(
+            f"stuck: moved <{self._pget('stuck_min_travel_m')} m"
+            f" in {self._pget('stuck_window_s'):.0f} s"
+        )
 
     # ---------------------------------------------------------- bt_navigator watch
     def _poll_bt_state(self):
@@ -786,17 +821,24 @@ class VlfmNode(Node):
             m.points.append(_pt(p[0], p[1]))
         arr.markers.append(m)
 
-        # blacklist exclusion zones: flat translucent orange discs, drawn at the
-        # TRUE exclusion radius -- a blue candidate inside a disc is currently
-        # ineligible. Ids 100+ so they never collide with the fixed markers.
-        for i, (bx, by) in enumerate(self._selector.entries()):
+        # Blacklist (failures): flat orange discs at the true exclusion radius --
+        # a blue candidate inside one is ineligible. Visited (arrivals): larger
+        # translucent green discs at retire_radius_m, the area retired from
+        # frontier detection. Lifted off the floor (z-fights the /map plane in
+        # Foxglove otherwise). Ids 100+/200+ never collide with fixed markers.
+        for i, (bx, by) in enumerate(self._selector.blacklist_entries()):
             m = base_marker(100 + i, Marker.CYLINDER)
             m.scale.x = m.scale.y = 2.0 * self._selector.radius
-            # lifted off the floor and mostly opaque: flush with z=0 it z-fights
-            # the rendered /map plane and disappears in Foxglove
             m.scale.z = 0.10
             m.color.r, m.color.g, m.color.a = 1.0, 0.55, 0.8
             m.pose.position.x, m.pose.position.y, m.pose.position.z = float(bx), float(by), 0.05
+            arr.markers.append(m)
+        for i, (vx, vy) in enumerate(self._selector.visited_entries()):
+            m = base_marker(200 + i, Marker.CYLINDER)
+            m.scale.x = m.scale.y = 2.0 * float(self._pget("retire_radius_m"))
+            m.scale.z = 0.04
+            m.color.g, m.color.b, m.color.a = 0.8, 0.3, 0.35
+            m.pose.position.x, m.pose.position.y, m.pose.position.z = float(vx), float(vy), 0.02
             arr.markers.append(m)
 
         if self._goal_xy is not None:

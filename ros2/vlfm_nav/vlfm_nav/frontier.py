@@ -36,11 +36,36 @@ class Cluster:
         return len(self.cells)
 
 
-def find_clusters(grid: np.ndarray, min_cells: int = 8) -> list[Cluster]:
-    """Frontier cells, 8-connected into clusters of at least ``min_cells``."""
+def exclusion_mask(shape: tuple[int, int], cells: list[tuple[int, int]], radius_cells: int) -> np.ndarray:
+    """Boolean mask with a filled disc of ``radius_cells`` around each (row, col).
+
+    Cells inside are removed from the frontier before clustering: the area around
+    a visited or written-off goal never yields frontier cells or goals again.
+    """
+    mask = np.zeros(shape, dtype=bool)
+    h, w = shape
+    rr = radius_cells
+    yy, xx = np.ogrid[-rr : rr + 1, -rr : rr + 1]
+    disc = (yy * yy + xx * xx) <= rr * rr
+    for row, col in cells:
+        r0, r1 = max(0, row - rr), min(h, row + rr + 1)
+        c0, c1 = max(0, col - rr), min(w, col + rr + 1)
+        if r0 >= r1 or c0 >= c1:
+            continue
+        mask[r0:r1, c0:c1] |= disc[r0 - (row - rr) : r1 - (row - rr), c0 - (col - rr) : c1 - (col - rr)]
+    return mask
+
+
+def find_clusters(
+    grid: np.ndarray, min_cells: int = 8, exclusion: np.ndarray | None = None
+) -> list[Cluster]:
+    """Frontier cells, 8-connected into clusters of at least ``min_cells``.
+    Cells under ``exclusion`` (see :func:`exclusion_mask`) are not frontier."""
     free = (grid >= 0) & (grid <= FREE_MAX)
     unknown = grid == -1
     frontier = free & ndimage.binary_dilation(unknown, structure=_EIGHT)
+    if exclusion is not None:
+        frontier &= ~exclusion
     labels, n = ndimage.label(frontier, structure=_EIGHT.astype(int))
     clusters = []
     for i in range(1, n + 1):
@@ -75,40 +100,23 @@ def clearance_cells(grid: np.ndarray) -> np.ndarray:
     return ndimage.distance_transform_edt(~occ)
 
 
-def goal_for_cluster(
-    cluster: Cluster,
-    grid: np.ndarray,
-    clearance: np.ndarray,
-    min_clearance_cells: float,
-    search_radius_cells: int,
-    near: np.ndarray | None = None,
-) -> np.ndarray | None:
-    """A navigable stand-in for the cluster: the free cell with enough clearance
-    near the cluster, searched within ``search_radius_cells``.
+def goal_for_cluster(cluster: Cluster, near: np.ndarray | None = None) -> np.ndarray:
+    """The frontier cell to aim the robot at: the cluster cell closest to ``near``
+    (the robot), or -- with no ``near`` -- the one closest to the centroid.
 
-    Anchored on the cluster cell closest to ``near`` (the robot), NOT the
-    centroid: right after the initial spin the frontier is a RING around the
-    robot, whose centroid is the robot itself -- a goal there is inside the
-    min-goal-distance and exploration deadlocks before its first move
-    (observed 2026-09-28). Anchoring on the nearest frontier cell puts the goal
-    at the ring's edge, and for ordinary clusters merely on their near side.
+    The goal IS a frontier cell, not a cleared stand-in offset from it. The robot
+    never has to stand on it: it either consumes the frontier en route (the scans
+    reveal what was behind it) or arrives within goal_reached_m, both well before
+    the goal cell itself. Aiming straight at the frontier keeps goal and frontier
+    at the SAME point, so the consumed check and the visited-retire disc are both
+    centred on the frontier and need only a small radius -- no goal<->frontier gap
+    to span, which is what made those two radii so fragile when the goal was offset
+    (2026-09-29). A frontier that hugs a wall lands the goal in inflation and Nav2
+    aborts it -> blacklist, which is the right call for an unreachable pocket.
 
-    Returns (row, col) or None when the whole neighborhood is cramped -- such a
-    cluster (e.g. a sliver of frontier in a wall gap) is not worth a goal.
-    """
-    h, w = grid.shape
-    if near is not None:
-        k = int(np.argmin(((cluster.cells - near) ** 2).sum(axis=1)))
-        cy, cx = cluster.cells[k]
-    else:
-        cy, cx = cluster.centroid
-    y0, y1 = max(0, int(cy) - search_radius_cells), min(h, int(cy) + search_radius_cells + 1)
-    x0, x1 = max(0, int(cx) - search_radius_cells), min(w, int(cx) + search_radius_cells + 1)
-    sub = grid[y0:y1, x0:x1]
-    ok = (sub >= 0) & (sub <= FREE_MAX) & (clearance[y0:y1, x0:x1] >= min_clearance_cells)
-    if not ok.any():
-        return None
-    ys, xs = np.nonzero(ok)
-    d2 = (ys + y0 - cy) ** 2 + (xs + x0 - cx) ** 2
-    k = int(np.argmin(d2))
-    return np.array([ys[k] + y0, xs[k] + x0])
+    Anchoring on the nearest cell (not the centroid) matters right after the spin:
+    the frontier is then a RING around the robot whose centroid is the robot
+    itself, and a goal there deadlocks before the first move (2026-09-28)."""
+    ref = near if near is not None else cluster.centroid
+    k = int(np.argmin(((cluster.cells - ref) ** 2).sum(axis=1)))
+    return cluster.cells[k]

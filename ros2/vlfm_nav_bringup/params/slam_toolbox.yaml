@@ -5,8 +5,9 @@ slam_toolbox:
   ros__parameters:
     solver_plugin: solver_plugins::CeresSolver
     ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
-    # default is 50; Ceres here is compiled for max 20 and warns on every solve
-    ceres_num_threads: 16
+    # NOTE: slam_toolbox's CeresSolver has NO num_threads parameter -- it hardcodes
+    # 50, which Ceres (compiled for max 20) bounds to 20 and warns about on every
+    # solve. The warning is harmless and cannot be silenced from config.
     ceres_preconditioner: SCHUR_JACOBI
     ceres_trust_strategy: LEVENBERG_MARQUARDT
 
@@ -41,7 +42,11 @@ slam_toolbox:
     loop_match_minimum_chain_size: 10
     loop_match_maximum_variance_coarse: 3.0
     loop_match_minimum_response_coarse: 0.35
-    loop_match_minimum_response_fine: 0.45
+    # Raised 0.45 -> 0.55 (2026-09-29): kujiale's repeated rooms produced FALSE loop
+    # closures that snapped the whole map 4-5 m and "broke" it mid-run. Require a
+    # stronger fine-match before accepting a loop closure. If the map still warps,
+    # raise coarse (0.35) too and/or shrink loop_search_maximum_distance (4.0).
+    loop_match_minimum_response_fine: 0.55
 
     correlation_search_space_dimension: 0.8
     correlation_search_space_resolution: 0.01
