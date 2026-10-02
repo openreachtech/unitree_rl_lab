@@ -13,12 +13,22 @@ What changes against the phase config, and why:
   by design.
 * **push_robot off**: a 0.5 m/s shove every 5-10 s is a robustness event for training;
   under SLAM it is an odometry insult with no upside.
-* **base_contact termination off**: a blind robot exploring rooms will brush walls and
-  furniture. A termination teleports it home, which silently invalidates the map and
-  odometry; better stuck than reset. ``bad_orientation`` stays -- a flipped robot is a
-  failed run either way, and play_ros2.py ends the run on any reset (a teleport
-  overlays a second, misregistered floor plan on the SLAM map).
+* **Terminations: the trunk hitting the floor, nothing else** (2026-09-30). A reset
+  teleports the robot home, which silently invalidates the map and odometry, and
+  play_ros2.py then ends the whole run rather than overlay a second misregistered floor
+  plan on the SLAM map. That is expensive enough that only a real fall should trigger it.
+
+  - ``bad_orientation`` off: a 45.8 deg tilt is a posture, not a fall. Ending a
+    15-minute exploration for one is a bad trade.
+  - ``base_contact`` threshold 1 -> 300 N: the stock 1 N fires on any brush, and a blind
+    robot in a furnished apartment brushes things constantly. The whole robot is ~15 kg
+    (~147 N), so 300 N is past its own static weight -- it takes a fall's impact, not a
+    wall.
 * **Curriculum off**: one terrain level, commands come from /cmd_vel, nothing to ratchet.
+* **Front RGB camera on**: the VLM layer (M5) scores what the robot sees. Only the
+  nav worlds carry it -- the phase configs train with thousands of environments and
+  would pay the render cost for an image nothing reads. Needs ``--enable_cameras``,
+  which play_ros2.py forces on.
 
 Episode length, command resampling and standing envs are handled by play_ros2.py at
 runtime (endless episode, /cmd_vel writes) rather than here, so ordinary play on this
@@ -33,6 +43,7 @@ from isaaclab.utils import configclass
 from unitree_rl_lab.tasks.locomotion import terrains
 from unitree_rl_lab.tasks.locomotion.robots.go2.velocity_env_cfg_mid360 import (
     RobotEnvCfgMid360Phase4,
+    _attach_front_camera,
 )
 
 EXPLORE_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
@@ -58,9 +69,13 @@ class RobotEnvCfgMid360Explore(RobotEnvCfgMid360Phase4):
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
         # see module docstring
         self.events.push_robot = None
-        self.terminations.base_contact = None
+        self.terminations.bad_orientation = None
+        self.terminations.base_contact.params["threshold"] = 300.0
         self.curriculum.terrain_levels = None
         self.curriculum.lin_vel_cmd_levels = None
+        # Front RGB camera for the VLM layer (M5). Attached here rather than in the
+        # phase config so training never pays the render cost; kujiale inherits it.
+        _attach_front_camera(self)
 
 
 @configclass

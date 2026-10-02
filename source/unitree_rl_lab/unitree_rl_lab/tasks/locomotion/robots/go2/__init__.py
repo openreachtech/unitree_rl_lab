@@ -69,6 +69,22 @@ gym.register(
 )
 
 
+# Phase 4 retuned for the VLFM exploration run: 4 cols x 10 rows (flat / rough / wall /
+# floating wall), walls capped at 15 cm, top speed 1.0 m/s. Phase 4 trains a 25 cm wall
+# the apartment never contains; this trains not falling over the things it does. See
+# velocity_env_cfg_blind_phase4_vlfm.py.
+#   --task Go2-Blind-GRU-Phase4-VLFM --resume --previous-task Go2-Blind-GRU-Phase4
+gym.register(
+    id="Go2-Blind-GRU-Phase4-VLFM",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_blind_phase4_vlfm:RobotEnvCfgPhase4VLFM",
+        "play_env_cfg_entry_point": f"{_CFG}.velocity_env_cfg_blind_phase4_vlfm:RobotPlayEnvCfgPhase4VLFM",
+        "rsl_rl_cfg_entry_point": _RUNNER,
+    },
+)
+
 # ===========================================================================
 # Experimental: Go2-Blind-GRU-Phase4 plus a Livox MID-360, consuming the real scan
 # sequence at the hardware's rate (4,000 rows/step = 200k pts/s at 50 Hz, of which

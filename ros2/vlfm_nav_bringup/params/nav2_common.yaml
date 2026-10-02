@@ -7,9 +7,15 @@
 #   pointcloud_to_laserscan, odom->base TF from the robot layer, and a low-level
 #   controller consuming /cmd_vel.
 #
-# Controller: MPPI in Omni mode. Whether lateral velocity is actually usable is
-# POLICY-dependent (measured 2026-09-28: Phase1 strafes ~80%, Phase4 not at all);
-# a robot overlay whose policy cannot strafe should set vy_max: 0.0.
+# Controller: MPPI in DiffDrive mode (2026-09-30). Omni was dropped because the
+# footprint is 0.85 x 0.45 m: moving forward sweeps 0.45 m, moving sideways sweeps
+# 0.85 m -- wider than an interior doorway. MPPI could not know that, because
+# ObstaclesCritic runs with consider_footprint: false, i.e. the robot is a point
+# against an isotropic inflation, so heading has zero effect on obstacle cost. The
+# result was observed repeatedly: the robot crabs sideways into a door frame and
+# jams. DiffDrive drops vy from the sampled controls; vx and wz are still sampled
+# independently, so forward-while-turning arcs (the normal way it trims onto the
+# path) are unaffected -- only pure strafing is gone.
 
 controller_server:
   ros__parameters:
@@ -52,14 +58,14 @@ controller_server:
       # Envelope defaults; the robot overlay sets the policy's real limits.
       vx_max: 0.5
       vx_min: -0.2
-      vy_max: 0.3
+      vy_max: 0.0 # DiffDrive: no lateral control (see header)
       wz_max: 1.0
       iteration_count: 1
       prune_distance: 1.7
       transform_tolerance: 0.2
       temperature: 0.3
       gamma: 0.015
-      motion_model: "Omni"
+      motion_model: "DiffDrive"
       visualize: false
       TrajectoryVisualizer:
         trajectory_step: 5
@@ -118,6 +124,10 @@ controller_server:
         offset_from_furthest: 5
         threshold_to_consider: 0.6
       PathAngleCritic:
+        # Under DiffDrive this is the only thing that can turn the robot onto the
+        # path, but keep the weight low: raising it biases toward stop-and-rotate
+        # and suppresses the forward-while-turning arcs we actually want. It stays
+        # dormant until the heading error exceeds max_angle_to_furthest anyway.
         enabled: true
         cost_power: 1
         cost_weight: 2.0
@@ -144,27 +154,12 @@ bt_navigator:
     bt_loop_duration: 10
     default_server_timeout: 20
 
-behavior_server:
-  ros__parameters:
-    costmap_topic: local_costmap/costmap_raw
-    footprint_topic: local_costmap/published_footprint
-    cycle_frequency: 10.0
-    behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]
-    spin:
-      plugin: "nav2_behaviors/Spin"
-    backup:
-      plugin: "nav2_behaviors/BackUp"
-    drive_on_heading:
-      plugin: "nav2_behaviors/DriveOnHeading"
-    wait:
-      plugin: "nav2_behaviors/Wait"
-    global_frame: odom
-    robot_base_frame: base_link # overlay
-    transform_tolerance: 0.2
-    simulate_ahead_time: 2.0
-    max_rotational_vel: 0.8
-    min_rotational_vel: 0.2
-    rotational_acc_lim: 2.0
+# NO behavior_server. nav.launch.py does not run the node (its lifecycle-race failure
+# to activate used to block bt_navigator), and both default BTs are overridden with
+# fail-fast trees whose only recovery is clearing the costmaps -- a service, not a
+# behavior. The exploration layer owns real failure handling: blacklist plus a
+# displacement-verified ESCAPE. Its config block lived here until 2026-10-02, doing
+# nothing; if the node ever comes back, so should the block.
 
 local_costmap:
   local_costmap:

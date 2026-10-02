@@ -8,17 +8,15 @@ controller_server:
     FollowPath:
       vx_max: 1.0 # limit_ranges max; the bridge lifts smaller commands to >=0.6
       vx_min: -0.3
-      vy_max: 0.4
+      # 0.0: DiffDrive motion model (nav2_common.yaml) drops lateral control --
+      # sideways the 0.85 x 0.45 m footprint does not fit through a doorway.
+      vy_max: 0.0
       wz_max: 0.9
       # sample wider around the previous solution so the optimizer actually finds
       # the higher cruise speeds the range now allows
       vx_std: 0.3
 
 bt_navigator:
-  ros__parameters:
-    robot_base_frame: base
-
-behavior_server:
   ros__parameters:
     robot_base_frame: base
 

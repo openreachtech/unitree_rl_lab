@@ -100,6 +100,8 @@ import math
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import SceneEntityCfg
+from isaaclab.sensors import TiledCameraCfg
+from isaaclab.sim import PinholeCameraCfg
 from isaaclab.utils import configclass
 
 from unitree_rl_lab.sensors import (
@@ -489,6 +491,118 @@ class Mid360MapObsCfg(ObsGroup):
     def __post_init__(self):
         self.enable_corruption = False
         self.concatenate_terms = True
+
+
+# ---------------------------------------------------------------------------
+# Front RGB camera (M5 / VLFM). Mounted where the real Go2 carries its front
+# camera: just ahead of and above the L1 dome, so the dome does not eat the
+# bottom of the frame. Rigid to `base` -- the Go2 head has no neck joint.
+#
+# Optical axis HORIZONTAL (pitch 0), matching the hardware: the real Go2 carries its
+# front camera flush on the vertical face of the nose, looking straight ahead, and
+# sim should not invent a tilt the robot does not have.
+#
+# This was briefly +10 deg (up). The reasoning then: the camera sits only 0.35 m off
+# the ground, so a level view puts the horizon at the image centre and gives the floor
+# the lower half of the frame, and floor carries almost no semantic information.
+# Tilting up traded that floor for wall, doorway and ceiling -- the cues that actually
+# say "bathroom". It is a real effect, but matching the hardware wins: a sim-only tilt
+# would make every bag, threshold and prompt measured here mean something slightly
+# different on the robot. Level also buys back the near floor (visible from ~0.70 m
+# rather than ~1.2 m), which helps with low objects at close range.
+#
+# The FOV is NOT set by width/height. It comes from the aperture/focal ratio:
+#     HFOV = 2*atan(horizontal_aperture / (2*focal_length)) = 90 deg here.
+# Leaving `vertical_aperture` unset makes Isaac Lab derive it from the aspect
+# ratio to keep pixels square, so 768x384 yields VFOV = 2*atan(0.5) = 53.1 deg.
+# The published CameraInfo is derived from the same three numbers
+# (play_ros2.py: fx = width * focal_length / horizontal_aperture).
+# ---------------------------------------------------------------------------
+GO2_CAM_MOUNT = (0.32, 0.0, 0.03)
+_CAM_PITCH = 0.0  # rad; a positive Y rotation would tilt the forward axis DOWN
+GO2_CAM_ROT = (math.cos(_CAM_PITCH / 2), 0.0, math.sin(_CAM_PITCH / 2), 0.0)
+"""(w, x, y, z) quaternion of the camera mount. Identity at _CAM_PITCH 0 -- kept in this
+form so a tilt stays one number away, and so it reads against GO2_L1_ROT just above."""
+
+GO2_CAM_WIDTH = 768
+GO2_CAM_HEIGHT = 384
+GO2_CAM_FOCAL_LENGTH = 10.4775  # cm
+GO2_CAM_HORIZONTAL_APERTURE = 20.955  # cm -- the USD default; the ratio gives HFOV 90 deg
+GO2_CAM_HZ = 5.0
+"""Render rate. The VLM scores at <=2 Hz behind a motion gate, so 5 Hz is already
+generous; rendering every control step would be pure waste, and this loop shares its
+GPU and CPU with MPPI (which had to drop 20 Hz -> 10 Hz for exactly that reason)."""
+
+
+def _front_camera_cfg() -> TiledCameraCfg:
+    """A fresh camera cfg per env-cfg instance, so play tweaks never leak into train.
+
+    ``TiledCamera`` rather than plain ``Camera``: it is Isaac Lab's batched render path
+    and cheaper even at one environment, which matters because the render cost is the
+    one unmeasured risk in this milestone.
+
+    ``rgb`` only. Depth is deliberately absent: the range to a detected object comes from
+    raycasting the occupancy grid along the detection bearing, and the frustum occlusion
+    mask for the value map comes from that same raycast. See doc/design/vlfm_nav.md 7.5 --
+    the papers leaned on depth images because a Habitat agent has neither a LiDAR nor a
+    trustworthy global map, and we have both.
+    """
+    return TiledCameraCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/base/front_cam",
+        offset=TiledCameraCfg.OffsetCfg(
+            pos=GO2_CAM_MOUNT,
+            rot=GO2_CAM_ROT,
+            # forward +X, up +Z -- the same convention as the URDF camera_joint rpy, so
+            # the two mounts stay readable against each other.
+            convention="world",
+        ),
+        data_types=["rgb"],
+        spawn=PinholeCameraCfg(
+            focal_length=GO2_CAM_FOCAL_LENGTH,
+            horizontal_aperture=GO2_CAM_HORIZONTAL_APERTURE,
+            clipping_range=(0.05, 20.0),
+        ),
+        width=GO2_CAM_WIDTH,
+        height=GO2_CAM_HEIGHT,
+        update_period=1.0 / GO2_CAM_HZ,
+    )
+
+
+def _attach_front_camera(cfg) -> None:
+    """Bolt the front RGB camera onto a nav-facing cfg.
+
+    Deliberately NOT called from the phase configs: those train with thousands of
+    environments and would pay the render cost for an image nothing reads. Only the
+    single-robot nav worlds (explore, kujiale) carry it.
+
+    Isaac Lab also needs ``--enable_cameras`` to render at all in headless mode;
+    play_ros2.py forces it on. That flag alone is free (measured 2026-09-30 on the
+    explore world: 43.2 -> 42.8 step/s, inside the noise); the render is not.
+
+    ``render_interval`` is the knob that actually decides how often the scene is
+    drawn. ``manager_based_rl_env`` renders whenever
+    ``_sim_step_counter % cfg.sim.render_interval == 0``, and that counter ticks per
+    PHYSICS step -- so the default of 1 draws the scene ``decimation`` times per env
+    step. The sensor's own ``update_period`` does not stop it: that gates when the
+    annotator buffer is re-read, not when the frame is rendered. Left alone the camera
+    cost 6.4 ms/step (33.6 vs 42.8 step/s), almost all of it redundant. Aligning the
+    interval with GO2_CAM_HZ draws once per camera period instead, which is also what
+    Isaac Lab's own comment there asks for ("we assume the render interval to be the
+    shortest accepted rendering interval").
+
+    Measured on the explore world, 2026-09-30, clean GPU:
+
+        no camera, no --enable_cameras      43.2 step/s   23.13 ms
+        no camera, --enable_cameras         42.8 step/s   23.36 ms
+        camera, render_interval 1           33.6 step/s   29.79 ms   (-6.4 ms)
+        camera, render_interval 40          41.7 step/s   24.00 ms   (-0.64 ms)
+
+    Side effect: this also throttles the GUI viewport, so a non-headless play of these
+    tasks redraws at GO2_CAM_HZ rather than every step. Watchable, but worth knowing
+    before blaming the sim for looking choppy.
+    """
+    cfg.scene.front_cam = _front_camera_cfg()
+    cfg.sim.render_interval = max(1, round(1.0 / (GO2_CAM_HZ * cfg.sim.dt)))
 
 
 def _attach_mid360(

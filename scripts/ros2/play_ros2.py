@@ -17,6 +17,8 @@ Publishes (Isaac's bundled rclpy, py3.11 -- so standard messages only):
   /sim/applied_cmd     geometry_msgs/Twist       the command applied to the policy this step
   /utlidar/cloud       sensor_msgs/PointCloud2   full MID-360 returns, `radar` frame -- LIO input
   /utlidar/cloud_band  sensor_msgs/PointCloud2   height-band subset for pointcloud_to_laserscan
+  /vlfm/camera/image_raw       sensor_msgs/Image        front RGB, `camera_optical` frame (M5 VLM input)
+  /vlfm/camera/camera_info     sensor_msgs/CameraInfo   intrinsics, derived from the cfg's focal/aperture
 
 Subscribes:
   /cmd_vel             geometry_msgs/Twist       written into the base_velocity command term:
@@ -95,24 +97,28 @@ parser.add_argument(
 parser.add_argument(
     "--min_walk_speed",
     type=float,
-    default=0.8,
-    help="Minimum linear speed the policy reliably walks at (m/s). The Phase4 policy has"
-    " a wide stand deadband (rel_standing_envs side effect). Step-response measured"
-    " 2026-09-28 (model_7300, raw commands): vx<=0.5 stands COMPLETELY, 0.6 barely"
-    " creeps (0.14 m/s), 0.7 tracks 67%, 0.8 tracks ~85%, 1.0 ~90%. A nonzero"
-    " /cmd_vel with a smaller linear norm is scaled up to this, keeping direction,"
-    " so Nav2's slow approach commands actually move the robot. 0 disables shaping.",
+    default=0.0,
+    help="Deadband shaping: a nonzero /cmd_vel with a smaller linear norm is scaled up"
+    " to this, keeping direction. 0 (the default) disables it."
+    " ONLY needed by policies with a stand deadband. The Phase3->Phase4 lineage had a"
+    " severe one -- measured 2026-09-28 (model_7300, raw commands): vx<=0.5 stood"
+    " COMPLETELY still, 0.6 crept at 0.14 m/s, 0.7 tracked 67%% -- and 0.8 was the"
+    " workaround. Go2-Blind-GRU-Phase4-VLFM does not: measured 2026-10-01 on flat"
+    " ground, 64 envs, it tracks 92%% at vx 0.1 and 102-109%% from 0.2 up. Phase 1 is"
+    " also clean (54%% at 0.1, >=88%% from 0.3). Inflating a command such a policy can"
+    " already follow just makes it overshoot what Nav2 asked for, so leave this at 0"
+    " unless a measurement says otherwise.",
 )
 parser.add_argument(
     "--min_walk_wz",
     type=float,
-    default=0.9,
-    help="Same shaping for pure rotations: |wz| below this (and above the 0.05 dead"
-    " zone) is raised to it. Only applied when the linear command is ~zero."
-    " Measured 2026-09-28: pure wz<=0.5 does NOT rotate (0.04 rad/s over 8 s!),"
-    " 0.7 tracks 25-60%%, 0.9 tracks 50-80%% (right turns better than left)."
-    " While WALKING the policy turns fine (vx 0.8 + wz 0.5 -> 0.45 tracked);"
-    " only in-place rotation is this dead.",
+    default=0.0,
+    help="Same shaping for pure rotations, applied only when the linear command is"
+    " ~zero. 0 (the default) disables it. Same story as --min_walk_speed: the old"
+    " Phase 4 did not rotate in place at all (wz<=0.5 gave 0.04 rad/s over 8 s) and 0.9"
+    " was the workaround; Phase4-VLFM tracks 80%% at wz 0.2 and ~89%% at 0.9, within a"
+    " few points of Phase 1 across the range. This matters more than it used to --"
+    " MPPI now runs in DiffDrive, so in-place rotation is the only way to turn.",
 )
 parser.add_argument(
     "--cloud_z_band",
@@ -140,9 +146,30 @@ parser.add_argument(
     " elevation sweep, matching the real driver's 10 Hz frames; single 20 ms windows"
     " cover only a slice of the elevation band and starve pointcloud_to_laserscan.",
 )
+parser.add_argument(
+    "--camera_topic",
+    type=str,
+    default="/vlfm/camera/image_raw",
+    help="sensor_msgs/Image topic for the front RGB camera. CameraInfo goes to the"
+    " sibling `.../camera_info`. Silently inactive on tasks with no `front_cam` in"
+    " the scene (the phase configs).",
+)
+parser.add_argument(
+    "--camera_hz",
+    type=float,
+    default=0.0,
+    help="Publish rate for the front camera. 0 (default) follows the sensor's own"
+    " update_period from the env cfg (GO2_CAM_HZ). Lower it to measure how much of"
+    " the frame budget rendering costs; the VLM scores at <=2 Hz behind a motion"
+    " gate, so nothing downstream needs more than a few Hz.",
+)
 cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
+
+# Camera sensors do not render at all in headless mode without this, and the nav tasks
+# (explore/kujiale) all carry a front_cam. Harmless on tasks that have none.
+args_cli.enable_cameras = True
 
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
@@ -166,9 +193,9 @@ from builtin_interfaces.msg import Time as TimeMsg
 from geometry_msgs.msg import TransformStamped, Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from rosgraph_msgs.msg import Clock
-from sensor_msgs.msg import Imu, JointState, PointCloud2, PointField
+from sensor_msgs.msg import CameraInfo, Image, Imu, JointState, PointCloud2, PointField
 from tf2_ros import TransformBroadcaster
 
 from unitree_rl_lab.assets.models.modules.runners import UnitreeOnPolicyRunner
@@ -226,6 +253,22 @@ class SimBridge(Node):
         self.create_subscription(Twist, "/cmd_vel", self._on_cmd_vel, 10)
         # Observability: the command actually applied to the policy this step.
         self.pub_applied = self.create_publisher(Twist, "/sim/applied_cmd", 10)
+        # Front RGB (M5). Created unconditionally -- the main loop only writes to it
+        # when the task's scene actually has a `front_cam`.
+        #
+        # RELIABLE, not the sensor-data profile the clouds use. A 768x384 rgb8 frame is
+        # 884 kB, which DDS fragments across many UDP datagrams; under BEST_EFFORT one
+        # lost fragment drops the whole sample, and measured 2026-09-30 that cost 70% of
+        # the frames (42 of 143 reached a bag, while the CameraInfo published in the very
+        # same call -- tiny, so never fragmented -- arrived complete). At 5 Hz the
+        # retransmits are cheap, and a dropped frame here is a hole in the VLM's evidence,
+        # not a stale scan the next sweep replaces.
+        img_qos = QoSProfile(depth=2, reliability=ReliabilityPolicy.RELIABLE)
+        self.pub_image = self.create_publisher(Image, args_cli.camera_topic, img_qos)
+        self.pub_caminfo = self.create_publisher(
+            CameraInfo, args_cli.camera_topic.rsplit("/", 1)[0] + "/camera_info", img_qos
+        )
+        self.image_msg = None  # built once by init_camera()
 
         # Static parts of the messages
         self.joint_msg = JointState()
@@ -322,6 +365,47 @@ class SimBridge(Node):
             msg.data = band.tobytes()
             self.pub_cloud_band.publish(msg)
 
+    def init_camera(self, width: int, height: int, fx: float):
+        """Freeze the constant parts of Image and CameraInfo.
+
+        Images go out in `camera_optical` (+z forward, +x right, +y down) because that
+        is what CameraInfo means by fx/cx and what consumers such as Foxglove's frustum
+        overlay assume. `camera_joint`'s x-forward `camera` frame is the one our own
+        bearing maths uses; both are in the URDF.
+
+        Pixels are square (the env cfg leaves vertical_aperture unset, so Isaac Lab
+        derives it from the aspect ratio), hence fy == fx.
+        """
+        msg = Image()
+        msg.header.frame_id = "camera_optical"
+        msg.height, msg.width = height, width
+        msg.encoding = "rgb8"
+        msg.is_bigendian = 0
+        msg.step = width * 3
+        self.image_msg = msg
+
+        info = CameraInfo()
+        info.header.frame_id = "camera_optical"
+        info.height, info.width = height, width
+        info.distortion_model = "plumb_bob"
+        info.d = [0.0] * 5
+        cx, cy = width / 2.0, height / 2.0
+        info.k = [fx, 0.0, cx, 0.0, fx, cy, 0.0, 0.0, 1.0]
+        info.r = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+        info.p = [fx, 0.0, cx, 0.0, 0.0, fx, cy, 0.0, 0.0, 0.0, 1.0, 0.0]
+        self.caminfo_msg = info
+
+    def publish_image(self, t: float, rgb: np.ndarray):
+        """`rgb` is (H, W, 3) uint8, C-contiguous. No cv_bridge here -- it is not in
+        Isaac's bundled py3.11 ROS -- but an Image is a header plus a byte buffer, the
+        same hand-packing the point clouds already do."""
+        stamp = _stamp(t)
+        self.image_msg.header.stamp = stamp
+        self.image_msg.data = rgb.tobytes()
+        self.pub_image.publish(self.image_msg)
+        self.caminfo_msg.header.stamp = stamp
+        self.pub_caminfo.publish(self.caminfo_msg)
+
 
 def main():
     env_cfg = parse_env_cfg(
@@ -374,6 +458,8 @@ def main():
             " (e.g. Go2-Blind-GRU-Mid360-Phase4) so there is a cloud to publish."
         )
     scanner = scene.sensors["mid360_scanner"]
+    # Optional: only the nav worlds (explore/kujiale) carry it; phase tasks do not.
+    front_cam = scene.sensors.get("front_cam")
 
     device = env.unwrapped.device
     # articulation joint order -> SDK order
@@ -391,7 +477,27 @@ def main():
     print(f"[INFO] ROS 2 bridge up: /clock /sim/* {args_cli.cloud_topic} <- /cmd_vel (domain {os.environ.get('ROS_DOMAIN_ID', '0')})")
 
     dt = env.unwrapped.step_dt
+    # -- front camera --
+    cam_every = 0
+    if front_cam is not None:
+        cam_cfg = front_cam.cfg
+        # Same three numbers the FOV comes from: HFOV = 2*atan(aperture / (2*focal)),
+        # so fx = (width/2) / tan(HFOV/2) = width * focal / aperture. Square pixels
+        # (vertical_aperture left unset in the cfg) make fy == fx.
+        fx = cam_cfg.width * cam_cfg.spawn.focal_length / cam_cfg.spawn.horizontal_aperture
+        bridge.init_camera(cam_cfg.width, cam_cfg.height, fx)
+        hz = args_cli.camera_hz or (1.0 / cam_cfg.update_period if cam_cfg.update_period else 1.0 / dt)
+        cam_every = max(1, round(1.0 / (hz * dt)))
+        hfov = 2.0 * math.degrees(math.atan(cam_cfg.spawn.horizontal_aperture / (2.0 * cam_cfg.spawn.focal_length)))
+        print(
+            f"[INFO] front camera: {cam_cfg.width}x{cam_cfg.height} HFOV {hfov:.1f} deg"
+            f" fx {fx:.1f} -> {args_cli.camera_topic} every {cam_every} steps"
+            f" ({1.0 / (cam_every * dt):.1f} Hz)"
+        )
+    else:
+        print(f"[INFO] task '{args_cli.task}' has no `front_cam`; no image published.")
     sim_t = 0.0
+    step_i = 0
     cloud_buf: list[torch.Tensor] = []
     prev_lin_vel_w = robot.data.root_lin_vel_w[0].clone()
     gravity_w = torch.tensor([0.0, 0.0, GRAVITY], device=device)
@@ -474,6 +580,15 @@ def main():
             if z_hi > z_lo:
                 band_mask = ((hits[:, 2] >= z_lo) & (hits[:, 2] <= z_hi)).cpu().numpy()
             bridge.publish_cloud(sim_t, p_radar.cpu().numpy(), band_mask)
+
+        # -- front RGB --
+        # The sensor renders on its own update_period; this only decides how often the
+        # rendered buffer is shipped. Drop the alpha channel if the backend hands one
+        # over, and make the slice contiguous before tobytes().
+        step_i += 1
+        if cam_every and step_i % cam_every == 0:
+            rgb = front_cam.data.output["rgb"][0, ..., :3]
+            bridge.publish_image(sim_t, np.ascontiguousarray(rgb.cpu().numpy(), dtype=np.uint8))
 
         # real-time pacing: the ROS side integrates in /clock time, but Nav2's watchdogs
         # and the human at the teleop live in wall time.

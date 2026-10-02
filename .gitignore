@@ -74,3 +74,8 @@ datasets
 # Mimic
 *.npz
 .local
+
+# Isaac's NvStreamer telemetry, dropped into a literal "${data}" directory because
+# something in the rendering path never expands that variable. Regenerates on every
+# run with --enable_cameras.
+${data}/
