@@ -10,6 +10,10 @@ goals, /cmd_vel directly in the open-loop states (SPIN, ESCAPE), and
 State machine (every arrow is logged as "FROM -> TO: why"):
 
     WAIT ----> SPIN ----> SELECT <====> NAVIGATE ----> DONE
+                             |                |
+                             +--> GOAL_NAV <--+ ----> FOUND
+                                    |
+                                    +--> SELECT  (target unreachable)
       ^          (once)      ^             |
       |                      +-- ESCAPE <--+  (stuck watchdog: the ONLY entry)
       +--- goal REJECTED
@@ -39,6 +43,16 @@ State machine (every arrow is logged as "FROM -> TO: why"):
             Verified-blocked directions become contact obstacles. Nav2's own
             recoveries cannot do this job: they refuse to move from a cell the
             costmap calls lethal, which is exactly where a stuck robot stands.
+  GOAL_NAV  the VLM has confirmed where the target is; exploration is suspended and the
+            robot drives at the object itself. Entered from SELECT or NAVIGATE the
+            moment confirmation lands (an in-flight frontier goal is cancelled). The
+            object goal is the wall cell the detection bearing struck -- the same shape
+            as a frontier goal, and the same 0.4 m arrival. Nothing is retired or
+            blacklisted here. Leaves to FOUND on arrival, or back to SELECT if Nav2
+            cannot reach it, in which case the confirmation is dropped and must be
+            earned again (more map may open a way in later). The stuck watchdog still
+            applies.
+  FOUND     terminal; the robot is standing at the target.
   DONE      terminal; reached via "no frontiers left" (none detected, or all
             remaining ones blacklisted) or a failed escape (physically stuck).
 
@@ -57,6 +71,11 @@ position was bad, not the goals' fault) are dropped once before concluding.
 
     ros2 run vlfm_nav vlfm_node --ros-args -p use_sim_time:=true
 
+The target comes from /vlfm/target, published by the SigLIP 2 scorer (see
+scripts/ros2/vlm_node.py); with no scorer running that topic never appears and the node
+behaves exactly as it did before M5. Confirmation needs several detections agreeing in
+time and space -- one false positive must not be able to end a run in the wrong room.
+
 Observability: /vlfm/markers shows frontier cells (cyan points), candidate goals
 (blue spheres), the current goal (green sphere), contact obstacles (red cubes),
 blacklist zones (orange discs, true radius) and visited zones (large translucent
@@ -71,12 +90,12 @@ import random
 import numpy as np
 import rclpy
 import tf2_ros
-from geometry_msgs.msg import Point, Twist
+from geometry_msgs.msg import Point, PoseStamped, Twist
 from lifecycle_msgs.msg import Transition
 from lifecycle_msgs.srv import ChangeState, GetState
 from nav_msgs.msg import OccupancyGrid
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan, PointCloud2
 from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header
@@ -187,6 +206,18 @@ class VlfmNode(Node):
                 # Frontier cells jitter as the map grows, so sample a neighbourhood
                 # rather than one cell of the value grid.
                 ("value_sample_radius_m", 0.5),
+                # -------- object goal (GOAL_NAV) --------
+                # Detections must agree before the run commits to one. A single false
+                # positive would otherwise end exploration at the wrong place, and the
+                # VLM fires on about 3-6% of frames for a target that IS present, so
+                # asking for a few nearby hits costs little and rules that out.
+                ("target_confirm_n", 3),
+                ("target_confirm_window_s", 15.0),
+                ("target_cluster_m", 1.0),
+                # Re-issue the Nav2 goal only when the estimate really moves. Every
+                # detection refines it slightly, and resending on each one makes MPPI
+                # restart its optimisation instead of driving.
+                ("target_update_m", 0.3),
                 # Amnesty window for the sealed-start case: entries younger than
                 # this are dropped after an all-blocked escape (see _select).
                 ("amnesty_window_s", 180.0),
@@ -246,6 +277,11 @@ class VlfmNode(Node):
                 np.asarray(m.data, dtype=np.int16).reshape(m.info.height, m.info.width),
                 (m.info.origin.position.x, m.info.origin.position.y), m.info.resolution), 1)
         self.create_subscription(
+            PoseStamped, "/vlfm/target",
+            self._on_target,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                       durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self.create_subscription(
             OccupancyGrid, "/vlfm/value_confidence",
             lambda m: self._value_map.set_confidence(
                 np.asarray(m.data, dtype=np.int16).reshape(m.info.height, m.info.width),
@@ -290,6 +326,14 @@ class VlfmNode(Node):
         self._state = "WAIT"
         self._spin_end = None
         self._goal_xy = None
+        # Object goal. Hits are held in the ODOM frame: a loop closure moves odom under
+        # them, which is exactly the correction they need -- held in map they would be
+        # displaced by it instead (the failure that painted 52 m^2 of floor lethal in the
+        # global costmap). Over the seconds between spotting the target and reaching it,
+        # odom's own drift is negligible (RKO-LIO: 1.9 cm over 2.87 m).
+        self._target_hits: list[tuple[float, np.ndarray]] = []
+        self._target_odom = None   # confirmed object position, odom frame
+        self._target_sent = None   # map-frame goal last handed to Nav2
         self._empty_cycles = 0
         self._goals_sent = 0
         self._goals_reached = 0
@@ -405,10 +449,19 @@ class VlfmNode(Node):
                 self._spun = True
                 self._transition("SELECT", "spin complete")
         elif self._state == "SELECT":
+            if self._target_odom is not None:
+                self._transition("GOAL_NAV", "target confirmed; exploration suspended")
+                return
             self._select()
         elif self._state == "NAVIGATE":
+            if self._target_odom is not None:
+                self._nav.cancel()
+                self._transition("GOAL_NAV", "target confirmed; exploration suspended")
+                return
             self._monitor()
-        # ESCAPE: driven by _cmd_tick; DONE: terminal
+        elif self._state == "GOAL_NAV":
+            self._monitor_target()
+        # ESCAPE: driven by _cmd_tick; DONE / FOUND: terminal
 
     def _select(self):
         robot = self._robot_xy()
@@ -508,6 +561,101 @@ class VlfmNode(Node):
             why += " -> visited; frontier around it retired"
         self._transition("SELECT", why)
         self._select()  # no dead tick: pick the next frontier immediately
+
+    # ------------------------------------------------------------ object goal
+    def _on_target(self, msg: PoseStamped):
+        """Collect detections until enough of them agree on one place.
+
+        The VLM fires on a few percent of frames when the target is in view, so hits
+        arrive in bursts as the robot looks at the thing. One hit is not enough to end a
+        run on -- a single false positive would send the robot to the wrong room and stop
+        there -- so wait for ``target_confirm_n`` of them, close together in both time and
+        space, before committing.
+        """
+        if self._target_odom is not None:
+            return  # already committed; refinement happens in _monitor_target
+        try:
+            t = self._tf_buf.lookup_transform(
+                "odom", msg.header.frame_id, rclpy.time.Time()).transform
+        except Exception:
+            return
+        # map -> odom is a planar rigid transform here; apply it directly.
+        yaw = math.atan2(2 * (t.rotation.w * t.rotation.z), 1 - 2 * t.rotation.z**2)
+        c, sn = math.cos(yaw), math.sin(yaw)
+        px, py = msg.pose.position.x, msg.pose.position.y
+        xy = np.array([t.translation.x + c * px - sn * py,
+                       t.translation.y + sn * px + c * py])
+
+        now = self._now()
+        window = float(self._pget("target_confirm_window_s"))
+        self._target_hits = [(ht, h) for ht, h in self._target_hits if now - ht < window]
+        self._target_hits.append((now, xy))
+
+        near = [h for _, h in self._target_hits
+                if float(np.hypot(*(h - xy))) < float(self._pget("target_cluster_m"))]
+        if len(near) >= int(self._pget("target_confirm_n")):
+            self._target_odom = np.mean(near, axis=0)
+            self.get_logger().info(
+                f"target confirmed from {len(near)} detections"
+                f" (odom {self._target_odom[0]:.2f}, {self._target_odom[1]:.2f})")
+
+    def _target_map_xy(self):
+        """The confirmed target, re-expressed in map. None while TF is unavailable."""
+        if self._target_odom is None:
+            return None
+        try:
+            t = self._tf_buf.lookup_transform("map", "odom", rclpy.time.Time()).transform
+        except Exception:
+            return None
+        yaw = math.atan2(2 * (t.rotation.w * t.rotation.z), 1 - 2 * t.rotation.z**2)
+        c, sn = math.cos(yaw), math.sin(yaw)
+        px, py = self._target_odom
+        return np.array([t.translation.x + c * px - sn * py,
+                         t.translation.y + sn * px + c * py])
+
+    def _monitor_target(self):
+        """Drive to the object and stop there. Frontier selection is suspended.
+
+        The goal is the object itself -- the wall cell the detection bearing struck --
+        exactly as a frontier goal is the frontier cell, and arrival is the same 0.4 m.
+        Nothing is retired or blacklisted here: this state ends the run either by
+        arriving or by giving the target up.
+        """
+        tgt = self._target_map_xy()
+        robot = self._robot_xy()
+        if tgt is None or robot is None:
+            return
+
+        if float(np.hypot(*(robot - tgt))) < float(self._pget("goal_reached_m")):
+            self._nav.cancel()
+            self._transition("FOUND", f"target reached at ({tgt[0]:.2f}, {tgt[1]:.2f})")
+            self._cmd_pub.publish(Twist())
+            return
+
+        if self._stuck():
+            self._begin_escape_from_stuck()
+            return
+
+        s = self._nav.state
+        if s is NavState.ABORTED or s is NavState.REJECTED:
+            # Unreachable from here. Hand the run back to exploration rather than sit on
+            # it -- more of the map may open a way in, and the detection stands.
+            self._target_odom = None
+            self._target_hits.clear()
+            self._target_sent = None
+            self._transition("SELECT", "target unreachable; back to exploring")
+            return
+
+        if (
+            self._target_sent is None
+            or float(np.hypot(*(tgt - self._target_sent)))
+            > float(self._pget("target_update_m"))
+            or s in (NavState.SUCCEEDED, NavState.IDLE)
+        ):
+            yaw = math.atan2(tgt[1] - robot[1], tgt[0] - robot[0])
+            self._nav.go_to(float(tgt[0]), float(tgt[1]), yaw)
+            self._target_sent = tgt
+            self._goal_xy = (float(tgt[0]), float(tgt[1]))
 
     def _frontier_consumed(self) -> bool:
         """True when no frontier cell remains near the current goal."""

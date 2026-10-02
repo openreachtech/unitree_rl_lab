@@ -182,5 +182,35 @@ check("value 1.0 does NOT win a 6 m detour",
       sel.choose(np.array([[2.0, 0.0], [8.0, 0.0]]), np.array([0.0, 1.0]),
                  np.array([0.0, 0.0]), 0.4) == 0)
 
+# ------------------------------------------- object goal: map <-> odom round trip
+# GOAL_NAV holds the confirmed target in odom so a loop closure moves it correctly, and
+# re-expresses it in map to drive at it. Both halves are hand-rolled planar transforms
+# in vlfm_node; get a sign wrong and the robot walks to a mirrored place, with nothing
+# in any log to say so. This pins the maths those two functions use.
+
+
+def map_to_odom(xy, t_xy, t_yaw):
+    c, sn = math.cos(t_yaw), math.sin(t_yaw)
+    return np.array([t_xy[0] + c * xy[0] - sn * xy[1],
+                     t_xy[1] + sn * xy[0] + c * xy[1]])
+
+
+for t_xy, t_yaw in [((0.0, 0.0), 0.0), ((1.5, -2.0), 0.0),
+                    ((0.0, 0.0), math.pi / 3), ((-3.0, 4.0), -2.2)]:
+    pt = np.array([2.3, -1.4])
+    # map -> odom with the inverse transform, then odom -> map with the forward one
+    inv_yaw = -t_yaw
+    c, sn = math.cos(inv_yaw), math.sin(inv_yaw)
+    inv_xy = (-(c * t_xy[0] - sn * t_xy[1]), -(sn * t_xy[0] + c * t_xy[1]))
+    back = map_to_odom(map_to_odom(pt, inv_xy, inv_yaw), t_xy, t_yaw)
+    check(f"map<->odom round trip survives ({t_xy}, {math.degrees(t_yaw):.0f} deg)",
+          bool(np.allclose(back, pt, atol=1e-9)), f"{back} vs {pt}")
+
+# A pure odom shift must carry the target with it -- that is the whole reason the point
+# is kept in odom rather than map.
+moved = map_to_odom(np.array([2.0, 0.0]), (0.5, 0.0), 0.0)
+check("a map->odom shift moves the target by the same amount",
+      bool(np.allclose(moved, [2.5, 0.0])), f"{moved}")
+
 print("\n" + ("ALL PASS" if not _fails else f"{len(_fails)} FAILED: {_fails}"))
 sys.exit(1 if _fails else 0)
