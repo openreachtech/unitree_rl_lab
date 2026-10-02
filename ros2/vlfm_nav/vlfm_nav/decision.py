@@ -20,10 +20,11 @@ import numpy as np
 
 
 class FrontierSelector:
-    def __init__(self, blacklist_radius_m: float = 0.15):
+    def __init__(self, blacklist_radius_m: float = 0.15, distance_cost_per_m: float = 0.25):
         self._blacklist: list[tuple[float, float, float]] = []  # failures (x, y, created)
         self._visited: list[tuple[float, float, float]] = []  # arrivals (x, y, created)
         self._radius = blacklist_radius_m
+        self._dist_cost = distance_cost_per_m
 
     # ---------------------------------------------------------------- recording
     def blacklist(self, x: float, y: float, now: float) -> None:
@@ -72,8 +73,14 @@ class FrontierSelector:
         there and re-targeting it would complete instantly and loop.
 
         Score = value - distance-cost. With uniform (zero) values this is
-        nearest-first; a VLM value in [0, 1] outweighs up to ~10 m of detour
-        (cost = 0.1/m), the same order of trade-off VLFM's value map induces.
+        nearest-first; a VLM value in [0, 1] buys up to ``1 / distance_cost_per_m``
+        metres of detour.
+
+        0.25/m (so a full point of value is worth 4 m) rather than VLFM's effective
+        0.1/m. The papers tune that against Habitat scenes; kujiale is 16 x 14 m, where
+        10 m of detour is most of the diagonal and a marginally better score would send
+        the robot across the flat and back. Four metres is roughly "the next room", which
+        is the decision this trade-off should actually be making.
         """
         if len(goals_xy) == 0:
             return None
@@ -81,6 +88,6 @@ class FrontierSelector:
         eligible = (~self._blocked(goals_xy)) & (d >= reached_radius_m)
         if not eligible.any():
             return None
-        score = values - 0.1 * d
+        score = values - self._dist_cost * d
         score[~eligible] = -np.inf
         return int(np.argmax(score))

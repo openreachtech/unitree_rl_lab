@@ -8,8 +8,8 @@
 #   controller consuming /cmd_vel.
 #
 # Controller: MPPI in DiffDrive mode (2026-09-30). Omni was dropped because the
-# footprint is 0.85 x 0.45 m: moving forward sweeps 0.45 m, moving sideways sweeps
-# 0.85 m -- wider than an interior doorway. MPPI could not know that, because
+# footprint is 0.80 x 0.40 m: moving forward sweeps 0.40 m, moving sideways sweeps
+# 0.80 m -- wider than an interior doorway. MPPI could not know that, because
 # ObstaclesCritic runs with consider_footprint: false, i.e. the robot is a point
 # against an isotropic inflation, so heading has zero effect on obstacle cost. The
 # result was observed repeatedly: the robot crabs sideways into a door frame and
@@ -51,7 +51,14 @@ controller_server:
       plugin: "nav2_mppi_controller::MPPIController"
       time_steps: 30
       model_dt: 0.1 # must equal the 10 Hz controller period
-      batch_size: 800
+      # 100, down from 800 (Nav2's default is 2000), to pay for consider_footprint on a
+      # machine that is already short of CPU. MPPI is a sampling optimiser: this is how
+      # many candidate velocity sequences it scores per cycle, so fewer samples cover the
+      # control space more thinly. Worth knowing which way that cuts here -- threading a
+      # chair-to-wall slot is a narrow solution, exactly the kind a thin sample set can
+      # miss, and the symptom would be the same stall this change exists to fix. If the
+      # robot still balks at gaps, raise this before suspecting anything else.
+      batch_size: 100
       vx_std: 0.2
       vy_std: 0.15
       wz_std: 0.35
@@ -105,7 +112,16 @@ controller_server:
         cost_power: 1
         repulsion_weight: 1.5
         critical_weight: 20.0
-        consider_footprint: false
+        # true since 2026-10-02. With the circular approximation MPPI has no idea the
+        # robot is narrow end-on, so a gap it fits through lengthwise still reads as
+        # expensive inflated space from the centre point alone -- and with
+        # critical_weight 20 against PreferForward's 3, standing still wins. Observed
+        # directly: a path was planned through the slot between a chair and a wall and
+        # the robot stopped in front of it and marched on the spot. Nav2 flags the same
+        # thing at startup ("Inconsistent configuration in collision checking").
+        # Checking the real rectangle costs CPU, which this machine is short of -- drop
+        # batch_size if the controller stops making its 10 Hz.
+        consider_footprint: true
         collision_cost: 10000.0
         collision_margin_distance: 0.10
         near_goal_distance: 0.5

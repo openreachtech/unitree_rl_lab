@@ -23,9 +23,15 @@
       ang_vel_z: [-1.0, 1.0]
 
     # Footprint (m): body ~0.70 x 0.31 plus margin.
+    #
+    # 0.80 x 0.40 since 2026-10-02, down from 0.85 x 0.45. The old width put the
+    # inscribed radius at 0.225 m, so Nav2 treated anything inside 0.225 m of an
+    # obstacle as untraversable and a gap had to clear 0.45 m before a path could even
+    # exist. Observed: the robot stalled in front of the slot between a chair and a wall
+    # and marched in place. 0.40 still leaves 9 cm of margin on a 31 cm body.
     footprint:
-      length: 0.85
-      width: 0.45
+      length: 0.80
+      width: 0.40
 
     # pointcloud_to_laserscan z band, in base_frame coordinates. Deliberately wide:
     # the real height selection happens upstream in a gravity-aligned frame (sim:

@@ -20,6 +20,10 @@ Publishes (Isaac's bundled rclpy, py3.11 -- so standard messages only):
   /vlfm/camera/image_raw       sensor_msgs/Image        front RGB, `camera_optical` frame (M5 VLM input)
   /vlfm/camera/camera_info     sensor_msgs/CameraInfo   intrinsics, derived from the cfg's focal/aperture
 
+The two camera topics are only filled while something is subscribed -- see
+SimBridge.image_wanted. Plain frontier exploration subscribes to neither, so the camera
+costs nothing until a VLM scorer or a bag recorder asks for it.
+
 Subscribes:
   /cmd_vel             geometry_msgs/Twist       written into the base_velocity command term:
                                                  clamped to the training limit ranges, small
@@ -219,6 +223,8 @@ SDK_JOINT_NAMES = [
 ]
 
 GRAVITY = 9.81
+FALL_TILT_RAD = math.radians(45.0)
+"""Trunk tilt that counts as "over" for the notice above. Not a termination."""
 
 
 def _stamp(t: float) -> TimeMsg:
@@ -395,6 +401,20 @@ class SimBridge(Node):
         info.p = [fx, 0.0, cx, 0.0, 0.0, fx, cy, 0.0, 0.0, 0.0, 1.0, 0.0]
         self.caminfo_msg = info
 
+    def image_wanted(self) -> bool:
+        """Is anyone actually going to read the picture?
+
+        A frame is 884 kB and costs a GPU-to-host copy before any of it reaches the wire,
+        so sending it to nobody is the most expensive no-op in this loop. Exploring
+        without a target starts no VLM and records no bag, and then nothing subscribes --
+        so gating on the subscriber count turns the camera off by itself, and turns it
+        back on the instant a scorer or a `ros2 bag record` shows up. Both topics are
+        gated together to keep their counts equal, which is the check that caught the
+        2026-09-30 frame loss.
+        """
+        return (self.pub_image.get_subscription_count()
+                + self.pub_caminfo.get_subscription_count()) > 0
+
     def publish_image(self, t: float, rgb: np.ndarray):
         """`rgb` is (H, W, 3) uint8, C-contiguous. No cv_bridge here -- it is not in
         Isaac's bundled py3.11 ROS -- but an Image is a header plus a byte buffer, the
@@ -498,6 +518,7 @@ def main():
         print(f"[INFO] task '{args_cli.task}' has no `front_cam`; no image published.")
     sim_t = 0.0
     step_i = 0
+    fallen = False
     cloud_buf: list[torch.Tensor] = []
     prev_lin_vel_w = robot.data.root_lin_vel_w[0].clone()
     gravity_w = torch.tensor([0.0, 0.0, GRAVITY], device=device)
@@ -525,6 +546,21 @@ def main():
             actions = policy(obs)
             obs, _, dones, _ = env.step(actions)
         sim_t += dt
+
+        # Fall notice, not a termination. Nothing stops the run any more (see
+        # velocity_env_cfg_explore.py), so this is the only mark left saying when the
+        # robot went over -- enough to find the moment in a bag or line it up against
+        # what the camera saw.
+        tilt = float(torch.acos(torch.clamp(-robot.data.projected_gravity_b[0, 2], -1.0, 1.0)))
+        if tilt > FALL_TILT_RAD and not fallen:
+            fallen = True
+            p = robot.data.root_pos_w[0]
+            print(f"[WARN] trunk tipped {math.degrees(tilt):.0f} deg at"
+                  f" ({float(p[0]):.2f}, {float(p[1]):.2f}, {float(p[2]):.2f}), sim t={sim_t:.1f}s."
+                  " NOT terminating -- the robot stays where it is so the fall can be looked at.")
+        elif tilt < FALL_TILT_RAD * 0.6 and fallen:
+            fallen = False
+            print(f"[INFO] back upright at sim t={sim_t:.1f}s")
 
         if dones[0]:
             # A reset teleports the robot home. LIO cannot track a teleport, so every
@@ -586,7 +622,7 @@ def main():
         # rendered buffer is shipped. Drop the alpha channel if the backend hands one
         # over, and make the slice contiguous before tobytes().
         step_i += 1
-        if cam_every and step_i % cam_every == 0:
+        if cam_every and step_i % cam_every == 0 and bridge.image_wanted():
             rgb = front_cam.data.output["rgb"][0, ..., :3]
             bridge.publish_image(sim_t, np.ascontiguousarray(rgb.cpu().numpy(), dtype=np.uint8))
 

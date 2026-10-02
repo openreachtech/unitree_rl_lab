@@ -90,7 +90,7 @@ from vlfm_nav.frontier import (
     has_frontier_near,
 )
 from vlfm_nav.nav_bridge import NavBridge, NavState
-from vlfm_nav.value_map import UniformValueMap
+from vlfm_nav.value_map import GridValueMap
 
 # Escape probe motions as unit commands (label, vx, vy, wz, priority). Scaled by the
 # escape_* speed parameters at runtime. Ordering intent: reversing out is the most
@@ -179,6 +179,14 @@ class VlfmNode(Node):
                 # consumed, failed = written off, and "no frontiers left" is the
                 # single termination concept.
                 ("blacklist_radius_m", 0.15),
+                # How much detour a point of VLM value is worth: 1 / 0.25 = 4 m. VLFM's
+                # own trade-off works out at ~10 m, which is most of kujiale's diagonal
+                # -- enough for a marginally better score to send the robot across the
+                # flat and back. 4 m is about "the next room".
+                ("distance_cost_per_m", 0.25),
+                # Frontier cells jitter as the map grows, so sample a neighbourhood
+                # rather than one cell of the value grid.
+                ("value_sample_radius_m", 0.5),
                 # Amnesty window for the sealed-start case: entries younger than
                 # this are dropped after an all-blocked escape (see _select).
                 ("amnesty_window_s", 180.0),
@@ -204,8 +212,8 @@ class VlfmNode(Node):
                 # EDGE along that direction (rectangle support: hl*|fwd|+hw*|lat|,
                 # plus margin); a dedicated costmap layer (contact_layer, marking
                 # only, never raytraced away) keeps the planner off it.
-                ("footprint_half_length_m", 0.425),
-                ("footprint_half_width_m", 0.225),
+                ("footprint_half_length_m", 0.40),
+                ("footprint_half_width_m", 0.20),
                 ("contact_mark_margin_m", 0.12),
                 # marks expire: stale ones from long-fixed situations otherwise
                 # accumulate into phantom pens (see _mark_contact)
@@ -224,8 +232,24 @@ class VlfmNode(Node):
         self._tf_buf = tf2_ros.Buffer()
         self._tf = tf2_ros.TransformListener(self._tf_buf, self)
         self._nav = NavBridge(self)
-        self._selector = FrontierSelector(blacklist_radius_m=float(self._pget("blacklist_radius_m")))
-        self._value_map = UniformValueMap()
+        self._selector = FrontierSelector(
+            blacklist_radius_m=float(self._pget("blacklist_radius_m")),
+            distance_cost_per_m=float(self._pget("distance_cost_per_m")),
+        )
+        # Reads the two grids the VLM node publishes. With no VLM running it returns 0
+        # for everything, leaving selection to distance -- so the stack needs no switch
+        # to run without the model.
+        self._value_map = GridValueMap(radius_m=float(self._pget("value_sample_radius_m")))
+        self.create_subscription(
+            OccupancyGrid, "/vlfm/value_map",
+            lambda m: self._value_map.set_value(
+                np.asarray(m.data, dtype=np.int16).reshape(m.info.height, m.info.width),
+                (m.info.origin.position.x, m.info.origin.position.y), m.info.resolution), 1)
+        self.create_subscription(
+            OccupancyGrid, "/vlfm/value_confidence",
+            lambda m: self._value_map.set_confidence(
+                np.asarray(m.data, dtype=np.int16).reshape(m.info.height, m.info.width),
+                (m.info.origin.position.x, m.info.origin.position.y), m.info.resolution), 1)
 
         self._grid = None
         self._grid_meta = None  # (resolution, origin_x, origin_y)

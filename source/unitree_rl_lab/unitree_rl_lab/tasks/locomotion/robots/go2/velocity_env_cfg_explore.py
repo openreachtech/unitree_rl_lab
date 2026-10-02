@@ -20,10 +20,17 @@ What changes against the phase config, and why:
 
   - ``bad_orientation`` off: a 45.8 deg tilt is a posture, not a fall. Ending a
     15-minute exploration for one is a bad trade.
-  - ``base_contact`` threshold 1 -> 300 N: the stock 1 N fires on any brush, and a blind
-    robot in a furnished apartment brushes things constantly. The whole robot is ~15 kg
-    (~147 N), so 300 N is past its own static weight -- it takes a fall's impact, not a
-    wall.
+  - ``base_contact`` off too (2026-10-02). It was briefly raised 1 -> 300 N so only a
+    real impact would fire, and it duly fired -- but a termination is not a diagnosis.
+    Ending the episode teleports the robot home, which is precisely what destroys the
+    evidence: the posture it landed in and what it was tangled with. With nothing left to
+    terminate on, a fallen robot simply stays down where it fell, the map stays valid,
+    and the fall can be looked at. play_ros2.py prints a (non-terminating) notice when
+    the trunk tips past 45 deg, so the moment is still findable in a log or a bag.
+
+    The cost is that a run no longer ends itself -- exploration just stops making
+    progress. That is the right trade while falls are the thing under investigation; put
+    one of these back when they are not.
 * **Curriculum off**: one terrain level, commands come from /cmd_vel, nothing to ratchet.
 * **Front RGB camera on**: the VLM layer (M5) scores what the robot sees. Only the
   nav worlds carry it -- the phase configs train with thousands of environments and
@@ -70,7 +77,7 @@ class RobotEnvCfgMid360Explore(RobotEnvCfgMid360Phase4):
         # see module docstring
         self.events.push_robot = None
         self.terminations.bad_orientation = None
-        self.terminations.base_contact.params["threshold"] = 300.0
+        self.terminations.base_contact = None
         self.curriculum.terrain_levels = None
         self.curriculum.lin_vel_cmd_levels = None
         # Front RGB camera for the VLM layer (M5). Attached here rather than in the

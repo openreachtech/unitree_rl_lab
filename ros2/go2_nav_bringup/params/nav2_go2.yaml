@@ -1,7 +1,7 @@
 # Go2 overlay for nav2_common.yaml -- loaded after it, so these keys win.
 # Velocity limits are the Go2-Blind-GRU-Phase4 training envelope (limit_ranges);
 # play_ros2.py clamps /cmd_vel to the same values, so Nav2 and the policy agree.
-# Footprint: 0.85 x 0.45 m (body plus margin), from go2_nav_bringup/config/go2.yaml.
+# Footprint: 0.80 x 0.40 m (body plus margin), from go2_nav_bringup/config/go2.yaml.
 
 controller_server:
   ros__parameters:
@@ -9,7 +9,7 @@ controller_server:
       vx_max: 1.0 # limit_ranges max; the bridge lifts smaller commands to >=0.6
       vx_min: -0.3
       # 0.0: DiffDrive motion model (nav2_common.yaml) drops lateral control --
-      # sideways the 0.85 x 0.45 m footprint does not fit through a doorway.
+      # sideways the 0.80 x 0.40 m footprint does not fit through a doorway.
       vy_max: 0.0
       wz_max: 0.9
       # sample wider around the previous solution so the optimizer actually finds
@@ -24,10 +24,10 @@ local_costmap:
   local_costmap:
     ros__parameters:
       robot_base_frame: base
-      footprint: "[[0.425, 0.225], [0.425, -0.225], [-0.425, -0.225], [-0.425, 0.225]]"
+      footprint: "[[0.40, 0.20], [0.40, -0.20], [-0.40, -0.20], [-0.40, 0.20]]"
 
 global_costmap:
   global_costmap:
     ros__parameters:
       robot_base_frame: base
-      footprint: "[[0.425, 0.225], [0.425, -0.225], [-0.425, -0.225], [-0.425, 0.225]]"
+      footprint: "[[0.40, 0.20], [0.40, -0.20], [-0.40, -0.20], [-0.40, 0.20]]"
