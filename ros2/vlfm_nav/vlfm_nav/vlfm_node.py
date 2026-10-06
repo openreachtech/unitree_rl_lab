@@ -71,7 +71,7 @@ position was bad, not the goals' fault) are dropped once before concluding.
 
     ros2 run vlfm_nav vlfm_node --ros-args -p use_sim_time:=true
 
-The target comes from /vlfm/target, published by the SigLIP 2 scorer (see
+Detections come from /vlfm/detection, published by the SigLIP 2 scorer (see
 scripts/ros2/vlm_node.py); with no scorer running that topic never appears and the node
 behaves exactly as it did before M5. Confirmation needs several detections agreeing in
 time and space -- one false positive must not be able to end a run in the wrong room.
@@ -211,8 +211,15 @@ class VlfmNode(Node):
                 # positive would otherwise end exploration at the wrong place, and the
                 # VLM fires on about 3-6% of frames for a target that IS present, so
                 # asking for a few nearby hits costs little and rules that out.
+                #
+                # The window has to be read against the SCORING rate, not the frame
+                # rate. The scorer is motion-gated (0.5 m / 0.35 rad) on top of its
+                # rate cap, and measures 0.12 Hz on a live run -- about two scorings
+                # per 15 s, so the original 15 s window asked for three hits out of
+                # two chances and could essentially never fire. 30 s is the smallest
+                # window that gives three scorings room to happen.
                 ("target_confirm_n", 3),
-                ("target_confirm_window_s", 15.0),
+                ("target_confirm_window_s", 30.0),
                 ("target_cluster_m", 1.0),
                 # Re-issue the Nav2 goal only when the estimate really moves. Every
                 # detection refines it slightly, and resending on each one makes MPPI
@@ -277,7 +284,7 @@ class VlfmNode(Node):
                 np.asarray(m.data, dtype=np.int16).reshape(m.info.height, m.info.width),
                 (m.info.origin.position.x, m.info.origin.position.y), m.info.resolution), 1)
         self.create_subscription(
-            PoseStamped, "/vlfm/target",
+            PoseStamped, "/vlfm/detection",
             self._on_target,
             QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                        durability=DurabilityPolicy.TRANSIENT_LOCAL))
@@ -309,6 +316,15 @@ class VlfmNode(Node):
         self._cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
         self._marker_pub = self.create_publisher(MarkerArray, "/vlfm/markers", 1)
         self._contact_pub = self.create_publisher(PointCloud2, "/vlfm/contact_obstacles", 1)
+        # The CONFIRMED target: published once, when the detections have agreed and the
+        # robot is actually about to drive at it. Anything on this topic is a place the
+        # run is committed to -- which is the whole reason it is not the same topic the
+        # scorer publishes its individual crossings on. Latched, so a panel opened later
+        # still sees it.
+        self._target_pub = self.create_publisher(
+            PoseStamped, "/vlfm/target",
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                       durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self._contact_pts: list[tuple[np.ndarray, float]] = []  # (map xy, stamp); expire after contact_ttl_s
         self._all_blocked_since = None  # when SELECT first found nothing eligible
         self._amnesty_used = False  # one blacklist amnesty per all-blocked episode
@@ -598,6 +614,19 @@ class VlfmNode(Node):
             self.get_logger().info(
                 f"target confirmed from {len(near)} detections"
                 f" (odom {self._target_odom[0]:.2f}, {self._target_odom[1]:.2f})")
+            self._publish_confirmed_target()
+
+    def _publish_confirmed_target(self):
+        """Announce the committed target on /vlfm/target."""
+        xy = self._target_map_xy()
+        if xy is None:
+            return
+        m = PoseStamped()
+        m.header.frame_id = "map"
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.pose.position.x, m.pose.position.y = float(xy[0]), float(xy[1])
+        m.pose.orientation.w = 1.0
+        self._target_pub.publish(m)
 
     def _target_map_xy(self):
         """The confirmed target, re-expressed in map. None while TF is unavailable."""

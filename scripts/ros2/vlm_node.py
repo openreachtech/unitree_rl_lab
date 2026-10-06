@@ -21,8 +21,10 @@ passes over the same trajectory, not many trajectories.
 Publishes:
     /vlfm/value_map         nav_msgs/OccupancyGrid   0-100 where looked at, -1 elsewhere
     /vlfm/value_confidence  nav_msgs/OccupancyGrid   how hard it was looked at
-    /vlfm/vlm/debug_image   sensor_msgs/Image        strips, scores, detection marked
-    /vlfm/target            geometry_msgs/PoseStamped the detected object (map frame)
+    /vlfm/vlm/debug/image_raw    sensor_msgs/Image       strips, scores, detection marked
+    /vlfm/vlm/debug/camera_info  sensor_msgs/CameraInfo  forwarded; Foxglove wants the pair
+    /vlfm/detection         geometry_msgs/PoseStamped one threshold crossing (map frame).
+                                                      NOT a goal -- see the publisher.
     /vlfm/vlm/status        std_msgs/String          one line per scored frame
 
 Why two grids: a low value alone is ambiguous -- it can mean "looked at, nothing there"
@@ -54,7 +56,7 @@ from PIL import Image as PILImage  # noqa: E402
 from PIL import ImageDraw  # noqa: E402
 from rclpy.node import Node  # noqa: E402
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy  # noqa: E402
-from sensor_msgs.msg import Image  # noqa: E402
+from sensor_msgs.msg import CameraInfo, Image  # noqa: E402
 from std_msgs.msg import String  # noqa: E402
 from tf2_ros import Buffer, TransformListener  # noqa: E402
 
@@ -131,17 +133,39 @@ class VlmNode(Node):
         map_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                              durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.create_subscription(Image, a.image_topic, self.on_image, img_qos)
+        # Forwarded so the debug image has a CameraInfo beside it under the same
+        # namespace. See the publisher below for why that matters.
+        self.caminfo = None
+        self.create_subscription(
+            CameraInfo, a.image_topic.rsplit("/", 1)[0] + "/camera_info",
+            lambda m: setattr(self, "caminfo", m), img_qos)
         self.create_subscription(OccupancyGrid, "/map", self.on_map, map_qos)
 
         self.pub_value = self.create_publisher(OccupancyGrid, "/vlfm/value_map", 1)
         self.pub_conf = self.create_publisher(OccupancyGrid, "/vlfm/value_confidence", 1)
-        self.pub_debug = self.create_publisher(Image, "/vlfm/vlm/debug_image", img_qos)
+        # Named <ns>/image_raw with a <ns>/camera_info beside it, not /vlfm/vlm/debug_image.
+        # Foxglove's Image panel offers the one shape and not the other -- established by
+        # straight A/B on 2026-10-02/05 with the message bytes identical either way
+        # (768x384 rgb8, step 2304, same frame), the topic advertised, and data flowing:
+        # renamed to this it appears, renamed back it does not. Do not "tidy" this back
+        # to a flat name.
+        self.pub_debug = self.create_publisher(Image, "/vlfm/vlm/debug/image_raw", img_qos)
+        self.pub_debug_info = self.create_publisher(
+            CameraInfo, "/vlfm/vlm/debug/camera_info", img_qos)
+        # RAW detections, one per frame that crosses the threshold -- NOT the thing the
+        # robot drives to. The explorer only commits after several of these agree in
+        # time and space (target_confirm_n / _window_s / _cluster_m), and publishes the
+        # committed one on /vlfm/target. Keeping the two apart matters for more than
+        # tidiness: a single crossing used to show up in Foxglove as an arrow that
+        # looked exactly like a goal, so every unconfirmed glimpse read as "the robot
+        # found it and is ignoring it".
+        #
         # Latched: a detection is a single message fired the instant it happens, and a
         # panel opened a minute later should still see where the thing was. Without
         # transient-local the topic looks permanently empty to anyone who was not already
         # watching at exactly the right moment.
         self.pub_target = self.create_publisher(
-            PoseStamped, "/vlfm/target",
+            PoseStamped, "/vlfm/detection",
             QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                        durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.pub_status = self.create_publisher(String, "/vlfm/vlm/status", 10)
@@ -386,6 +410,9 @@ class VlmNode(Node):
                     is_bigendian=0, step=W * 3)
         out.data = np.asarray(d, dtype=np.uint8).tobytes()
         self.pub_debug.publish(out)
+        if self.caminfo is not None:
+            self.caminfo.header = msg.header
+            self.pub_debug_info.publish(self.caminfo)
 
     def publish_maps(self):
         if self.n_scored == 0:
@@ -426,7 +453,11 @@ def main():
     p.add_argument("--strips", type=int, default=4)
     p.add_argument("--move-gate", type=float, default=0.5, help="metres before re-scoring")
     p.add_argument("--turn-gate", type=float, default=0.35, help="radians before re-scoring")
-    p.add_argument("--max-hz", type=float, default=2.0)
+    p.add_argument("--max-hz", type=float, default=1.0,
+                   help="ceiling on scoring rate. Not the real limiter: the motion gate"
+                        " below throws most frames away first, and the measured rate on a"
+                        " live run is 0.12 Hz. This only caps the burst when the robot is"
+                        " turning fast enough to clear the gate every frame.")
     p.add_argument("--value-range", type=float, default=5.0, help="how far the value fan reaches")
     p.add_argument("--detect-range", type=float, default=8.0, help="how far to raycast for the object")
     p.add_argument("--map-size", type=float, default=60.0)

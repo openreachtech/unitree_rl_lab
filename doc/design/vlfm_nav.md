@@ -447,17 +447,19 @@ TiledCameraCfg(
 | `/vlfm/vlm/debug_image` | sensor_msgs/Image | 4帯の境界線と各スコア、検出マークを焼き込んだ画像 |
 | `/vlfm/value_map` | nav_msgs/OccupancyGrid | 目標の方向が高くなっているか(0-1 を x100) |
 | `/vlfm/value_confidence` | nav_msgs/OccupancyGrid | **壁の向こうに染み出していないか**。遮蔽カットの検証はこれでしかできない |
-| `/vlfm/target` | geometry_msgs/PoseStamped | 検出した目標物の座標 = ゴール |
+| `/vlfm/detection` | geometry_msgs/PoseStamped | 閾値を超えた検知 1 件。**ゴールではない** |
+| `/vlfm/target` | geometry_msgs/PoseStamped | 確定した目標物の座標 = 実際に向かうゴール |
 | `/vlfm/status` | std_msgs/String | モード遷移 |
 
-**Foxglove で画像トピックが選べないときは、まずパネル側の設定を疑うこと**(2026-10-02)。
-`/vlfm/vlm/debug_image` が Image パネルの候補に出ない、という形で半日溶かした。
-メッセージは生カメラと完全に同一(768x384 rgb8, step 2304, 同じ frame_id)、トピックは
-advertise 済み、配信レートも出ている — つまりサーバ側は最初から正しく、原因は Foxglove
-の操作方法だった。トピック名を `<名前空間>/image_raw` の規約に合わせる、対になる
-`camera_info` を足す、といった対処をこの過程で試したが、**いずれも原因ではなく、
-確認後に差し戻している**。`ros2 topic hz` と `ros2 topic echo` でサーバ側の健全性が
-取れたら、そこから先はクライアントを疑うのが早い。
+**デバッグ画像は `<名前空間>/image_raw` + `<名前空間>/camera_info` の対で出すこと**
+(2026-10-02 に判明、10-05 に A/B で確定)。Foxglove の Image パネルはこの形のものしか
+候補に出さない。`/vlfm/vlm/debug_image` という名前では、メッセージが生カメラと完全に
+同一(768x384 rgb8, step 2304, 同じ frame_id)で、トピックが advertise されていて、
+配信レートも出ていても、ドロップダウンに現れない。
+
+一度「名前ではなくパネルの設定が原因」と結論して名前を戻したが、戻した途端にまた
+消えた。改名すると出る / 戻すと消える、が両方向で再現している。**フラットな名前に
+"整理" し直さないこと。**
 
 値と信頼度を2本出すのが重要 — 値だけでは「見た結果として低い」のか「まだ誰も
 見ていない」のかが区別できない。`cv_bridge` は使わず、既存の `PointCloud2` と同じく
