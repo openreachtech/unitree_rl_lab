@@ -246,7 +246,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
     observation_renames = None
-    if args_cli.deploy_keyboard_commands:
+    # skip the rename for tasks without velocity commands (e.g. jump)
+    policy_obs_terms = env.unwrapped.observation_manager.active_terms.get("policy", [])
+    if args_cli.deploy_keyboard_commands and "velocity_commands" in policy_obs_terms:
         observation_renames = {"velocity_commands": "keyboard_velocity_commands"}
     export_deploy_cfg(env.unwrapped, log_dir, observation_renames=observation_renames)
     # copy the environment configuration file to the log directory
