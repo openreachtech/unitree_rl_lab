@@ -10,10 +10,22 @@ and a curriculum decays that force to zero as the policy succeeds on its own.
 - **Phase 1** (`jump_env_cfg_phase1.py`) — quiet standing with the final jump
   observation layout. A warm-start for Phase 2 (`--previous-task Go2w-Jump-Phase1
   --resume`).
-- **Phase 2** (`jump_env_cfg_phase2.py`) — unified assisted **jump + backflip +
-  sideflip**, one motion sampled per environment per episode. `TRAIN_JUMP /
-  TRAIN_BACKFLIP / TRAIN_SIDEFLIP` at the top of the file toggle which motions are in
-  the mix.
+- **Jump** (`jump_env_cfg_jump.py`, `Go2w-Jump`) — vertical jump only, with go2's
+  `Go2-Jump-60` reward fixes, a measured standing height (0.405), a horizontal-drift
+  penalty for the wheels, overshoot-tolerant success and a 0.005 assist decay. The
+  recipe base for the two flips.
+- **Backflip** (`jump_env_cfg_backflip.py`, `Go2w-Backflip`) — Jump's recipe, one turn of
+  pitch: 0.30 m launch + 200 N post-take-off pitch couple on top of the front-hip force.
+- **Sideflip** (`jump_env_cfg_sideflip.py`, `Go2w-Sideflip`) — Jump's recipe, one turn of
+  roll: 0.50 m launch + 65 N*m whole-body spin. go2's hip-force assist cannot roll go2w
+  (roll inertia 4x go2's, sitting in the heavy calves and wheels); see that file.
+- **Phase 2** (`jump_env_cfg_phase2.py`, `Go2w-Jump-Phase2`) — the three above in one
+  policy, one motion sampled per environment per episode, every per-motion setting read
+  from the single-motion configs.
+- `jump_env_cfg_flip_base.py` — the original go2 Phase 2 port, now only a shared base.
+  As ported it never left full assist on go2w (success 0.33).
+
+All of them resume from Phase 1 (`--previous-task Go2w-Jump-Phase1 --resume`).
 
 The robot-agnostic machinery (`../../mdp/`, `../../agents/`) is a verbatim copy of the
 go2 version — `JumpCommand` and all its force/curriculum logic operate on body names
@@ -49,7 +61,7 @@ velocity-controlled continuous joints. This mirrors the established split in
 7. **Registration** — `scripts/list_envs.py` now also walks `dynamic.robots` so
    `train.py` offers these task IDs.
 
-## Likely retuning points (assist/curriculum were tuned on go2)
+## Retuning points flagged at port time (since resolved per motion -- see each file)
 
 The force magnitudes, target height, and curriculum thresholds in `CommandsCfgPhase2`
 were tuned for the lighter, wheel-less go2 and are a starting point, not a solution:

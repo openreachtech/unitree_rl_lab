@@ -224,6 +224,21 @@ def flip_forward_axis_tilt_penalty(
     return torch.square(asset.data.projected_gravity_b[:, 0]) * attempted.float()
 
 
+def base_lin_vel_xy_l2(
+    env,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize horizontal base velocity (world frame).
+
+    A wheeled robot (go2w) can roll on its free wheels, so any fore-aft component of the
+    push-off turns into drift instead of being held by ground friction as a legged robot's
+    planted feet would. Measured in the world frame so pitching mid-air does not mix the
+    vertical take-off velocity into it.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    return torch.sum(torch.square(asset.data.root_lin_vel_w[:, :2]), dim=1)
+
+
 def non_target_angular_velocity_penalty(
     env,
     command_name: str | None = None,

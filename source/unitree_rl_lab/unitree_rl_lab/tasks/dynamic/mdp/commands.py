@@ -7,11 +7,14 @@ from collections.abc import Sequence
 from dataclasses import MISSING
 from typing import TYPE_CHECKING
 
+import isaaclab.sim as sim_utils
 import torch
 from isaaclab.assets import Articulation
 from isaaclab.managers import CommandTerm, CommandTermCfg
+from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.math import sample_uniform
+from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+from isaaclab.utils.math import matrix_from_quat, quat_apply, sample_uniform
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -99,6 +102,15 @@ class JumpCommand(CommandTerm):
                 saved_state["curriculum_success_count_by_motion"], dtype=torch.long, device=self.device
             )
 
+        self._uses_whole_body_spin = cfg.sideflip_spin_torque > 0.0
+        if self._uses_whole_body_spin:
+            # Static per-body mass properties for the whole-body spin; the COM-frame inertia
+            # is constant, only its orientation changes.
+            self._body_mass = self.robot.data.default_mass.to(self.device)
+            self._body_inertia = self.robot.data.default_inertia.to(self.device).reshape(
+                self.num_envs, -1, 3, 3
+            )
+
         self.metrics["max_height"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["success"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["assist_scale"] = torch.zeros(self.num_envs, device=self.device)
@@ -173,13 +185,16 @@ class JumpCommand(CommandTerm):
         self.target_pitch_turns[env_ids] = 0.0
         self.target_roll_turns[env_ids] = 0.0
 
+        # The whole-body spin writes every body, so it has to be cleared on every body too.
+        reset_body_ids = None if self._uses_whole_body_spin else self.body_ids
+        num_reset_bodies = self.robot.num_bodies if self._uses_whole_body_spin else len(self.body_ids)
         zero_forces = torch.zeros(
-            len(env_ids), len(self.body_ids), 3, dtype=torch.float, device=self.device
+            len(env_ids), num_reset_bodies, 3, dtype=torch.float, device=self.device
         )
         self.robot.set_external_force_and_torque(
             forces=zero_forces,
             torques=torch.zeros_like(zero_forces),
-            body_ids=self.body_ids,
+            body_ids=reset_body_ids,
             env_ids=env_ids,
             is_global=True,
         )
@@ -227,10 +242,26 @@ class JumpCommand(CommandTerm):
             # works for one turn and cannot work for two (0.36 s of flight demands
             # ~35 rad/s, against ~12.6 rad/s measured). Defaults to 0.0, so Phase 2 and
             # every existing flip task keep the previous behaviour exactly.
+            # Per-flip heights, so a mixed task can give each flip the air time its own
+            # assist was tuned for (go2w: backflip 0.30 m, sideflip 0.50 m). Unset (None)
+            # falls back to flip_target_height, i.e. the previous behaviour.
+            backflip_height = (
+                self.cfg.backflip_target_height
+                if self.cfg.backflip_target_height is not None
+                else self.cfg.flip_target_height
+            )
+            sideflip_height = (
+                self.cfg.sideflip_target_height
+                if self.cfg.sideflip_target_height is not None
+                else self.cfg.flip_target_height
+            )
+            flip_height = torch.where(
+                sampled_motion_codes == self.MOTION_BACKFLIP,
+                torch.full_like(sampled_height, backflip_height),
+                torch.full_like(sampled_height, sideflip_height),
+            )
             self.target_height[env_ids] = torch.where(
-                sampled_motion_codes == self.MOTION_JUMP,
-                sampled_height,
-                torch.full_like(sampled_height, self.cfg.flip_target_height),
+                sampled_motion_codes == self.MOTION_JUMP, sampled_height, flip_height
             )
             # The launch force follows `flip_launch_height` when one is given, so the force
             # can be sized for what it takes to get the robot airborne without dragging the
@@ -240,14 +271,12 @@ class JumpCommand(CommandTerm):
             # 0.66 m actually reached reads 0.012 instead of 0.975 against 0.60 m. Zero
             # means "same as the target", i.e. the previous behaviour exactly.
             launch_flip = (
-                self.cfg.flip_launch_height
+                torch.full_like(sampled_height, self.cfg.flip_launch_height)
                 if self.cfg.flip_launch_height > 0.0
-                else self.cfg.flip_target_height
+                else flip_height
             )
             self.launch_height[env_ids] = torch.where(
-                sampled_motion_codes == self.MOTION_JUMP,
-                sampled_height,
-                torch.full_like(sampled_height, launch_flip),
+                sampled_motion_codes == self.MOTION_JUMP, sampled_height, launch_flip
             )
             self.target_pitch_turns[env_ids] = torch.where(
                 sampled_motion_codes == self.MOTION_BACKFLIP, sampled_pitch, 0.0
@@ -302,9 +331,12 @@ class JumpCommand(CommandTerm):
             )
             & upright
         )
-        jump_target_reached = (
-            torch.abs(self.max_height - self.target_height) < self.cfg.height_tolerance
-        )
+        if self.cfg.success_allow_overshoot:
+            jump_target_reached = self.max_height > self.target_height - self.cfg.height_tolerance
+        else:
+            jump_target_reached = (
+                torch.abs(self.max_height - self.target_height) < self.cfg.height_tolerance
+            )
         pitch_target = self.target_pitch_turns * (2.0 * math.pi)
         roll_target = self.target_roll_turns * (2.0 * math.pi)
         backflip_target_reached = (
@@ -450,8 +482,12 @@ class JumpCommand(CommandTerm):
             force_per_body = (
                 self.cfg.sideflip_assist_force * self.assist_scale / len(self.sideflip_force_indices)
             )
+            # Added, not assigned: assigning overwrote the launch force on these bodies, so a
+            # sideflip given a height (flip_target_height) with sideflip_assist_force = 0
+            # lifted on one side only -- go2w measured an opposite-direction roll at take-off
+            # and max_height 0.13 m instead of the launch's ~0.6 m.
             for force_index in self.sideflip_force_indices:
-                forces[sideflip_mask, force_index, 2] = force_per_body * ramp_progress[sideflip_mask]
+                forces[sideflip_mask, force_index, 2] += force_per_body * ramp_progress[sideflip_mask]
 
             # Extra roll, added as a COUPLE: up on the sideflip bodies, down on the others.
             # The one-sided force above cannot be scaled up to buy more rotation, because it
@@ -477,19 +513,115 @@ class JumpCommand(CommandTerm):
                     self.cfg.sideflip_couple_force * self.assist_scale / max(len(opposite), 1)
                 )
 
+        # The same post-take-off couple for the backflip: up on the backflip bodies (front
+        # hips), down on the rest (rear hips), so it adds pitch without adding lift. On go2w
+        # the one-sided front force alone left the robot short of a turn and landing on its
+        # back; pushing it harder would mostly roll the rear wheels backwards while the feet
+        # are still down.
+        if self.cfg.backflip_couple_force > 0.0:
+            backflip_couple_mask = (
+                (self.motion_code == self.MOTION_BACKFLIP)
+                & (self.trigger_step >= 0)
+                & (elapsed >= self.cfg.backflip_couple_delay_s)
+                & (elapsed < self.cfg.backflip_couple_delay_s + self.cfg.backflip_couple_duration_s)
+                & (self.assist_scale > 0.0)
+            )
+            opposite = [i for i in range(len(self.body_ids)) if i not in self.backflip_force_indices]
+            couple = self.cfg.backflip_couple_force * self.assist_scale
+            for force_index in self.backflip_force_indices:
+                forces[backflip_couple_mask, force_index, 2] += couple / len(self.backflip_force_indices)
+            for force_index in opposite:
+                forces[backflip_couple_mask, force_index, 2] -= couple / max(len(opposite), 1)
 
+        self.applied_forces = forces
+        if not self._uses_whole_body_spin:
+            self.robot.set_external_force_and_torque(
+                forces=forces,
+                torques=torch.zeros_like(forces),
+                body_ids=self.body_ids,
+                is_global=True,
+            )
+            return
+
+        all_forces = torch.zeros(self.num_envs, self.robot.num_bodies, 3, device=self.device)
+        all_torques = torch.zeros_like(all_forces)
+        all_forces[:, self.body_ids] = forces
+        spin_mask = (
+            (self.motion_code == self.MOTION_SIDEFLIP)
+            & (self.trigger_step >= 0)
+            & (elapsed >= self.cfg.sideflip_spin_delay_s)
+            & (elapsed < self.cfg.sideflip_spin_delay_s + self.cfg.sideflip_spin_duration_s)
+            & (self.assist_scale > 0.0)
+        )
+        if torch.any(spin_mask):
+            torque = self.cfg.sideflip_spin_torque * self.assist_scale * torch.sign(self.target_roll_turns)
+            spin_forces, spin_torques = self._whole_body_spin(axis_b=(1.0, 0.0, 0.0), torque=torque)
+            all_forces[spin_mask] += spin_forces[spin_mask]
+            all_torques[spin_mask] += spin_torques[spin_mask]
         self.robot.set_external_force_and_torque(
-            forces=forces,
-            torques=torch.zeros_like(forces),
-            body_ids=self.body_ids,
+            forces=all_forces,
+            torques=all_torques,
+            body_ids=None,
             is_global=True,
         )
 
+    def _whole_body_spin(self, axis_b: tuple[float, float, float], torque: torch.Tensor):
+        """Per-body wrenches that spin the whole robot rigidly about ``axis_b`` (base frame).
+
+        A torque on one body (or a force couple on the hips) only reaches the legs through
+        the hip joints, and on go2w most of the roll inertia is in the legs and wheels
+        (whole-body Ixx 0.956 vs go2's 0.236): pushing hard enough to turn the robot
+        just flexes the hips and the base springs back. Instead every body gets exactly
+        the force and torque it would need to follow one shared angular acceleration
+        alpha -- F_i = m_i * (alpha x d_i) at its COM, tau_i = I_i * alpha -- so the
+        joints carry nothing and the total torque about the whole-body COM is ``torque``.
+        """
+        mass = self._body_mass
+        com = self.robot.data.body_com_pos_w
+        center = (mass.unsqueeze(-1) * com).sum(dim=1, keepdim=True) / mass.sum(dim=1).view(-1, 1, 1)
+        offset = com - center
+        axis = quat_apply(
+            self.robot.data.root_quat_w,
+            torch.tensor(axis_b, device=self.device).expand(self.num_envs, 3),
+        )
+        rotation = matrix_from_quat(self.robot.data.body_com_quat_w)
+        inertia_w = rotation @ self._body_inertia @ rotation.transpose(-1, -2)
+        axis_per_body = axis.unsqueeze(1).expand_as(offset)
+        own = torch.einsum("nbi,nbij,nbj->nb", axis_per_body, inertia_w, axis_per_body)
+        along = (offset * axis_per_body).sum(dim=-1)
+        parallel_axis = mass * ((offset * offset).sum(dim=-1) - along**2)
+        axis_inertia = (own + parallel_axis).sum(dim=1)
+        alpha = (torque / axis_inertia).unsqueeze(-1) * axis
+        alpha_per_body = alpha.unsqueeze(1).expand_as(offset)
+        forces = mass.unsqueeze(-1) * torch.cross(alpha_per_body, offset, dim=-1)
+        torques = (inertia_w @ alpha_per_body.unsqueeze(-1)).squeeze(-1)
+        return forces, torques
+
     def _set_debug_vis_impl(self, debug_vis: bool):
-        pass
+        if debug_vis:
+            if not hasattr(self, "force_visualizer"):
+                self.force_visualizer = VisualizationMarkers(self.cfg.force_visualizer_cfg)
+            self.force_visualizer.set_visibility(True)
+        elif hasattr(self, "force_visualizer"):
+            self.force_visualizer.set_visibility(False)
 
     def _debug_vis_callback(self, event):
-        pass
+        """Draw the assist force on each assist body: red = up, blue = down (crouch pulse)."""
+        if not self.robot.is_initialized or not hasattr(self, "applied_forces"):
+            return
+        force_z = self.applied_forces[..., 2].reshape(-1)
+        positions = self.robot.data.body_pos_w[:, self.body_ids].reshape(-1, 3)
+        # The arrow marker points along +x; pitch it by -90 deg (up) or +90 deg (down).
+        half = math.sqrt(0.5)
+        orientations = torch.zeros(force_z.shape[0], 4, device=self.device)
+        orientations[:, 0] = half
+        orientations[:, 2] = torch.where(force_z >= 0.0, -half, half)
+        scales = torch.tensor(
+            self.cfg.force_visualizer_cfg.markers["up"].scale, device=self.device
+        ).repeat(force_z.shape[0], 1)
+        scales[:, 0] = force_z.abs() / self.cfg.force_vis_newtons_per_meter
+        marker_indices = (force_z < 0.0).long()
+        self.force_visualizer.visualize(positions, orientations, scales, marker_indices)
 
 
 @configclass
@@ -519,6 +651,12 @@ class JumpCommandCfg(CommandTermCfg):
     target_roll_turns_range: tuple[float, float] = (0.0, 0.0)
     nominal_standing_height: float = 0.40
     flip_target_height: float = 0.0
+    backflip_target_height: float | None = None
+    """``flip_target_height`` for the backflip only. None (default) uses
+    ``flip_target_height``."""
+    sideflip_target_height: float | None = None
+    """``flip_target_height`` for the sideflip only. None (default) uses
+    ``flip_target_height``."""
     flip_launch_height: float = 0.0
     """Height the flip's launch force is sized for, when it should differ from
     ``flip_target_height``. The launch force is derived from a height, and that same height
@@ -568,16 +706,60 @@ class JumpCommandCfg(CommandTermCfg):
     sideflip_couple_duration_s: float = 0.10
     """How long the couple is applied once ``sideflip_couple_delay_s`` has elapsed. Only
     used when that delay is non-zero."""
+    sideflip_spin_torque: float = 0.0
+    """Roll torque (N*m, about the whole-body COM) applied as a rigid whole-body spin --
+    every body gets the wrench of one shared angular acceleration, so nothing has to pass
+    through the joints (see ``JumpCommand._whole_body_spin``). For robots whose roll
+    inertia sits in heavy legs, where a hip couple only flexes the hips. Defaults to 0.0
+    (off), which also keeps the original hip-only wrench path."""
+    sideflip_spin_delay_s: float = 0.0
+    """Delay from the trigger before the whole-body spin starts; set it past take-off."""
+    sideflip_spin_duration_s: float = 0.10
+    """How long the whole-body spin is applied."""
     sideflip_couple_force: float = 0.0
     """Additional roll applied as a couple: +this on the sideflip bodies, -this on the rest,
     so it contributes torque without any net lift. Defaults to 0.0, leaving every existing
     task unchanged. Use this rather than raising ``sideflip_assist_force`` when more
     rotation is wanted -- that force is one-sided, so it adds translation faster than spin
     and at 700 N launched the robot to 2.351 m with base_contact on every episode."""
+    backflip_couple_force: float = 0.0
+    """Pitch couple for the backflip: +this on the backflip bodies, -this on the rest, so it
+    adds rotation with no net lift. Same idea as ``sideflip_couple_force``. Defaults to
+    0.0, leaving every existing task unchanged."""
+    backflip_couple_delay_s: float = 0.0
+    """Delay from the trigger before the backflip couple starts; set it past take-off so the
+    ground does not absorb the torque."""
+    backflip_couple_duration_s: float = 0.10
+    """How long the backflip couple is applied."""
     initial_assist_scale: float = 1.0
+
+    force_visualizer_cfg: VisualizationMarkersCfg = VisualizationMarkersCfg(
+        prim_path="/Visuals/Command/assist_force",
+        markers={
+            "up": sim_utils.UsdFileCfg(
+                usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/UIElements/arrow_x.usd",
+                scale=(1.0, 0.1, 0.1),
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
+            ),
+            "down": sim_utils.UsdFileCfg(
+                usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/UIElements/arrow_x.usd",
+                scale=(1.0, 0.1, 0.1),
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.0, 1.0)),
+            ),
+        },
+    )
+    """Assist-force arrows drawn when ``debug_vis`` is on (red up, blue down)."""
+    force_vis_newtons_per_meter: float = 200.0
+    """Arrow length scale: this many newtons draw a 1 m arrow."""
 
     minimum_landing_time_s: float = 0.40
     height_tolerance: float = 0.10
+    success_allow_overshoot: bool = False
+    """Count a jump as reaching its target when ``max_height`` clears
+    ``target_height - height_tolerance``, with no upper bound. Only ``success`` (and so the
+    assist curriculum) changes; the height reward stays two-sided. Under full assist the
+    jump overshoots, and a two-sided check then holds ``success`` at 0 and the assist at
+    1.0 until the policy learns to jump *lower*. Defaults to False (two-sided)."""
     rotation_tolerance_rad: float = 0.30
     landing_height_tolerance: float = 0.10
     landing_vertical_speed_tolerance: float = 0.30
