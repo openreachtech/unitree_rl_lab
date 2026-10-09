@@ -25,6 +25,12 @@ carried over from go2's ``Go2-Jump-60`` (feat/jump) unless marked go2w:
   follow (1.0 -> 0.70 in ~60 its, max_height 0.19 m). With both, assist_scale reached 0
   at ~it 1700 and the unaided jump kept improving (max_height 0.257 m, success 1.0 by
   it 2200; 2026-10-08).
+- (go2w) ``wheel_vel`` penalty. Nothing else looks at the wheels (the joint penalties are
+  leg-scoped), so a spinning wheel cost nothing: the first Phase 2 policy held the FL
+  wheel command saturated at +8.5 and slipped it at ~23 rad/s while standing, creeping
+  forward in MuJoCo (Isaac Lab: up to 2.0 m in 10 s idle). With it (fine-tuned 1000 its,
+  2026-10-09) idle wheels sat at 0.07 rad/s with zero drift, and the robot also came to
+  rest after a motion, with success unchanged (0.995-1.000).
 """
 
 import os
@@ -38,6 +44,7 @@ from isaaclab.utils import configclass
 from unitree_rl_lab.tasks.dynamic import mdp
 from unitree_rl_lab.tasks.dynamic.robots.go2w.jump_env_cfg import (
     LEG_JOINT_NAMES,
+    WHEEL_JOINT_NAMES,
     CommandsCfg,
     CurriculumCfg,
     EventCfg,
@@ -157,6 +164,14 @@ class JumpRewardsCfg(StandingRewardsCfg):
     # A vertical jump should land where it took off. Applied over the whole episode, so
     # rolling away while idle is not a loophole either.
     base_lin_vel_xy = RewTerm(func=mdp.base_lin_vel_xy_l2, weight=-1.0)
+    # The other joint penalties skip the wheels, so this is the only thing that stops the
+    # policy from spinning them. Always on: before, during and after the motion. A 23 rad/s
+    # wheel costs 0.53 per step, comparable to the motion rewards.
+    wheel_vel = RewTerm(
+        func=mdp.joint_vel_l2,
+        weight=-1.0e-3,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=WHEEL_JOINT_NAMES)},
+    )
 
 
 @configclass
