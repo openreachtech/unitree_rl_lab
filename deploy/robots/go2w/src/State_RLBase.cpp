@@ -1,4 +1,5 @@
 #include "FSM/State_RLBase.h"
+#include "JointActionMap.h"
 #include "unitree_articulation.h"
 #include "isaaclab/envs/manager_based_rl_env.h"
 #include "isaaclab/envs/mdp/observations/observations.h"
@@ -122,27 +123,8 @@ REGISTER_OBSERVATION(keyboard_velocity_commands)
 namespace
 {
 
-// Action index -> SDK motor id, resolved once in the constructor (see run() for why this
-// composition is needed rather than joint_ids_map alone).
-std::vector<int> g_pos_motor_ids;
-std::vector<int> g_vel_motor_ids;
-
-std::vector<int> resolve_motor_ids(YAML::Node action_cfg, const std::vector<int>& joint_ids_map)
-{
-    std::vector<int> motor_ids;
-    auto joint_ids_node = action_cfg["joint_ids"];
-    if (!joint_ids_node || joint_ids_node.IsNull())
-    {
-        // No explicit selection: the term spans every joint in IsaacLab order, so the
-        // action index *is* the IsaacLab joint id.
-        return joint_ids_map;
-    }
-    for (int isaac_joint_id : joint_ids_node.as<std::vector<int>>())
-    {
-        motor_ids.push_back(joint_ids_map.at(isaac_joint_id));
-    }
-    return motor_ids;
-}
+// Built in the constructor from the policy's deploy.yaml; see JointActionMap.h.
+std::unique_ptr<JointActionMap> g_action_map;
 
 } // namespace
 
@@ -158,9 +140,7 @@ State_RLBase::State_RLBase(int state_mode, std::string state_string)
     );
     env->alg = std::make_unique<isaaclab::OrtRunner>(policy_dir / "exported" / "policy.onnx");
 
-    const auto joint_ids_map = env->cfg["joint_ids_map"].as<std::vector<int>>();
-    g_pos_motor_ids = resolve_motor_ids(env->cfg["actions"]["JointPositionAction"], joint_ids_map);
-    g_vel_motor_ids = resolve_motor_ids(env->cfg["actions"]["JointVelocityAction"], joint_ids_map);
+    g_action_map = std::make_unique<JointActionMap>(env->cfg);
 
     // Safety exit: drop to Passive when the base tilts past this angle (rad, measured
     // as acos(-projected_gravity_z), so pi/2 is fully on its side or stood vertical).
@@ -182,27 +162,5 @@ State_RLBase::State_RLBase(int state_mode, std::string state_string)
 }
 void State_RLBase::run()
 {
-    // processed_actions() concatenates the action terms in deploy.yaml order (position
-    // then velocity here), and element k of a term refers to that term's joint_ids[k] --
-    // an *IsaacLab* joint id. joint_ids_map is itself indexed by IsaacLab joint id, so the
-    // SDK motor is joint_ids_map[joint_ids[k]]; indexing it with the action index k
-    // directly is only correct when a term's joint_ids happen to be the identity.
-    //
-    // That identity holds on Go2, whose sole action term is joint_names=[".*"], which is
-    // why the equivalent loop there is right. It does *not* hold on Go2W: the legs and
-    // wheels need separate position/velocity terms, so both declare explicit
-    // SDK-ordered joint_names with preserve_order=True and their joint_ids come out as
-    // permutations ([1,5,9,0,...] and [13,12,15,14]). Skipping the composition therefore
-    // cross-wired 14 of the 16 joints -- FR_thigh's target was driving FR_hip, FR_calf's
-    // was driving RL_hip, and the left/right wheels were swapped -- which made the robot
-    // thrash the instant the policy took over.
-    auto action = env->action_manager->processed_actions();
-
-    for(size_t i = 0; i < g_pos_motor_ids.size(); i++) {
-        lowcmd->msg_.motor_cmd()[g_pos_motor_ids[i]].q() = action[i];
-    }
-    const size_t vel_offset = g_pos_motor_ids.size();
-    for(size_t i = 0; i < g_vel_motor_ids.size(); i++) {
-        lowcmd->msg_.motor_cmd()[g_vel_motor_ids[i]].dq() = action[vel_offset + i];
-    }
+    g_action_map->write(env->action_manager->processed_actions(), *lowcmd);
 }

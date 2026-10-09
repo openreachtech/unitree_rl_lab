@@ -7,6 +7,12 @@ FSM:
     Velocity:
       id: 3
       type: RLBase
+      # Skipped (with a warning) instead of aborting startup when its policy is missing,
+      # so the Dynamic state can be used on its own.
+      optional: true
+    Dynamic:
+      id: 4
+      type: Flip
   Passive:
     transitions:
       FixStand: LT + A.on_pressed
@@ -28,9 +34,11 @@ FSM:
     transitions:
       Passive: LT + B.on_pressed
       Velocity: start.on_pressed
+      Dynamic: LT + up.on_pressed
     keyboard_transitions:
       Passive: "0"
       Velocity: enter
+      Dynamic: "2"
     kp: [ 60, 80, 80, 60,
           80, 80, 60, 80, 
           80, 60, 80, 80,
@@ -55,3 +63,45 @@ FSM:
     # Tilt (rad) at which the FSM drops to Passive. Default 1.0 when unset. The wall
     # climb pitches to 60-80 deg, so match training's bad_orientation limit here.
     bad_orientation_limit: 2.0
+
+  # --- Dynamic motions (State_Flip) ------------------------------------------
+  # Enter from FixStand, then fire a motion on demand; after each one the command drops to
+  # zero (the policy holds a stand) and re-arms after rearm_delay_s, so motions chain.
+  #
+  #   [3] jump   [4] backflip   [5] sideflip      [0]/LT+B Passive   [1]/LT+A FixStand
+  Dynamic:
+    transitions:
+      Passive: LT + B.on_pressed
+      FixStand: LT + A.on_pressed
+    keyboard_transitions:
+      Passive: "0"
+      FixStand: "1"
+    # Go2w-Jump-Phase2: jump + backflip + sideflip in one policy. parser_policy_dir picks the
+    # newest run under this root that has an `exported` folder (run play.py once to export).
+    policy_dir: ../../../logs/rsl_rl/go2w_jump_phase2
+    # Must equal JumpCommandCfg.command_duration_s: when `enabled` drops back to 0 and takes
+    # the targets in the observation down with it.
+    command_duration_s: 0.5
+    time_scale: 1.0
+    rearm_delay_s: 0.3
+    # Fall -> Passive guard, armed command_duration_s + this long after the trigger. It must
+    # cover the landing and the settle after it; training only judges a landing from 0.80 s,
+    # and the 0.50 m sideflip is the longest flight here.
+    fall_check_delay_s: 1.5
+    fall_check_hold_s: 0.1
+    # The targets are policy observations: they must be exactly what Go2w-Jump-Phase2 was
+    # trained with, flips' heights included (backflip_target_height / sideflip_target_height
+    # in jump_env_cfg_backflip.py / jump_env_cfg_sideflip.py). Anything else is a command the
+    # policy has never seen.
+    motions:
+      - key: "3"
+        motion: jump
+        target_height: 0.30
+      - key: "4"
+        motion: backflip
+        target_height: 0.30
+        target_pitch_turns: -1.0
+      - key: "5"
+        motion: sideflip
+        target_height: 0.50
+        target_roll_turns: -1.0
