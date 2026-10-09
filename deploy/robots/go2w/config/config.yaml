@@ -89,6 +89,26 @@ FSM:
     # and the 0.50 m sideflip is the longest flight here.
     fall_check_delay_s: 1.5
     fall_check_hold_s: 0.1
+    # Wheel brake: outside the motion window the wheels are held in place (position hold at
+    # the angle where the brake engaged). With the trained gains alone (kp 0, kd 0.5) they
+    # barely resist rolling and the robot creeps forward while it waits for a key. From each
+    # trigger until release_s after it, the policy drives the wheels as trained; release_s
+    # must outlast the landing (touchdown ~0.8-1.0 s after the trigger).
+    wheel_brake:
+      enabled: true
+      kp: 20.0
+      kd: 1.0
+      release_s: 2.0
+    # Logs, same keys as the Go2 controller on feat/jump plus log_dir; see FlipLogger.h.
+    # log_dir: relative paths resolve against deploy/robots/go2w (like policy_dir); created
+    # if missing. telemetry_<stamp>.csv at 50 Hz is on by default (telemetry_log: false).
+    # The 1 kHz torque capture writes torque_<motion>_<stamp>_<n>.csv per motion; its window
+    # must outlast the landing and the settle (~1.2 s after the trigger here).
+    log_dir: output
+    telemetry_log: true
+    torque_log: true
+    torque_log_pre_s: 0.3
+    torque_log_post_s: 1.5
     # The targets are policy observations: they must be exactly what Go2w-Jump-Phase2 was
     # trained with, flips' heights included (backflip_target_height / sideflip_target_height
     # in jump_env_cfg_backflip.py / jump_env_cfg_sideflip.py). Anything else is a command the
