@@ -7,7 +7,7 @@
 //
 //   telemetry_<stamp>.csv       one row per policy step (50 Hz) while the state is active:
 //                               command, attitude, integrated pitch/roll, IMU acceleration,
-//                               per-motor dq / tau_est, wheel-brake state.
+//                               per-motor dq / tau_est.
 //   torque_<motion>_<stamp>_<n>.csv
 //                               one row per FSM tick (1 kHz) in a window around each motion
 //                               (opt-in, `torque_log: true`): q, dq, commanded AND applied
@@ -57,7 +57,7 @@ public:
     void on_exit();
 
     // Policy thread, once per policy step after env->step(). work_ms is the step's own cost.
-    void on_policy_step(float work_ms, bool wheel_brake);
+    void on_policy_step(float work_ms);
 
     // FSM thread, once per run() tick (1 kHz).
     void on_fsm_tick();

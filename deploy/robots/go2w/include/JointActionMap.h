@@ -45,9 +45,6 @@ public:
         }
     }
 
-    // SDK motor ids of the velocity-controlled joints (the wheels).
-    const std::vector<int> & vel_motor_ids() const { return vel_motor_ids_; }
-
 private:
     static std::vector<int> resolve(const YAML::Node & action_cfg, const std::vector<int> & joint_ids_map)
     {

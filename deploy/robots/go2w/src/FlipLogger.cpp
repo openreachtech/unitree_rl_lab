@@ -76,7 +76,7 @@ void FlipLogger::on_enter(const State_Flip::FlipCommand * command, float step_dt
     telemetry_.open(path, std::ios::out | std::ios::trunc);
     telemetry_ << "t,enabled,elapsed_since_trigger,target_height,target_pitch_turns,target_roll_turns,"
                << "accumulated_pitch_deg,accumulated_roll_deg,grav_x,grav_y,grav_z,tilt_deg,"
-               << "accel_x,accel_y,accel_z,wheel_brake";
+               << "accel_x,accel_y,accel_z";
     for (const char * name : kSdkMotorNames) telemetry_ << "," << name << "_dq";
     for (const char * name : kSdkMotorNames) telemetry_ << "," << name << "_tau";
     telemetry_ << "\n";
@@ -100,7 +100,7 @@ void FlipLogger::on_exit()
     }
 }
 
-void FlipLogger::on_policy_step(float work_ms, bool wheel_brake)
+void FlipLogger::on_policy_step(float work_ms)
 {
     if (work_ms > policy_step_max_ms_.load()) policy_step_max_ms_.store(work_ms);
     if (work_ms > step_dt_ * 1e3f) policy_overrun_count_.fetch_add(1);
@@ -124,7 +124,6 @@ void FlipLogger::on_policy_step(float work_ms, bool wheel_brake)
                << telemetry_pitch_deg_ << "," << telemetry_roll_deg_ << ","
                << gravity.x() << "," << gravity.y() << "," << gravity.z() << "," << tilt_deg();
     for (int i = 0; i < 3; ++i) telemetry_ << "," << imu.accelerometer()[i];
-    telemetry_ << "," << (wheel_brake ? 1 : 0);
     for (int i = 0; i < kNumMotors; ++i) telemetry_ << "," << lowstate_->msg_.motor_state()[i].dq();
     for (int i = 0; i < kNumMotors; ++i) telemetry_ << "," << lowstate_->msg_.motor_state()[i].tau_est();
     telemetry_ << "\n";

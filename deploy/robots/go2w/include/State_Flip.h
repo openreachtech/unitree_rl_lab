@@ -159,20 +159,6 @@ private:
     std::chrono::steady_clock::time_point bad_orientation_since_{};
     bool bad_orientation_latched_ = false;
 
-    // Wheel brake. The wheels are velocity-controlled with only kd 0.5 (as in training), so
-    // while the robot just stands they hardly resist rolling and the robot creeps forward.
-    // Outside the motion window the wheels are held in place instead (position hold at the
-    // angle where the brake engaged); from the trigger until wheel_release_s after it the
-    // policy drives them as trained.
-    bool wheel_brake_enabled_ = true;
-    float wheel_brake_kp_ = 20.0f;
-    float wheel_brake_kd_ = 1.0f;
-    float wheel_release_s_ = 2.0f;
-    bool wheel_braking_ = false;
-    std::vector<float> wheel_lock_q_;
-    bool wheels_released() const;
-    void apply_wheel_brake();
-
     // Telemetry / impact / 1 kHz torque logs for sim2sim and sim2real (FlipLogger.h).
     std::unique_ptr<FlipLogger> logger_;
 
