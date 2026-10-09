@@ -67,10 +67,6 @@ class JumpCommand(CommandTerm):
         self.command_issued = torch.zeros_like(self.enabled)
         self.motion_code = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.target_height = torch.zeros(self.num_envs, device=self.device)
-        # What the launch force is sized for, as opposed to what the reward asks for. These
-        # are the same number for a jump and deliberately different for a flip -- see
-        # `flip_launch_height`.
-        self.launch_height = torch.zeros(self.num_envs, device=self.device)
         self.target_pitch_turns = torch.zeros(self.num_envs, device=self.device)
         self.target_roll_turns = torch.zeros(self.num_envs, device=self.device)
         self.accumulated_pitch = torch.zeros(self.num_envs, device=self.device)
@@ -181,7 +177,6 @@ class JumpCommand(CommandTerm):
         self.success[env_ids] = False
         self.standing_height[env_ids] = self.cfg.nominal_standing_height
         self.target_height[env_ids] = 0.0
-        self.launch_height[env_ids] = 0.0
         self.target_pitch_turns[env_ids] = 0.0
         self.target_roll_turns[env_ids] = 0.0
 
@@ -236,47 +231,17 @@ class JumpCommand(CommandTerm):
                 (len(env_ids),),
                 device=self.device,
             )
-            # Flips get `flip_target_height` rather than a flat zero. A sideflip needs air
-            # time to rotate in, and with no height it stays on the ground: the one-turn
-            # policy reaches max_height 0.076 m and rotates just clear of the floor, which
-            # works for one turn and cannot work for two (0.36 s of flight demands
-            # ~35 rad/s, against ~12.6 rad/s measured). Defaults to 0.0, so Phase 2 and
-            # every existing flip task keep the previous behaviour exactly.
-            # Per-flip heights, so a mixed task can give each flip the air time its own
-            # assist was tuned for (go2w: backflip 0.30 m, sideflip 0.50 m). Unset (None)
-            # falls back to flip_target_height, i.e. the previous behaviour.
-            backflip_height = (
-                self.cfg.backflip_target_height
-                if self.cfg.backflip_target_height is not None
-                else self.cfg.flip_target_height
-            )
-            sideflip_height = (
-                self.cfg.sideflip_target_height
-                if self.cfg.sideflip_target_height is not None
-                else self.cfg.flip_target_height
-            )
+            # Flips get a height of their own, so the jump's projectile launch force (keyed on
+            # target_height) also buys them air time to rotate in. Without it go2's
+            # sideflip rotated just clear of the floor (max_height 0.076 m), and go2w's
+            # backflip tipped onto its back.
             flip_height = torch.where(
                 sampled_motion_codes == self.MOTION_BACKFLIP,
-                torch.full_like(sampled_height, backflip_height),
-                torch.full_like(sampled_height, sideflip_height),
+                torch.full_like(sampled_height, self.cfg.backflip_target_height),
+                torch.full_like(sampled_height, self.cfg.sideflip_target_height),
             )
             self.target_height[env_ids] = torch.where(
                 sampled_motion_codes == self.MOTION_JUMP, sampled_height, flip_height
-            )
-            # The launch force follows `flip_launch_height` when one is given, so the force
-            # can be sized for what it takes to get the robot airborne without dragging the
-            # reward target along with it. They were one number, and raising it to buy
-            # flight time silently destroyed `height_progress`: that reward is
-            # exp(-(max_height - target_height)^2 / 0.16), so a 1.50 m target against the
-            # 0.66 m actually reached reads 0.012 instead of 0.975 against 0.60 m. Zero
-            # means "same as the target", i.e. the previous behaviour exactly.
-            launch_flip = (
-                torch.full_like(sampled_height, self.cfg.flip_launch_height)
-                if self.cfg.flip_launch_height > 0.0
-                else flip_height
-            )
-            self.launch_height[env_ids] = torch.where(
-                sampled_motion_codes == self.MOTION_JUMP, sampled_height, launch_flip
             )
             self.target_pitch_turns[env_ids] = torch.where(
                 sampled_motion_codes == self.MOTION_BACKFLIP, sampled_pitch, 0.0
@@ -409,109 +374,42 @@ class JumpCommand(CommandTerm):
                 for body_index in range(len(self.body_ids)):
                     forces[crouch_active, body_index, 2] = -crouch_force_per_body[crouch_active]
 
-        def apply_profile(
-            motion_code: int,
-            force_indices: list[int],
-            total_force: float,
-        ) -> None:
-            motion_mask = assist_active & (self.motion_code == motion_code)
-            if torch.any(motion_mask):
-                force_per_body = total_force * self.assist_scale / len(force_indices)
-                for force_index in force_indices:
-                    forces[motion_mask, force_index, 2] = force_per_body * ramp_progress[motion_mask]
-
         # Jump assist force is derived per-env from projectile motion, following the
         # paper's f_jump(h_target): the average force needed to reach the initial
         # vertical velocity v0 = sqrt(2*g*h_target) over the assist window. By design this
         # is strong enough alone to fully launch the robot at assist_scale=1.0 -- the paper's
         # intent is for the robot to physically experience the successful trajectory early on,
-        # not to require the policy's own contribution from the start.
-        # Keyed on the height itself rather than on MOTION_JUMP, so a flip that has been
-        # given a height gets the lift that goes with it. The force is derived from
-        # target_height, so it delivers that height and no more -- unlike raising the
-        # one-sided sideflip force, which lifts as much as it spins and reached
-        # max_height 2.351 m when doubled for a second turn.
-        jump_mask = assist_active & (self.launch_height > 0.0)
+        # not to require the policy's own contribution from the start. Keyed on the height
+        # rather than on MOTION_JUMP, so a flip given a height gets the lift that goes with it.
+        jump_mask = assist_active & (self.target_height > 0.0)
         if torch.any(jump_mask):
-            initial_velocity = torch.sqrt(
-                2.0 * self.cfg.gravity * self.launch_height[jump_mask].clamp(min=0.0)
-            )
+            initial_velocity = torch.sqrt(2.0 * self.cfg.gravity * self.target_height[jump_mask])
             total_force = self.jump_assist_mass * initial_velocity / self.cfg.assist_duration_s
             force_per_body = total_force * self.assist_scale / len(self.jump_force_indices)
             for force_index in self.jump_force_indices:
                 forces[jump_mask, force_index, 2] = force_per_body * ramp_progress[jump_mask]
 
-        apply_profile(
-            self.MOTION_BACKFLIP,
-            self.backflip_force_indices,
-            self.cfg.backflip_assist_force,
-        )
-        # Sideflip assist scales with the number of turns asked for, the way the jump force
-        # scales with target_height. As a fixed constant it delivered one rotation whatever
-        # the target said, so a two-turn command could never reach `reached_target`,
-        # `success` stayed 0, the 60%-success gate never opened and assist_scale sat at 1.0
-        # -- the same deadlock seen when asking for 0.70 m.
-        #
-        # Being an upward force on one side, it supplies lift as well as roll torque, so
-        # scaling it buys the extra flight time the extra rotation needs at the same time.
-        # At |turns| = 1.0 this is exactly the previous behaviour, so Phase 2 is unchanged.
-        # The couple runs on its own schedule, because sharing the launch window wasted it.
-        # A 350 N couple is worth 0.284*350 = 99.4 N*m against a roll inertia of about
-        # 0.166 kg*m^2, i.e. 599 rad/s^2 -- 60 rad/s over 0.1 s, more than three times the
-        # ~18 rad/s two turns need. Yet the robot managed half a turn, because the window
-        # (0.12 s to 0.34 s) is spent almost entirely with the feet still planted, and the
-        # ground simply absorbs the torque. A standing policy under full assist showed the
-        # same half turn, which is what confirmed it: the force was never the problem.
-        #
-        # Delaying it past take-off lets the same mechanism act on a free body, where it is
-        # so effective that the magnitude has to come DOWN rather than up -- 350 N in the
-        # air would be roughly nine rotations.
-        sideflip_mask = assist_active & (self.motion_code == self.MOTION_SIDEFLIP)
-        couple_delay = self.cfg.sideflip_couple_delay_s
-        if couple_delay > 0.0:
-            couple_mask = (
-                (self.motion_code == self.MOTION_SIDEFLIP)
-                & (self.trigger_step >= 0)
-                & (elapsed >= couple_delay)
-                & (elapsed < couple_delay + self.cfg.sideflip_couple_duration_s)
-                & (self.assist_scale > 0.0)
+        # One-sided backflip lift on the front hips. Assigned, so it REPLACES the launch force
+        # there rather than adding to it -- the go2w backflip assist was swept and trained
+        # with exactly this, so it is kept as is.
+        backflip_mask = assist_active & (self.motion_code == self.MOTION_BACKFLIP)
+        if torch.any(backflip_mask):
+            force_per_body = (
+                self.cfg.backflip_assist_force * self.assist_scale / len(self.backflip_force_indices)
             )
-        else:
-            couple_mask = sideflip_mask
+            for force_index in self.backflip_force_indices:
+                forces[backflip_mask, force_index, 2] = force_per_body * ramp_progress[backflip_mask]
+
+        # One-sided sideflip lift on the right hips, added to the launch force. (Assigning it
+        # overwrote the launch there: with sideflip_assist_force = 0 the robot lifted on one
+        # side only, rolled the wrong way at take-off and reached 0.13 m instead of ~0.6 m.)
+        sideflip_mask = assist_active & (self.motion_code == self.MOTION_SIDEFLIP)
         if torch.any(sideflip_mask):
             force_per_body = (
                 self.cfg.sideflip_assist_force * self.assist_scale / len(self.sideflip_force_indices)
             )
-            # Added, not assigned: assigning overwrote the launch force on these bodies, so a
-            # sideflip given a height (flip_target_height) with sideflip_assist_force = 0
-            # lifted on one side only -- go2w measured an opposite-direction roll at take-off
-            # and max_height 0.13 m instead of the launch's ~0.6 m.
             for force_index in self.sideflip_force_indices:
                 forces[sideflip_mask, force_index, 2] += force_per_body * ramp_progress[sideflip_mask]
-
-            # Extra roll, added as a COUPLE: up on the sideflip bodies, down on the others.
-            # The one-sided force above cannot be scaled up to buy more rotation, because it
-            # lifts as much as it spins -- doubling it for a second turn threw the robot to
-            # max_height 2.351 m with base_contact on every episode. Geometrically the
-            # one-sided force gives torque 0.142*F and translation F, while a couple gives
-            # torque 0.284*F and translation 0: twice the spin per newton, and no lift at
-            # all. So this knob adds rotation without touching the launch behaviour the
-            # single-turn sideflip already gets right.
-            #
-            # Sizing, from the measured single rotation (omega ~ 12.6 rad/s off 350 N
-            # one-sided, implying I_roll ~ 0.166 kg*m^2): a second turn needs roughly the
-            # same angular impulse again, which a couple supplies at about half the force.
-        if self.cfg.sideflip_couple_force > 0.0:
-            couple_per_body = (
-                self.cfg.sideflip_couple_force * self.assist_scale / len(self.sideflip_force_indices)
-            )
-            opposite = [i for i in range(len(self.body_ids)) if i not in self.sideflip_force_indices]
-            for force_index in self.sideflip_force_indices:
-                forces[couple_mask, force_index, 2] += couple_per_body
-            for force_index in opposite:
-                forces[couple_mask, force_index, 2] -= (
-                    self.cfg.sideflip_couple_force * self.assist_scale / max(len(opposite), 1)
-                )
 
         # The same post-take-off couple for the backflip: up on the backflip bodies (front
         # hips), down on the rest (rear hips), so it adds pitch without adding lift. On go2w
@@ -650,23 +548,11 @@ class JumpCommandCfg(CommandTermCfg):
     target_pitch_turns_range: tuple[float, float] = (0.0, 0.0)
     target_roll_turns_range: tuple[float, float] = (0.0, 0.0)
     nominal_standing_height: float = 0.40
-    flip_target_height: float = 0.0
-    backflip_target_height: float | None = None
-    """``flip_target_height`` for the backflip only. None (default) uses
-    ``flip_target_height``."""
-    sideflip_target_height: float | None = None
-    """``flip_target_height`` for the sideflip only. None (default) uses
-    ``flip_target_height``."""
-    flip_launch_height: float = 0.0
-    """Height the flip's launch force is sized for, when it should differ from
-    ``flip_target_height``. The launch force is derived from a height, and that same height
-    is the reward's target, so buying flight time by raising it moves the reward target out
-    of reach at the same time. Zero (the default) keeps them identical, matching all prior
-    behaviour."""
-    """Height commanded alongside a backflip or sideflip, giving the rotation air time to
-    happen in. The launch assist keys off ``target_height``, so a non-zero value here also
-    turns that lift on for the flip. Defaults to 0.0, matching the previous behaviour where
-    only ``MOTION_JUMP`` carried a height."""
+    backflip_target_height: float = 0.0
+    """Height commanded alongside a backflip, giving the rotation air time. The jump's
+    launch force keys off it, so a non-zero value also turns that lift on for the flip."""
+    sideflip_target_height: float = 0.0
+    """As ``backflip_target_height``, for the sideflip."""
 
     command_duration_s: float = 0.50
     assist_duration_s: float = 0.10
@@ -697,35 +583,19 @@ class JumpCommandCfg(CommandTermCfg):
     it is auto-detected from the robot's simulated total mass at init time."""
     backflip_assist_force: float = 350.0
     sideflip_assist_force: float = 600.0
-    sideflip_couple_delay_s: float = 0.0
-    """Delay from the trigger before the roll couple starts, measured separately from
-    ``assist_delay_s``. Zero keeps the couple inside the launch window, which is where it
-    was wasted: the feet are still on the ground for most of that window and the ground
-    cancels the torque. Set this past take-off so the couple acts on a body in free
-    flight."""
-    sideflip_couple_duration_s: float = 0.10
-    """How long the couple is applied once ``sideflip_couple_delay_s`` has elapsed. Only
-    used when that delay is non-zero."""
     sideflip_spin_torque: float = 0.0
     """Roll torque (N*m, about the whole-body COM) applied as a rigid whole-body spin --
     every body gets the wrench of one shared angular acceleration, so nothing has to pass
     through the joints (see ``JumpCommand._whole_body_spin``). For robots whose roll
     inertia sits in heavy legs, where a hip couple only flexes the hips. Defaults to 0.0
-    (off), which also keeps the original hip-only wrench path."""
+    (off), which also keeps the hip-only wrench path."""
     sideflip_spin_delay_s: float = 0.0
     """Delay from the trigger before the whole-body spin starts; set it past take-off."""
     sideflip_spin_duration_s: float = 0.10
     """How long the whole-body spin is applied."""
-    sideflip_couple_force: float = 0.0
-    """Additional roll applied as a couple: +this on the sideflip bodies, -this on the rest,
-    so it contributes torque without any net lift. Defaults to 0.0, leaving every existing
-    task unchanged. Use this rather than raising ``sideflip_assist_force`` when more
-    rotation is wanted -- that force is one-sided, so it adds translation faster than spin
-    and at 700 N launched the robot to 2.351 m with base_contact on every episode."""
     backflip_couple_force: float = 0.0
     """Pitch couple for the backflip: +this on the backflip bodies, -this on the rest, so it
-    adds rotation with no net lift. Same idea as ``sideflip_couple_force``. Defaults to
-    0.0, leaving every existing task unchanged."""
+    adds rotation with no net lift. Defaults to 0.0 (off)."""
     backflip_couple_delay_s: float = 0.0
     """Delay from the trigger before the backflip couple starts; set it past take-off so the
     ground does not absorb the torque."""

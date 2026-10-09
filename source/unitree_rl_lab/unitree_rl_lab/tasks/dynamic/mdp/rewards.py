@@ -5,7 +5,6 @@ import math
 import torch
 from isaaclab.assets import Articulation
 from isaaclab.managers import SceneEntityCfg
-from isaaclab.sensors import ContactSensor
 
 
 def upright_reward(
@@ -60,28 +59,6 @@ def pre_jump_standing_reward(
     return upright_reward(env, asset_cfg) * stillness_reward(env, asset_cfg) * (~command.enabled).float()
 
 
-def pre_jump_standing_reward_windup(
-    env,
-    command_name: str = "jump",
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-) -> torch.Tensor:
-    """Like ``pre_jump_standing_reward``, but also active during the windup delay
-    (after trigger, before ``assist_delay_s`` elapses and assist force lands).
-
-    ``pre_jump_standing_reward``'s gate (``~enabled``) turns off the instant the
-    command fires -- with ``assist_delay_s > 0`` that leaves a gap where the
-    robot gets zero standing-quality reward and zero motion-progress reward
-    (nothing has started rotating yet), with no signal telling it to simply
-    hold still until the assist force lands. Falls back to identical behavior
-    when ``assist_delay_s == 0`` (the default), since the extra window is then
-    zero-width.
-    """
-    command = env.command_manager.get_term(command_name)
-    still_waiting_for_assist = command.elapsed_since_trigger < command.cfg.assist_delay_s
-    gate = (~command.enabled) | still_waiting_for_assist
-    return upright_reward(env, asset_cfg) * stillness_reward(env, asset_cfg) * gate.float()
-
-
 def pre_jump_pose_reward(
     env,
     command_name: str = "jump",
@@ -97,18 +74,6 @@ def pre_jump_pose_reward(
     """
     command = env.command_manager.get_term(command_name)
     return standing_pose_reward(env, asset_cfg, std) * (~command.enabled).float()
-
-
-def jump_progress_reward(
-    env,
-    command_name: str = "jump",
-    scale: float = 0.01,
-) -> torch.Tensor:
-    """EFGCL task progress based on maximum height reached."""
-    command = env.command_manager.get_term(command_name)
-    error = command.max_height - command.target_height
-    attempted = command.trigger_step >= 0
-    return torch.exp(-torch.square(error) / scale) * attempted.float()
 
 
 def motion_progress_reward(
@@ -165,63 +130,6 @@ def motion_progress_standing_reward(
     )
     pose_term = torch.exp(-joint_error / joint_scale)
     return task_progress * (height_term + pose_term)
-
-
-def landing_impact_penalty(
-    env,
-    command_name: str = "jump",
-    sensor_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=".*_foot"),
-    landing_window: float = 0.05,
-    force_scale: float = 100.0,
-) -> torch.Tensor:
-    """Penalize hard-touchdown foot contact forces right after a commanded jump/flip.
-
-    ``motion_progress_standing_reward`` only rewards the pose/height *after* landing,
-    with nothing discouraging a landing that gets there via a hard slam -- a policy
-    that looks fine in rigid-body sim can still produce a real-world touchdown force
-    well past what the robot's onboard safety cutoff tolerates. Gated to freshly
-    touched-down feet (``current_contact_time`` within ``landing_window`` of zero) so
-    it doesn't penalize normal standing/idle contact or the push-off itself, which is
-    one continuous contact from before ``trigger_step`` and never resets to zero.
-    """
-    command = env.command_manager.get_term(command_name)
-    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-
-    current_contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
-    just_landed = (current_contact_time > 0.0) & (current_contact_time <= landing_window)
-
-    forces = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :]
-    peak_force = torch.norm(forces, dim=-1).amax(dim=1)  # (N, num_feet) peak over the force history
-
-    impact = torch.where(just_landed, peak_force, torch.zeros_like(peak_force)).amax(dim=1)
-
-    attempted = command.trigger_step >= 0
-    return torch.square(impact / force_scale) * attempted.float()
-
-
-def flip_forward_axis_tilt_penalty(
-    env,
-    command_name: str = "jump",
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-) -> torch.Tensor:
-    """Penalize how far the body's forward axis is tilted from horizontal, right now.
-
-    ``projected_gravity_b[:, 0]`` is gravity's component along the body's own forward
-    (x) axis -- zero when that axis is level, regardless of roll phase. A sideflip that
-    completes its two turns by pitching nose-down mid-flight and swinging back level
-    only at the last moment (measured on ``Go2-Sideflip-Double``: grav_x peaks at 0.82,
-    ~55 deg, around the first half-turn, then returns near 0 right at touchdown) reads as
-    almost fine on a reward built from *accumulated* pitch rotation (``mdp/commands.py``:
-    integrating ``root_ang_vel_b[:, 1]`` over time), because the outbound and return
-    halves of that excursion largely cancel in the integral. Squaring the INSTANTANEOUS
-    value and charging it every step during flight does not have that blind spot: a
-    body away from level pays for every step it spends there, whether or not it later
-    swings back.
-    """
-    asset: Articulation = env.scene[asset_cfg.name]
-    command = env.command_manager.get_term(command_name)
-    attempted = command.trigger_step >= 0
-    return torch.square(asset.data.projected_gravity_b[:, 0]) * attempted.float()
 
 
 def base_lin_vel_xy_l2(

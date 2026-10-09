@@ -1,27 +1,26 @@
-"""Go2w-Jump: Phase 2's vertical jump on its own, without backflip/sideflip.
+"""Go2w-Jump: the assisted vertical jump, and the recipe every go2w motion task builds on.
 
-Phase 2 trains jump + backflip + sideflip together. On go2w it never got past full
-assist (success 0.33 vs the 0.60 gate, assist_scale stuck at 1.0), so Play -- which runs
-with zero assist -- shows a policy that has never jumped unaided, and the robot drifts
-backwards instead. The backflip launch force is applied to the FRONT hips only, and on
-free-rolling wheels that pitch-up turns straight into backward travel. This task drops
-the flips to check the jump alone first.
+``Go2w-Backflip`` and ``Go2w-Sideflip`` inherit everything here and change only the
+motion and its assist; ``Go2w-Jump-Phase2`` recombines the three.
 
-Changes from Phase 2, each carried over from go2's ``Go2-Jump-60`` (feat/jump) unless
-marked go2w:
+The first go2w port trained jump + backflip + sideflip together with go2's settings and
+never left full assist (success 0.33 vs the 0.60 gate), drifting backwards in Play: the
+backflip force lifts the front hips only, and the rear wheels roll. The fixes, each
+carried over from go2's ``Go2-Jump-60`` (feat/jump) unless marked go2w:
 
 - jump only, at a fixed ``TARGET_HEIGHT`` (a range collapsed learning on go2).
 - (go2w) ``nominal_standing_height`` 0.45 -> 0.405, the measured stance (see below).
 - (go2w) ``base_lin_vel_xy`` penalty: wheels roll, so fore-aft push turns into drift.
-- ``pre_jump_standing_reward`` (plain gate): the windup variant pays the robot to hold
-  still through exactly the window a crouch would use.
+- ``pre_jump_standing_reward`` gated on the command alone: a variant that kept paying for
+  stillness until the assist landed paid the robot to hold still through exactly the
+  window a crouch would use.
 - ``action_rate`` -0.1 -> -0.01 and ``joint_torques`` removed: both oppose an explosive
   knee extension (L2 torque charges the 45 N*m calf 5x more than the 23.7 N*m thigh).
 - ``non_target_rotation`` -0.05 -> -1.0: go2 left the ground with a systematic pitch/roll
   twist that the weak penalty never made worth fixing.
 - landing upright gate 37 deg -> 26 deg.
-- overshoot counts as success, and the assist decays at 0.005 per step instead of 0.01.
-  Without them the first run sat at success 0 for ~700 its (0.43-0.47 m under full
+- (go2w) overshoot counts as success, and the assist decays at 0.005 per step instead of
+  0.01. Without them the first run sat at success 0 for ~700 its (0.43-0.47 m under full
   assist, above the 0.30 +/- 0.10 window), then lost the assist faster than it could
   follow (1.0 -> 0.70 in ~60 its, max_height 0.19 m). With both, assist_scale reached 0
   at ~it 1700 and the unaided jump kept improving (max_height 0.257 m, success 1.0 by
@@ -31,20 +30,24 @@ marked go2w:
 import os
 
 from isaaclab.managers import CurriculumTermCfg as CurrTerm
+from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 
 from unitree_rl_lab.tasks.dynamic import mdp
-from unitree_rl_lab.tasks.dynamic.robots.go2w.jump_env_cfg_flip_base import (
-    CommandsCfgFlipBase,
-    CurriculumCfgFlipBase,
-    FlipRewardsCfg,
-    RobotEnvCfgFlipBase,
+from unitree_rl_lab.tasks.dynamic.robots.go2w.jump_env_cfg import (
+    LEG_JOINT_NAMES,
+    CommandsCfg,
+    CurriculumCfg,
+    EventCfg,
+    RobotEnvCfg,
+    StandingRewardsCfg,
+    TerminationsCfg,
 )
 
 # Height gain over the measured stance. 0.30 m is a first check that the jump works at
-# all -- above Phase 2's 0.20 m, below go2's 0.60 m. Keep it a single point, not a range.
+# all -- above the port's 0.20 m, below go2's 0.60 m. Keep it a single point, not a range.
 TARGET_HEIGHT = 0.30
 EXPERIMENT_DIR = "logs/rsl_rl/go2w_jump"
 # Root height of the Phase 1 policy standing still: 0.4057 m mean over 64 envs, +/-0.001
@@ -62,14 +65,35 @@ PLAY_ASSIST_SCALE = float(os.environ.get("GO2W_JUMP_PLAY_ASSIST", "0.0"))
 
 
 @configclass
-class CommandsCfgJump(CommandsCfgFlipBase):
-    jump = CommandsCfgFlipBase().jump.replace(
+class CommandsCfgJump(CommandsCfg):
+    jump = CommandsCfg().jump.replace(
+        auto_trigger=True,
         enable_jump=True,
         enable_backflip=False,
         enable_sideflip=False,
+        # A less predictable trigger time makes an early, precommitted crouch a worse bet
+        # on average, discouraging it alongside pre_jump_pose's explicit cost.
+        trigger_time_range=(0.5, 2.0),
         target_height_range=(TARGET_HEIGHT, TARGET_HEIGHT),
-        target_pitch_turns_range=(0.0, 0.0),
-        target_roll_turns_range=(0.0, 0.0),
+        # Backflip lifts the front hips, sideflip the right hips; the crouch pulse and the
+        # jump launch act on all four.
+        backflip_assist_body_names=("FR_hip", "FL_hip"),
+        sideflip_assist_body_names=("FR_hip", "RR_hip"),
+        command_duration_s=0.50,
+        assist_duration_s=0.10,
+        # Crouch-assist: a brief downward 0 -> peak -> 0 pulse on all four hips right at
+        # the trigger, so the robot physically experiences a crouch-load before push-off.
+        crouch_assist_force=150.0,
+        crouch_assist_duration_s=0.12,
+        # The launch force ramps in exactly as the crouch pulse ends, so both sides of
+        # the handoff are at ~0 force. A hard-step launch reliably broke training from a
+        # cold Phase 1 resume on go2.
+        assist_delay_s=0.12,
+        assist_ramp_s=0.12,
+        backflip_assist_force=350.0,
+        sideflip_assist_force=350.0,
+        initial_assist_scale=1.0,
+        minimum_landing_time_s=0.80,
         nominal_standing_height=NOMINAL_STANDING_HEIGHT,
         landing_upright_threshold=-0.90,
         # Under full assist the jump overshoots (0.47 m against 0.30 +/- 0.10), and a
@@ -81,18 +105,54 @@ class CommandsCfgJump(CommandsCfgFlipBase):
 
 
 @configclass
-class JumpRewardsCfg(FlipRewardsCfg):
+class JumpRewardsCfg(StandingRewardsCfg):
+    upright = None
+    standing_pose = None
+    stillness = None
+    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
+    joint_torques = None
+
     pre_motion_standing = RewTerm(
         func=mdp.pre_jump_standing_reward,
         weight=1.0,
         params={"command_name": "jump"},
     )
-    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
-    joint_torques = None
+    motion_progress = RewTerm(
+        func=mdp.motion_progress_reward,
+        weight=1.0,
+        params={"command_name": "jump"},
+    )
+    motion_progress_standing = RewTerm(
+        func=mdp.motion_progress_standing_reward,
+        weight=1.0,
+        # Leg-scoped so the free-spinning wheels don't corrupt the landing pose term.
+        params={
+            "command_name": "jump",
+            "asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES),
+        },
+    )
     non_target_rotation = RewTerm(
         func=mdp.non_target_angular_velocity_penalty,
         weight=-1.0,
         params={"command_name": "jump", "asset_cfg": SceneEntityCfg("robot")},
+    )
+    # Penalizes hip (abduction/adduction) deviation from default so the pre-jump crouch
+    # tucks legs by flexing thigh/calf instead of splaying hips outward.
+    hip_deviation = RewTerm(
+        func=mdp.joint_deviation_l1,
+        weight=-0.4,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_joint"])},
+    )
+    # Cost for holding a non-default joint pose while the jump command is idle, so an
+    # early/anticipatory crouch right after spawn has an actual cost instead of being free.
+    # Leg-scoped for the same wheel-drift reason as standing_pose.
+    pre_jump_pose = RewTerm(
+        func=mdp.pre_jump_pose_reward,
+        weight=1.0,
+        params={
+            "command_name": "jump",
+            "asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES),
+        },
     )
     # A vertical jump should land where it took off. Applied over the whole episode, so
     # rolling away while idle is not a loophole either.
@@ -100,9 +160,15 @@ class JumpRewardsCfg(FlipRewardsCfg):
 
 
 @configclass
-class CurriculumCfgJump(CurriculumCfgFlipBase):
-    # 0.01 -> 0.005: at 0.01 the assist fell 1.0 -> 0.70 in ~60 iterations, faster than
-    # the policy followed (max_height dropped to 0.19 m, success to 0.10).
+class JumpTerminationsCfg(TerminationsCfg):
+    # Flips pass through every orientation; only a base contact ends the episode.
+    bad_orientation = None
+
+
+@configclass
+class CurriculumCfgJump(CurriculumCfg):
+    # decay_step 0.01 -> 0.005: at 0.01 the assist fell 1.0 -> 0.70 in ~60 iterations,
+    # faster than the policy followed (max_height dropped to 0.19 m, success to 0.10).
     assist_force = CurrTerm(
         func=mdp.assist_force_decay,
         params={
@@ -115,12 +181,32 @@ class CurriculumCfgJump(CurriculumCfgFlipBase):
 
 
 @configclass
-class RobotEnvCfgJump(RobotEnvCfgFlipBase):
+class EventCfgJump(EventCfg):
+    # Randomizes ground friction per-environment (sampled once at startup) so the policy
+    # doesn't overfit to one grip level -- on go2 a backflip trained at a single fixed
+    # friction transferred poorly to MuJoCo at every single friction value tried there.
+    physics_material = EventTerm(
+        func=mdp.randomize_rigid_body_material,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
+            "static_friction_range": (0.4, 1.2),
+            "dynamic_friction_range": (0.4, 1.2),
+            "restitution_range": (0.0, 0.0),
+            "num_buckets": 64,
+        },
+    )
+
+
+@configclass
+class RobotEnvCfgJump(RobotEnvCfg):
     """Assisted jump-only task (no backflip/sideflip)."""
 
     commands: CommandsCfgJump = CommandsCfgJump()
     rewards: JumpRewardsCfg = JumpRewardsCfg()
+    terminations: JumpTerminationsCfg = JumpTerminationsCfg()
     curriculum: CurriculumCfgJump = CurriculumCfgJump()
+    events: EventCfgJump = EventCfgJump()
 
 
 @configclass

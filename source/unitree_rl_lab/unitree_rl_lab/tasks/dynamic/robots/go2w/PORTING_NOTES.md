@@ -22,14 +22,17 @@ and a curriculum decays that force to zero as the policy succeeds on its own.
 - **Phase 2** (`jump_env_cfg_phase2.py`, `Go2w-Jump-Phase2`) — the three above in one
   policy, one motion sampled per environment per episode, every per-motion setting read
   from the single-motion configs.
-- `jump_env_cfg_flip_base.py` — the original go2 Phase 2 port, now only a shared base.
-  As ported it never left full assist on go2w (success 0.33).
 
 All of them resume from Phase 1 (`--previous-task Go2w-Jump-Phase1 --resume`).
 
-The robot-agnostic machinery (`../../mdp/`, `../../agents/`) is a verbatim copy of the
-go2 version — `JumpCommand` and all its force/curriculum logic operate on body names
+The robot-agnostic machinery (`../../mdp/`, `../../agents/`) started as a copy of the
+go2 version — `JumpCommand` and its force/curriculum logic operate on body names
 (`FR_hip`, …), root state, and projected gravity, none of which depend on joint count.
+It has since diverged: go2w added per-flip heights, the backflip pitch couple, the
+whole-body sideflip spin, overshoot-tolerant success and the assist-force arrows, and
+dropped go2-only experiment code this branch never used (sideflip hip couple,
+`flip_launch_height`, and the `jump_progress`/`landing_impact`/`flip_forward_axis_tilt`/
+windup-standing rewards).
 
 ## What was adapted for the wheeled robot
 
@@ -53,26 +56,12 @@ velocity-controlled continuous joints. This mirrors the established split in
    `../../mdp/rewards.py` (`standing_pose_reward`, `motion_progress_standing_reward`)
    were changed to honour `asset_cfg.joint_ids` so this scoping takes effect; the
    default (`slice(None)` → all joints) keeps the legged go2 behaviour identical.
-5. **Standing height** — `JumpCommandCfg.nominal_standing_height = 0.45` (go2w spawns
-   at z=0.45 vs go2's 0.40).
+5. **Standing height** — `nominal_standing_height = 0.405`, measured with the Phase 1
+   policy standing (the base config's 0.45 is the spawn height).
 6. **Contacts** — undesired-contact bodies remain `Head_.*`, `.*_hip`, `.*_thigh`,
    `.*_calf`. The `.*_foot` wheels are the legitimate ground-contact bodies and are
    never penalised (same as go2's toes).
 7. **Registration** — `scripts/list_envs.py` now also walks `dynamic.robots` so
    `train.py` offers these task IDs.
 
-## Retuning points flagged at port time (since resolved per motion -- see each file)
-
-The force magnitudes, target height, and curriculum thresholds in `CommandsCfgPhase2`
-were tuned for the lighter, wheel-less go2 and are a starting point, not a solution:
-
-- `target_height_range=(0.20, 0.20)` and the `backflip/sideflip/crouch_assist_force`
-  values assume go2's mass; go2w carries extra wheel/hub mass, so the launch forces
-  likely need to go up to clear the ground and rotate.
-- Landing on wheels behaves differently from landing on toes (they roll). Watch
-  `minimum_landing_time_s`, the landing tolerances, and whether the policy exploits
-  wheel roll to "cheat" the upright/pose check.
-- `jump_assist_mass` auto-detects the simulated total mass, so the projectile-derived
-  jump force self-adjusts; the flip forces are fixed constants and do not.
-
-Train Phase 1 first, then resume Phase 2 from it, exactly as on go2.
+Train Phase 1 first, then resume each motion task (or Phase 2) from it.
