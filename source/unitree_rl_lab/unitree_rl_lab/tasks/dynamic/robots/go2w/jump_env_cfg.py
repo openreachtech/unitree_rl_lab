@@ -13,6 +13,7 @@ from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
+from unitree_rl_lab.assets.robots import unitree_actuators
 from unitree_rl_lab.assets.robots.unitree import UNITREE_GO2W_CFG
 from unitree_rl_lab.tasks.dynamic import mdp
 
@@ -34,6 +35,55 @@ WHEEL_JOINT_NAMES = [
 ]
 # fmt: on
 
+# Actuator model: go2's, as matched to unitree_mujoco on feat/jump (Go2-Jump-60's
+# GO2_CORRECTED_ACTUATOR_CFG <-> simulate/config.yaml `torque_speed_curves`). Go2W's legs are
+# the same GO-M8010-6 motors. UNITREE_GO2W_CFG's IdealPDActuator, which the locomotion tasks
+# keep, has neither the torque-speed curve nor joint friction, and its only speed limit is
+# PhysX's hard clamp from the USD (calf 20.07, others 30.1 rad/s); MuJoCo has neither clamp.
+# Trained with it, the Phase 2 policy pushed off far harder in MuJoCo (calf 31-34 vs 20 rad/s,
+# sideflip 0.27 vs 0.17 m) and over-rotated the sideflip onto its side. With this model on
+# both sides the policy lands jump, backflip and sideflip in MuJoCo (2026-10-13; MuJoCo must
+# be built from a source that has the curve -- check for the `[torque-speed]` lines at start).
+#
+#   legs    hip/thigh Y1 20.2 / Y2 23.4, calf Y1 39.22 / Y2 45.43, X1 13.5 / X2 30 rad/s;
+#           Fs 0.2 / Fd 0.1 and armature 0.01 as go2w.xml's joint defaults.
+#   wheels  no curve (no spec for the wheel motor), 23.7 N*m (go2w.xml ctrlrange), same joint
+#           friction and armature; MuJoCo's curve config has a matching no-derate "wheel" entry.
+#
+# PhysX's velocity clamp is lifted to 100 rad/s: the curve takes the legs to zero torque at
+# 30 rad/s, and MuJoCo has no clamp to match.
+JOINT_FS = 0.2
+JOINT_FD = 0.1
+JOINT_ARMATURE = 0.01
+VELOCITY_LIMIT_SIM = 100.0
+ACTUATORS = {
+    "legs": unitree_actuators.UnitreeActuatorCfg_Go2HV(
+        joint_names_expr=LEG_JOINT_NAMES,
+        stiffness=25.0,
+        damping=0.5,
+        friction=0.0,
+        Fs=JOINT_FS,
+        Fd=JOINT_FD,
+        Y1={".*_hip_joint": 20.2, ".*_thigh_joint": 20.2, ".*_calf_joint": 45.43 * (20.2 / 23.4)},
+        Y2={".*_hip_joint": 23.4, ".*_thigh_joint": 23.4, ".*_calf_joint": 45.43},
+        X1=13.5,
+        X2=30.0,
+        armature=JOINT_ARMATURE,
+        velocity_limit_sim=VELOCITY_LIMIT_SIM,
+    ),
+    "wheels": unitree_actuators.UnitreeActuatorCfg(
+        joint_names_expr=WHEEL_JOINT_NAMES,
+        stiffness=0.0,
+        damping=0.5,
+        friction=0.0,
+        Fs=JOINT_FS,
+        Fd=JOINT_FD,
+        Y1=23.7,
+        armature=JOINT_ARMATURE,
+        velocity_limit_sim=VELOCITY_LIMIT_SIM,
+    ),
+}
+
 
 @configclass
 class RobotSceneCfg(InteractiveSceneCfg):
@@ -48,7 +98,7 @@ class RobotSceneCfg(InteractiveSceneCfg):
             dynamic_friction=1.0,
         ),
     )
-    robot: ArticulationCfg = UNITREE_GO2W_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+    robot: ArticulationCfg = UNITREE_GO2W_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot", actuators=ACTUATORS)
     contact_forces = ContactSensorCfg(
         prim_path="{ENV_REGEX_NS}/Robot/.*",
         history_length=3,

@@ -1,5 +1,7 @@
 import gymnasium as gym
 
+from . import sandbox  # noqa: F401
+
 gym.register(
     id="Go2w-Jump-Phase1",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",

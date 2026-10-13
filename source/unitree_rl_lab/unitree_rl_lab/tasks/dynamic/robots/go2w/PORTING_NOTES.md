@@ -41,7 +41,13 @@ joints (`*_foot_joint`). The leg joints are position-controlled; the wheels are
 velocity-controlled continuous joints. This mirrors the established split in
 `locomotion/robots/go2w/velocity_env_cfg.py` (`LEG_JOINT_NAMES` / `WHEEL_JOINT_NAMES`).
 
-1. **Robot asset** — `UNITREE_GO2W_CFG` instead of `UNITREE_GO2_CFG`.
+1. **Robot asset** — `UNITREE_GO2W_CFG` instead of `UNITREE_GO2_CFG`, but with go2's
+   MuJoCo-matched actuator model instead of its `IdealPDActuator` (`ACTUATORS` in
+   `jump_env_cfg.py`): `UnitreeActuatorCfg_Go2HV` torque-speed curve on the legs, joint
+   friction and armature as `go2w.xml`, wheels flat at 23.7 N*m, PhysX velocity clamp lifted.
+   With IdealPD the knee was clamped at 20.07 rad/s in Isaac Lab and unlimited in MuJoCo, and
+   the policy over-rotated the sideflip there. Needs unitree_mujoco built with the
+   torque-speed curve (feat/jump) and its `"wheel"` entry.
 2. **Actions** — split into `JointPositionAction` (legs, scale 0.25) and
    `JointVelocityAction` (wheels, scale 8.0), instead of one position action over
    `.*`. The wheels stay in the action space (the policy may brake or spin them during

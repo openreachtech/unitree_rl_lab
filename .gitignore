@@ -10,6 +10,9 @@
 
 # No USD files allowed in the repo
 **/*.usd
+
+# Sandbox experiments (tasks/**/sandbox/tryN.py) stay local; only folded-in results are committed
+**/sandbox/try*.py
 **/*.usda
 **/*.usdc
 **/*.usdz
