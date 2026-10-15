@@ -487,10 +487,12 @@ def base_height_exp_gated(
     env: ManagerBasedRLEnv,
     target_height: float = 0.75,
     min_base_height: float = 0.65,
+    sharpness: float = 20.0,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
+    """``exp(-sharpness * |h - target|)`` once standing (HoST: sharpness 20)."""
     h = _base_height(env, asset_cfg)
-    return torch.exp(-20.0 * (h - target_height).abs()) * (h > min_base_height)
+    return torch.exp(-sharpness * (h - target_height).abs()) * (h > min_base_height)
 
 
 ##
@@ -687,3 +689,42 @@ def kneeling_upright(
     knee_z = asset.data.body_pos_w[:, knee_cfg.body_ids, 2] - env.scene.env_origins[:, 2:3]
     upright = asset.data.projected_gravity_b[:, 2] < upright_gravity_z
     return ((knee_z.min(dim=1).values < max_knee_height) & upright).float()
+
+
+##
+# Rewards -- standing posture, continuous (not in HoST)
+#
+# The exp kernels above saturate to ~0 far from the target, so a policy standing with bent
+# knees or odd arms gets no gradient back towards the nominal pose. These are plain squared
+# errors, gated on standing.
+##
+
+
+def joint_target_l2_gated(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    target: dict[str, float] | None = None,
+    min_base_height: float = 0.5,
+) -> torch.Tensor:
+    """``sum((q - q_target)^2)`` over ``asset_cfg``'s joints once standing. ``target`` maps
+    joint-name regex -> angle; joints it does not match use their default position."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    ids = asset_cfg.joint_ids
+    tgt = asset.data.default_joint_pos[:, ids].clone()
+    if target:
+        names = [asset.joint_names[i] for i in (range(asset.num_joints) if isinstance(ids, slice) else ids)]
+        for k, name in enumerate(names):
+            for pattern, value in target.items():
+                if re.fullmatch(pattern, name):
+                    tgt[:, k] = value
+    err = torch.sum(torch.square(asset.data.joint_pos[:, ids] - tgt), dim=1)
+    return err * (_base_height(env, SceneEntityCfg(asset_cfg.name)) > min_base_height)
+
+
+def stand_base_lin_vel_l2(
+    env: ManagerBasedRLEnv, min_base_height: float = 0.5, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Horizontal base speed squared once standing (no drifting / stepping forward)."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    v = torch.sum(torch.square(asset.data.root_lin_vel_w[:, :2]), dim=1)
+    return v * (_base_height(env, asset_cfg) > min_base_height)

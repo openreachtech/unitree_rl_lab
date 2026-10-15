@@ -74,7 +74,17 @@ DEFAULT_JOINT_POS = {
     "waist_yaw_joint": 0.0,
 }
 # HoST ``target_joint_angles`` for the upper body (used by ``target_upper_dof_pos``)
-UPPER_TARGET_POS = {"left_shoulder_roll_joint": 0.3, "right_shoulder_roll_joint": -0.3}
+# HoST target_joint_angles had straight arms held out (shoulder roll +-0.3, elbow 0), which
+# looked unnatural; use unitree_rl_lab's relaxed G1 arm pose instead
+UPPER_TARGET_POS = {
+    ".*_shoulder_pitch_joint": 0.3,
+    "left_shoulder_roll_joint": 0.25,
+    "right_shoulder_roll_joint": -0.25,
+    ".*_elbow_joint": 0.97,
+    "left_wrist_roll_joint": 0.15,
+    "right_wrist_roll_joint": -0.15,
+}
+LEG_JOINTS = [".*_hip_.*", ".*_knee_joint", ".*_ankle_.*"]
 UPPER_JOINTS = [".*_shoulder_.*", ".*_elbow_joint", ".*_wrist_roll_joint", "waist_yaw_joint"]
 
 
@@ -288,8 +298,9 @@ class RewardsCfg:
         weight=1.0,
         # HoST: 1.0 m, which a deep crouch already meets on the G1 (standing straight is ~1.25 m)
         # HoST: target 1.0 m, margin 1.0 m. On the G1 a crouch or kneeling upright already gets
-        # ~0.9 of that (standing straight is ~1.25 m), so the target is raised and the margin narrowed.
-        params={"torso_cfg": TORSO, "feet_cfg": FEET, "target_head_height": 1.15, "target_head_margin": 0.3},
+        # ~0.9 of that (standing straight is ~1.25 m), so the target is raised and the margin narrowed;
+        # 1.15 m still allowed standing with bent knees.
+        params={"torso_cfg": TORSO, "feet_cfg": FEET, "target_head_height": 1.22, "target_head_margin": 0.3},
     )
 
     # -- regu
@@ -392,6 +403,7 @@ class RewardsCfg:
             "asset_cfg": SceneEntityCfg("robot", joint_names=UPPER_JOINTS),
             "target": UPPER_TARGET_POS,
             "min_base_height": PHASE3_HEIGHT,
+            "sigma": -1.0,  # HoST: -0.1, too flat to pull the arms anywhere
         },
     )
     target_orientation = RewTerm(
@@ -400,17 +412,40 @@ class RewardsCfg:
     target_base_height = RewTerm(
         func=getup_mdp.base_height_exp_gated,
         weight=10.0,
-        params={"target_height": STANDING_HEIGHT, "min_base_height": PHASE3_HEIGHT},
+        # HoST: sharpness 20, which gives ~0 a few cm below the target and so no push to straighten
+        params={"target_height": STANDING_HEIGHT, "min_base_height": PHASE3_HEIGHT, "sharpness": 4.0},
     )
     # not in HoST: legs back to the nominal standing pose (knees forward and slightly bent)
     target_lower_body_pose = RewTerm(
         func=getup_mdp.stand_pose_exp,
         weight=10.0,
         params={
-            "std": 0.5,
+            "std": 1.5,
             "min_base_height": PHASE3_HEIGHT,
-            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_.*", ".*_knee_joint", ".*_ankle_.*"]),
+            "asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINTS),
         },
+    )
+    # not in HoST: continuous squared errors (the exp kernels give no gradient far from the pose)
+    target_leg_pose_l2 = RewTerm(
+        func=getup_mdp.joint_target_l2_gated,
+        weight=-4.0,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINTS), "min_base_height": PHASE3_HEIGHT},
+    )
+    target_arm_pose_l2 = RewTerm(
+        func=getup_mdp.joint_target_l2_gated,
+        weight=-3.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_shoulder_.*", ".*_elbow_joint", ".*_wrist_roll_joint"]),
+            "target": UPPER_TARGET_POS,
+            "min_base_height": PHASE3_HEIGHT,
+        },
+    )
+    # not in HoST: no drifting / stepping once up
+    target_stand_base_vel = RewTerm(
+        func=getup_mdp.stand_base_lin_vel_l2, weight=-5.0, params={"min_base_height": PHASE3_HEIGHT}
+    )
+    target_stand_feet_vel = RewTerm(
+        func=getup_mdp.stand_feet_vel_l2, weight=-20.0, params={"feet_cfg": FEET, "min_base_height": PHASE3_HEIGHT}
     )
     # not in HoST: hold still once up (the HoST-only run kept waving its arms)
     target_stand_joint_vel = RewTerm(

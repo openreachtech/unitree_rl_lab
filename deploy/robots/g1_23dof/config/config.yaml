@@ -7,9 +7,14 @@ FSM:
     Velocity:
       id: 3
       type: RLBase
+    GetUp:
+      id: 4
+      type: GetUp
   Passive:
     transitions: 
       FixStand: LT + up.on_pressed
+      GetUp: LT + down.on_pressed
+    keys: {FixStand: "1", GetUp: "3"}
     mode: [
       1,1,1,1,1,1,
       1,1,1,1,1,1,
@@ -28,6 +33,7 @@ FSM:
     transitions: 
       Passive: LT + B.on_pressed
       Velocity: RB + X.on_pressed
+    keys: {Passive: "0", Velocity: "2"}
     kp: [
       100., 100., 100., 150., 40., 40.,
       100., 100., 100., 150., 40., 40.,
@@ -55,4 +61,16 @@ FSM:
   Velocity:
     transitions: 
       Passive: LT + B.on_pressed
+    keys: {Passive: "0"}
     policy_dir: ../../../logs/rsl_rl/unitree_g1_23dof_velocity
+  GetUp:
+    # get-up from lying on the back (tasks/locomotion/robots/g1_getup, HoST-style); enter from Passive
+    # with the robot on the ground. Motors the 23dof policy does not drive are held at 0.
+    transitions:
+      Passive: LT + B.on_pressed
+      FixStand: LT + up.on_pressed
+    keys: {Passive: "0", FixStand: "1"}
+    policy_dir: ../../../logs/rsl_rl/g1_getup/2026-10-14_19-26-30_posture8498_ft_natural
+    num_motors: 29
+    hold_kp: 100.
+    hold_kd: 5.

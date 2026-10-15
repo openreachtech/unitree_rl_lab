@@ -55,7 +55,8 @@ class GetUpPPORunnerCfg(BasePPORunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
         reward_groups=["task", "regu", "style", "target"],
-        reward_group_weights=[2.5, 0.1, 1.0, 1.0],
+        # HoST: [2.5, 0.1, 1, 1]; target raised so the standing posture counts as much as getting up
+        reward_group_weights=[2.5, 0.1, 1.0, 2.5],
         symmetry_fn="unitree_rl_lab.tasks.locomotion.robots.g1_getup.symmetry:build_mirror",
         symmetry_coef=1.0,
     )

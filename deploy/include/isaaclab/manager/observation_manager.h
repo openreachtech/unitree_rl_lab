@@ -42,7 +42,7 @@ public:
         {
             for(auto & term : group.second)
             {
-                term.reset(term.func(this->env, term.params));
+                term.reset(_masked(term.func(this->env, term.params)));
             }
         }
     }
@@ -66,7 +66,7 @@ public:
         auto& group_terms = group_obs_term_cfgs_.at(group_name);
 
         for(auto & term : group_terms) {
-            term.add(term.func(this->env, term.params));
+            term.add(_masked(term.func(this->env, term.params)));
         }
 
         if(use_gym_history)
@@ -91,7 +91,17 @@ public:
         return obs;
     }
 
+    // Zero every observation term while set (the get-up task holds the robot limp for its first
+    // steps and feeds the policy zeros meanwhile). Off by default.
+    bool zero_observations = false;
+
 protected:
+    std::vector<float> _masked(std::vector<float> obs) const
+    {
+        if(zero_observations) std::fill(obs.begin(), obs.end(), 0.0f);
+        return obs;
+    }
+
     void _prapare_terms()
     {
         // check whether have multiple input
