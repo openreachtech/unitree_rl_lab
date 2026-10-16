@@ -12,8 +12,12 @@
 // ignores the setting.
 //
 // The policies observe the commanded velocity. Their deploy.yaml names the stock
-// `velocity_commands` (joystick); this state rewrites that one key to
-// `keyboard_velocity_commands` at load time, in place so the ONNX input layout is unchanged.
+// `velocity_commands` (joystick); this state rewrites that one key to `biped_velocity_commands`
+// (the keyboard drive, recorded for the log) at load time, in place so the ONNX input layout is
+// unchanged.
+//
+// Logs (BipedLogger.h): 50 Hz telemetry, a 1 kHz torque capture over the rise, and a summary on
+// exit, in `log_dir` (config.yaml; default deploy/robots/go2w/output).
 
 #pragma once
 
@@ -25,8 +29,12 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
+
+class BipedLogger;
 
 class State_Biped : public FSMState
 {
@@ -41,6 +49,10 @@ public:
     // Read by the handstand_command observation. Set on enter(): only one state runs at a time.
     static std::atomic<float> active_stance;
 
+    // The velocity command the policy saw on its last step, written by biped_velocity_commands.
+    static std::vector<float> last_command();
+    static void record_command(const std::vector<float> & command);
+
 private:
     std::unique_ptr<isaaclab::ManagerBasedRLEnv> env;
     std::unique_ptr<JointActionMap> action_map_;
@@ -50,8 +62,13 @@ private:
     // as a fall; this one only catches the robot going over (Go2's feat/biped uses 2.6).
     float tilt_limit_ = 2.6f;
 
+    std::unique_ptr<BipedLogger> logger_;
+
     std::thread policy_thread;
     bool policy_thread_running = false;
+
+    static std::mutex command_mutex_;
+    static std::vector<float> command_;
 };
 
 REGISTER_FSM(State_Biped)

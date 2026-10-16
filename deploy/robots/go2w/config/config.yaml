@@ -146,6 +146,15 @@ FSM:
     stance: -1.0
     # The stance is a 70-90 degree tilt; this only catches the robot going over.
     tilt_limit: 2.6
+    # Logs, same keys as the Go2 handstand controller on feat/biped plus log_dir; see
+    # BipedLogger.h. log_dir: relative paths resolve against deploy/robots/go2w (like
+    # policy_dir); created if missing. <state>_telemetry_<stamp>.csv at 50 Hz while the state is
+    # active; <state>_torque_<stamp>.csv at 1 kHz over the first torque_log_s seconds (the rise);
+    # a one-line summary on exit either way.
+    log_dir: output
+    telemetry: true
+    torque_log: true
+    torque_log_s: 8.0
   BipedFront:
     transitions:
       Passive: LT + B.on_pressed
@@ -154,3 +163,7 @@ FSM:
     policy_dir: ../../../logs/rsl_rl/go2w_biped
     stance: 1.0
     tilt_limit: 2.6
+    log_dir: output
+    telemetry: true
+    torque_log: true
+    torque_log_s: 8.0

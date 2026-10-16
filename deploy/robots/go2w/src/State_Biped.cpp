@@ -2,12 +2,27 @@
 // All rights reserved.
 
 #include "State_Biped.h"
+#include "BipedLogger.h"
 #include "unitree_articulation.h"
 #include "isaaclab/envs/mdp/observations/observations.h"
 
 #include <chrono>
 
 std::atomic<float> State_Biped::active_stance{1.0f};
+std::mutex State_Biped::command_mutex_;
+std::vector<float> State_Biped::command_(3, 0.0f);
+
+std::vector<float> State_Biped::last_command()
+{
+    std::lock_guard<std::mutex> lock(command_mutex_);
+    return command_;
+}
+
+void State_Biped::record_command(const std::vector<float> & command)
+{
+    std::lock_guard<std::mutex> lock(command_mutex_);
+    command_ = command;
+}
 
 namespace isaaclab
 {
@@ -23,14 +38,22 @@ REGISTER_OBSERVATION(handstand_command)
     return std::vector<float>{1.0f, State_Biped::active_stance.load()};
 }
 
+// The keyboard drive (keyboard_velocity_commands, State_RLBase.cpp), recorded for the log.
+REGISTER_OBSERVATION(biped_velocity_commands)
+{
+    auto command = observations_map().at("keyboard_velocity_commands")(env, params);
+    State_Biped::record_command(command);
+    return command;
+}
+
 } // namespace mdp
 } // namespace isaaclab
 
 namespace
 {
 
-// Rename observations.velocity_commands -> keyboard_velocity_commands, keeping every term in
-// its place: the order of the observation terms is the ONNX input layout.
+// Rename observations.velocity_commands -> biped_velocity_commands, keeping every term in its
+// place: the order of the observation terms is the ONNX input layout.
 YAML::Node with_keyboard_velocity(YAML::Node deploy_cfg)
 {
     auto observations = deploy_cfg["observations"];
@@ -42,7 +65,7 @@ YAML::Node with_keyboard_velocity(YAML::Node deploy_cfg)
     for (const auto & term : observations)
     {
         const auto name = term.first.as<std::string>();
-        renamed[name == "velocity_commands" ? "keyboard_velocity_commands" : name] = term.second;
+        renamed[name == "velocity_commands" ? "biped_velocity_commands" : name] = term.second;
     }
     deploy_cfg["observations"] = renamed;
     return deploy_cfg;
@@ -64,6 +87,14 @@ State_Biped::State_Biped(int state_mode, std::string state_string)
     );
     env->alg = std::make_unique<isaaclab::OrtRunner>(policy_dir / "exported" / "policy.onnx");
     action_map_ = std::make_unique<JointActionMap>(env->cfg);
+
+    // Same keys as the Go2 handstand controller on feat/biped, plus log_dir.
+    BipedLogger::Config log_cfg;
+    if (cfg["log_dir"])      log_cfg.log_dir = cfg["log_dir"].as<std::string>();
+    if (cfg["telemetry"])    log_cfg.telemetry = cfg["telemetry"].as<bool>();
+    if (cfg["torque_log"])   log_cfg.torque_log = cfg["torque_log"].as<bool>();
+    if (cfg["torque_log_s"]) log_cfg.torque_log_s = cfg["torque_log_s"].as<float>();
+    logger_ = std::make_unique<BipedLogger>(log_cfg, state_string, FSMState::lowstate, FSMState::lowcmd.get());
 
     spdlog::info("State_{}: stance {:+.0f} ({}), tilt limit {:.2f} rad, policy {}",
                  state_string, stance_, stance_ > 0 ? "front wheels" : "hind wheels",
@@ -90,6 +121,8 @@ void State_Biped::enter()
     }
 
     active_stance.store(stance_);
+    record_command({0.0f, 0.0f, 0.0f});
+    logger_->on_enter(stance_, env->step_dt);
     env->robot->update();
 
     policy_thread_running = true;
@@ -103,7 +136,10 @@ void State_Biped::enter()
 
         while (policy_thread_running)
         {
+            const auto work_start = clock::now();
             env->step();
+            logger_->on_policy_step(
+                last_command(), std::chrono::duration<float, std::milli>(clock::now() - work_start).count());
             std::this_thread::sleep_until(sleepTill);
             sleepTill += dt;
         }
@@ -113,6 +149,8 @@ void State_Biped::enter()
 void State_Biped::run()
 {
     action_map_->write(env->action_manager->processed_actions(), *lowcmd);
+    // After the targets are written, so tau_cmd pairs the command in force with the state it acts on.
+    logger_->on_fsm_tick();
 }
 
 void State_Biped::exit()
@@ -122,6 +160,8 @@ void State_Biped::exit()
     {
         policy_thread.join();
     }
+    // After the join: no telemetry row can be in flight when the stream closes.
+    logger_->on_exit();
 }
 
 State_Biped::~State_Biped() = default;

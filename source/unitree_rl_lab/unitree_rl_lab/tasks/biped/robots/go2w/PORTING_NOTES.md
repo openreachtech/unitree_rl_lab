@@ -65,4 +65,6 @@ It did not stall: both single-stance tasks rise without assistance.
 
 `deploy/robots/go2w`: `State_Biped`, keyboard workflow as Go2's on `feat/biped`. From FixStand,
 [3] hind wheels, [4] front wheels, both running `Go2w-Biped` with a fixed `handstand_command`
-stance; [f]/[b]/[y]/[u] velocity, [0] Passive. Checked in MuJoCo.
+stance; [f]/[b]/[y]/[u] velocity, [0] Passive. Checked in MuJoCo. `BipedLogger` writes
+feat/biped's diagnostics (50 Hz telemetry, 1 kHz torque capture over the rise, exit summary) to
+`log_dir` (default `deploy/robots/go2w/output`).
