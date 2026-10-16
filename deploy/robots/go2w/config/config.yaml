@@ -13,6 +13,14 @@ FSM:
     Dynamic:
       id: 4
       type: Flip
+    BipedHind:
+      id: 5
+      type: Biped
+      optional: true
+    BipedFront:
+      id: 6
+      type: Biped
+      optional: true
   Passive:
     transitions:
       FixStand: LT + A.on_pressed
@@ -35,10 +43,14 @@ FSM:
       Passive: LT + B.on_pressed
       Velocity: start.on_pressed
       Dynamic: LT + up.on_pressed
+      BipedHind: LT + Y.on_pressed
+      BipedFront: LT + X.on_pressed
     keyboard_transitions:
       Passive: "0"
       Velocity: enter
       Dynamic: "2"
+      BipedHind: "3"
+      BipedFront: "4"
     kp: [ 60, 80, 80, 60,
           80, 80, 60, 80, 
           80, 60, 80, 80,
@@ -115,3 +127,30 @@ FSM:
         motion: sideflip
         target_height: 0.50
         target_roll_turns: -1.0
+
+  # --- Handstands (State_Biped) ------------------------------------------------
+  # Same workflow as the Go2 controller on feat/biped: from FixStand, [3] rises onto the hind
+  # wheels and [4] onto the front wheels; drive with the latched velocity keys
+  # ([f]/[b] fore-aft, [y]/[u] yaw, [space] zero -- no lateral, the policy never had one);
+  # [0]/LT+B Passive. There is no way back to FixStand from a stance: FixStand interpolates
+  # the joints from wherever they are and would drop the robot.
+  #
+  # Both states run the same two-stance policy (Go2w-Biped) and differ only in `stance`, the
+  # handstand_command observation: +1 front wheels, -1 hind wheels.
+  BipedHind:
+    transitions:
+      Passive: LT + B.on_pressed
+    keyboard_transitions:
+      Passive: "0"
+    policy_dir: ../../../logs/rsl_rl/go2w_biped
+    stance: -1.0
+    # The stance is a 70-90 degree tilt; this only catches the robot going over.
+    tilt_limit: 2.6
+  BipedFront:
+    transitions:
+      Passive: LT + B.on_pressed
+    keyboard_transitions:
+      Passive: "0"
+    policy_dir: ../../../logs/rsl_rl/go2w_biped
+    stance: 1.0
+    tilt_limit: 2.6

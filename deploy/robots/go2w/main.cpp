@@ -3,6 +3,7 @@
 #include "FSM/State_FixStand.h"
 #include "FSM/State_RLBase.h"
 #include "State_Flip.h"
+#include "State_Biped.h"
 
 std::unique_ptr<LowCmd_t> FSMState::lowcmd = nullptr;
 std::shared_ptr<LowState_t> FSMState::lowstate = nullptr;
@@ -48,12 +49,15 @@ int main(int argc, char** argv)
     auto fsm = std::make_unique<CtrlFSM>(param::config["FSM"]);
     fsm->start();
 
-    std::cout << "Remote: [L2+A] FixStand, [Start] Velocity, [L2+Up] Dynamic, [L2+B] Passive\n";
-    std::cout << "Keyboard: [1] FixStand, [Enter] Velocity, [2] Dynamic, [0] Passive\n";
+    std::cout << "Remote: [L2+A] FixStand, [Start] Velocity, [L2+Up] Dynamic, [L2+Y] Biped hind,\n";
+    std::cout << "        [L2+X] Biped front, [L2+B] Passive\n";
+    std::cout << "Keyboard: [1] FixStand, [Enter] Velocity, [2] Dynamic, [3] Biped hind, [4] Biped front,\n";
+    std::cout << "          [0] Passive\n";
     std::cout << "          [F/B/L/R/Y/U] velocity forward/back/left/right/yaw (latched, diagonal OK)\n";
     std::cout << "          [Space] zero velocity cmd; [0] Passive FSM\n";
     std::cout << "Dynamic: enter from FixStand, then [3] jump, [4] backflip, [5] sideflip (repeatable);\n";
     std::cout << "         [1] back to FixStand, [0] Passive.\n";
+    std::cout << "Biped: enter from FixStand; [F/B] fore-aft, [Y/U] yaw, [Space] zero; [0] Passive.\n";
 
     while (true)
     {
