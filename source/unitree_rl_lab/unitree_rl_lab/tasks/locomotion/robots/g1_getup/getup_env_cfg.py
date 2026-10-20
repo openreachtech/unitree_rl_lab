@@ -553,3 +553,33 @@ class RobotHoSTURDFPlayEnvCfg(RobotPlayEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.scene.robot = _make_host_urdf_only_robot_cfg()
+
+
+# HoST's values of the params the posture fine-tunes changed (run g1_getup/*_host)
+G1_HOST_PARAMS = {
+    "task_orientation_head_height/target_head_height": 1.0,
+    "task_orientation_head_height/target_head_margin": 1.0,
+    "style_left_foot_displacement/standup_height": 0.65,
+    "style_right_foot_displacement/standup_height": 0.65,
+    "target_ang_vel_xy/min_base_height": 0.65,
+    "target_lin_vel_xy/min_base_height": 0.65,
+    "target_feet_height_var/min_base_height": 0.65,
+    "target_upper_dof_pos/min_base_height": 0.65,
+    "target_orientation/min_base_height": 0.65,
+    "target_base_height/min_base_height": 0.65,
+    "target_base_height/sharpness": 20.0,
+    "target_upper_dof_pos/target": {"left_shoulder_roll_joint": 0.3, "right_shoulder_roll_joint": -0.3},
+    "target_upper_dof_pos/sigma": -0.1,
+}
+
+
+@configclass
+class RobotStagedEnvCfg(RobotEnvCfg):
+    """From scratch in one run: HoST's rewards until the robot gets up without help, then the
+    posture terms of RobotEnvCfg are faded in (``staged.make_staged``)."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        from .staged import make_staged
+
+        make_staged(self, G1_HOST_PARAMS)

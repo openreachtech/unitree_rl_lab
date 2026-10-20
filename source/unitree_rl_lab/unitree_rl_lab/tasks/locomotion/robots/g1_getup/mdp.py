@@ -728,3 +728,44 @@ def stand_base_lin_vel_l2(
     asset: Articulation = env.scene[asset_cfg.name]
     v = torch.sum(torch.square(asset.data.root_lin_vel_w[:, :2]), dim=1)
     return v * (_base_height(env, asset_cfg) > min_base_height)
+
+
+def ramp_posture_rewards(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    final_weights: dict[str, float],
+    host_params: dict[str, object],
+    final_params: dict[str, object],
+    ramp_steps: int,
+    start_assist_frac: float = 0.01,
+    delay_steps: int = 0,
+) -> dict[str, torch.Tensor]:
+    """Two-stage training in one run: HoST's reward set until the get-up curriculum is done (the
+    pulling force has reached 0), then the posture terms are faded in over ``ramp_steps`` env
+    steps. ``final_weights``: term -> weight it ramps to (0 before). ``host_params`` /
+    ``final_params``: ``"term/param"`` -> value; numbers are interpolated, other values switch at
+    the middle of the ramp. ``delay_steps``: wait that long after the pulling force reached 0 (let the
+    robot learn to stand without help first) before starting the ramp.
+
+    From scratch, the posture terms (gated at a 0.5 m pelvis height) penalize the robot as it rises
+    past it and the policy settles sitting; added once the robot stands they shape the stance.
+    """
+    state = getattr(env, "_posture_ramp_start", None)
+    if state is None and _delta_action_term(env).assist_frac.mean() <= start_assist_frac:
+        state = env._posture_ramp_start = env.common_step_counter
+    alpha = 0.0 if state is None else min(1.0, max(0.0, env.common_step_counter - state - delay_steps) / ramp_steps)
+    rm = env.reward_manager
+    for name, w in final_weights.items():
+        cfg = rm.get_term_cfg(name)
+        cfg.weight = alpha * w
+        rm.set_term_cfg(name, cfg)
+    for key, fv in final_params.items():
+        name, param = key.split("/")
+        hv = host_params[key]
+        cfg = rm.get_term_cfg(name)
+        if isinstance(fv, (int, float)) and isinstance(hv, (int, float)):
+            cfg.params[param] = hv + alpha * (fv - hv)
+        else:
+            cfg.params[param] = fv if alpha >= 0.5 else hv
+        rm.set_term_cfg(name, cfg)
+    return {"posture_ramp": torch.tensor(alpha)}

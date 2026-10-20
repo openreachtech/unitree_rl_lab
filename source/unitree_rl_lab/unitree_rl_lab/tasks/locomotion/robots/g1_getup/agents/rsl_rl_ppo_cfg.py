@@ -68,3 +68,28 @@ class StandUpPPORunnerCfg(GetUpPPORunnerCfg):
 
     experiment_name = "g1_standup"
     max_iterations = 5000
+
+
+@configclass
+class GetUp29PPORunnerCfg(GetUpPPORunnerCfg):
+    """Same learner for the G1 29dof get-up."""
+
+    experiment_name = "g1_29dof_getup"
+
+
+@configclass
+class GetUp29HoSTPPORunnerCfg(GetUp29PPORunnerCfg):
+    """HoST's reward group weights [2.5, 0.1, 1, 1] for training from scratch."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.algorithm.reward_group_weights = [2.5, 0.1, 1.0, 1.0]
+
+
+@configclass
+class GetUpStagedPPORunnerCfg(GetUpPPORunnerCfg):
+    """G1 23dof from scratch with the staged rewards: HoST's group weights."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.algorithm.reward_group_weights = [2.5, 0.1, 1.0, 1.0]
