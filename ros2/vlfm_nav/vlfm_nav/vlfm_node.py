@@ -216,10 +216,15 @@ class VlfmNode(Node):
                 # rate. The scorer is motion-gated (0.5 m / 0.35 rad) on top of its
                 # rate cap, and measures 0.12 Hz on a live run -- about two scorings
                 # per 15 s, so the original 15 s window asked for three hits out of
-                # two chances and could essentially never fire. 30 s is the smallest
-                # window that gives three scorings room to happen.
+                # two chances and could essentially never fire. 30 s was the smallest
+                # window that gives three scorings room to happen -- and a 6-trial
+                # benchmark (2026-10-06, chair/sofa) showed that is not enough slack:
+                # both failures detected the target (7 and 5 times over 10 min) and
+                # still never confirmed, because at 0.11 Hz a 30 s window demands
+                # three CONSECUTIVE scorings all hit and all land within 1 m. 60 s
+                # asks for three hits out of about seven chances instead of three.
                 ("target_confirm_n", 3),
-                ("target_confirm_window_s", 30.0),
+                ("target_confirm_window_s", 60.0),
                 ("target_cluster_m", 1.0),
                 # Re-issue the Nav2 goal only when the estimate really moves. Every
                 # detection refines it slightly, and resending on each one makes MPPI
@@ -365,7 +370,7 @@ class VlfmNode(Node):
         # escaped its way around the apartment. So WAIT checks the actual lifecycle
         # state, and heals a stuck node by driving the missing transitions itself.
         self._bt_state = None
-        self._bt_state_pending = False
+        self._bt_state_pending = None   # sim time the outstanding get_state went out
         self._bt_heal_at = None
         self._gs_cli = self.create_client(GetState, "/bt_navigator/get_state")
         self._cs_cli = self.create_client(ChangeState, "/bt_navigator/change_state")
@@ -765,12 +770,33 @@ class VlfmNode(Node):
 
     # ---------------------------------------------------------- bt_navigator watch
     def _poll_bt_state(self):
-        if self._bt_state_pending or not self._gs_cli.service_is_ready():
+        """Ask bt_navigator what state it is in, one request at a time.
+
+        The request has to be able to time out. bt_navigator drops a get_state
+        response under the start-up CPU spike ("failed to send response ...
+        client will not receive response"), and a dropped response means the
+        future never completes and its done-callback never runs. With a plain
+        boolean in-flight flag that latches the node out of ever asking again:
+        _bt_state stays None, WAIT never sees bt_state == "active", and the robot
+        stands still forever -- one trial of the 2026-10-06 benchmark sat in WAIT
+        for its whole 30 minutes exactly this way. Nav2 itself was fine; only the
+        answer was lost. So the flag is a timestamp, and a request older than
+        RETRY_S is abandoned and reissued."""
+        RETRY_S = 5.0
+        now = self._now()
+        if self._bt_state_pending is not None:
+            if now - self._bt_state_pending < RETRY_S:
+                return
+            self._bt_state_pending = None   # response lost; ask again below
+        if not self._gs_cli.service_is_ready():
             return
-        self._bt_state_pending = True
+        self._bt_state_pending = now
+        sent = now
 
         def done(fut):
-            self._bt_state_pending = False
+            # a late answer to an abandoned request must not clear a newer one
+            if self._bt_state_pending == sent:
+                self._bt_state_pending = None
             try:
                 self._bt_state = fut.result().current_state.label
             except Exception:
