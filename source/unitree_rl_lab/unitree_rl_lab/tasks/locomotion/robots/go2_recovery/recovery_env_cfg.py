@@ -4,7 +4,7 @@ Built from the two tasks the experts come from:
 
 - ``Unitree-Go2-Velocity-v1`` (go2-blind): the observation layout (history 3) and the walking
   reward set. The locomotion expert loads with no change at all.
-- ``Unitree-Go2-GetUp-v0``: the tumbled-pose reset and the get-up reward set.
+- the original 42-dim get-up policy (``Go2-GetUp`` ``model_2999``): the tumbled-pose reset and the get-up reward set.
 
 Both use the stock ``UNITREE_GO2_CFG`` actuator model, so this does too -- not the corrected one the
 multi-task experts run on. Switching it means retraining both experts under it first.
@@ -37,7 +37,7 @@ from unitree_rl_lab.tasks.locomotion.robots.go2_recovery import mdp
 from unitree_rl_lab.tasks.locomotion.robots.go2_recovery.obs_spec import ACTION_SCALE, HISTORY
 
 STANDING_HEIGHT = 0.30
-"""Get-up target, as in ``Unitree-Go2-GetUp-v0``."""
+"""Get-up target, as in the original get-up task."""
 
 FEET = SceneEntityCfg("contact_forces", body_names=".*_foot")
 
@@ -344,7 +344,7 @@ class GetUpEnvCfg(RobotEnvCfg):
     ``State_RLBase`` runs either policy -- only ``policy_dir`` differs. The velocity command is held
     at zero: its columns carry no information, so a policy trained or converted here keeps zero
     weight on them and ignores whatever the deploy side feeds in. The get-up policy itself is the
-    ``Unitree-Go2-GetUp-v0`` one, converted exactly (``build_recovery_moe_checkpoint.py
+    original 42-dim one, converted exactly (``build_recovery_moe_checkpoint.py
     --getup-only``); this environment is for playing, exporting and, if wanted, fine-tuning it.
     """
 

@@ -5,8 +5,8 @@ assembled rather than trained (``build_recovery_moe_checkpoint.py``) has neither
 from the task's training environment -- the one whose command ranges, gains and observation terms
 the deploy side has to reproduce -- without stepping it.
 
-    python scripts/rsl_rl/export_policy.py --task Unitree-Go2-GetUp-Unified-v0 \
-        --checkpoint logs/rsl_rl/go2_getup_unified/<run>/model_0.pt
+    python scripts/rsl_rl/export_policy.py --task Unitree-Go2-GetUp-v0 \
+        --checkpoint logs/rsl_rl/go2_getup/<run>/model_0.pt
 
 The resulting run directory is what ``deploy/robots/go2/config/config.yaml``'s ``policy_dir`` points at.
 """

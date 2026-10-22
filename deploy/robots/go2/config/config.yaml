@@ -43,7 +43,7 @@ FSM:
     transitions:
       Passive: LT + B.on_pressed
     bad_orientation_limit: 0  # a fallen robot is this policy's starting point, not a fault
-    policy_dir: ../../../logs/rsl_rl/go2_getup_unified
+    policy_dir: ../../../logs/rsl_rl/go2_getup
   Recovery:
     transitions:
       Passive: LT + B.on_pressed

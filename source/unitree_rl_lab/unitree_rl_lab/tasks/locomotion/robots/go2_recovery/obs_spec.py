@@ -59,7 +59,7 @@ def _newest(name: str) -> int:
 
 
 GETUP_POLICY_DIM = 42
-"""``Unitree-Go2-GetUp-v0``: ang_vel(3), gravity(3), joint_pos(12), joint_vel(12), last_action(12)."""
+"""Original 42-dim get-up policy (``Go2-GetUp`` ``model_2999``): ang_vel(3), gravity(3), joint_pos(12), joint_vel(12), last_action(12)."""
 
 GETUP_POLICY_MAP: list[tuple[int, int, int]] = [
     (0, 3, _P["base_ang_vel"]),

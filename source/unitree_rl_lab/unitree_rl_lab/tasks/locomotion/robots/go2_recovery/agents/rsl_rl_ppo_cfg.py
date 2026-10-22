@@ -83,14 +83,14 @@ class RecoveryMoEPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
 
 @configclass
-class GetUpUnifiedPPORunnerCfg(RslRlOnPolicyRunnerCfg):
+class GetUpPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     """A plain actor-critic for the get-up policy on the shared interface. Fine-tuning settings
     follow the mixture's: the converted actor already knows the motion."""
 
     num_steps_per_env = 24
     max_iterations = 1000
     save_interval = 100
-    experiment_name = "go2_getup_unified"
+    experiment_name = "go2_getup"
     empirical_normalization = False
     clip_actions = 10.0
     policy: RslRlPpoActorCriticCfg = RslRlPpoActorCriticCfg(

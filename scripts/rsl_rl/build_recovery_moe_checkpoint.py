@@ -25,7 +25,7 @@ two policies' noise, the get-up one doubled into the new action units.
     python scripts/rsl_rl/train.py --task Unitree-Go2-Recovery-MoE-v0 --headless --resume --load_run '.*_moe_init'
 
 With ``--getup-only`` it writes the get-up policy alone instead, as a plain actor-critic on the same
-interface (``Unitree-Go2-GetUp-Unified-v0``), so get-up alone and the mixture run on one deploy
+interface (``Unitree-Go2-GetUp-v0``), so get-up alone and the mixture run on one deploy
 state::
 
     python scripts/rsl_rl/build_recovery_moe_checkpoint.py --getup-only --getup-checkpoint <run>/model_2999.pt
@@ -116,16 +116,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--experiment", default=None, help="Log directory under logs/rsl_rl.")
     parser.add_argument("--locomotion-checkpoint", help="Unitree-Go2-Velocity-v1 model_*.pt (117 obs).")
-    parser.add_argument("--getup-checkpoint", required=True, help="Unitree-Go2-GetUp-v0 model_*.pt (42 obs).")
+    parser.add_argument("--getup-checkpoint", required=True, help="Original 42-dim get-up model_*.pt (Go2-GetUp/.../model_2999.pt).")
     parser.add_argument("--gating-hidden-dims", type=int, nargs="+", default=[128])
     parser.add_argument("--no-verify", action="store_true")
     parser.add_argument(
-        "--getup-only", action="store_true", help="Write the get-up policy alone, for Unitree-Go2-GetUp-Unified-v0."
+        "--getup-only", action="store_true", help="Write the get-up policy alone, for Unitree-Go2-GetUp-v0."
     )
     args = parser.parse_args()
     if not args.getup_only and args.locomotion_checkpoint is None:
         parser.error("--locomotion-checkpoint is required unless --getup-only")
-    experiment = args.experiment or ("go2_getup_unified" if args.getup_only else "go2_recovery_moe")
+    experiment = args.experiment or ("go2_getup" if args.getup_only else "go2_recovery_moe")
 
     ratio = obs_spec.GETUP_ACTION_SCALE / obs_spec.ACTION_SCALE
     locomotion = None if args.getup_only else load_state_dict(args.locomotion_checkpoint)
@@ -199,7 +199,7 @@ def main() -> None:
     )
     print(f"[info] wrote {target_path}")
     if args.getup_only:
-        print(f"\nNext: python scripts/rsl_rl/export_policy.py --task Unitree-Go2-GetUp-Unified-v0 --checkpoint {target_path}")
+        print(f"\nNext: python scripts/rsl_rl/export_policy.py --task Unitree-Go2-GetUp-v0 --checkpoint {target_path}")
     else:
         print("\nNext: python scripts/rsl_rl/train.py --task Unitree-Go2-Recovery-MoE-v0 --headless --resume --load_run '.*_moe_init'")
 
