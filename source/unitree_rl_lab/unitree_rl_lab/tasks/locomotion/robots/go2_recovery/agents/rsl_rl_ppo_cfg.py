@@ -93,6 +93,11 @@ class GetUpPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     experiment_name = "go2_getup"
     empirical_normalization = False
     clip_actions = 10.0
+    """Same bound as the mixture, and built into the exported network by export_policy.py. The
+    original get-up policy was trained unclipped and never needed it in Isaac Lab, but in MuJoCo,
+    once inverted, its output fed back through ``last_action`` until it sat at the deploy side's +-100
+    and the robot froze upside down (Go2: 4 of 25 falls). With the bound: 30 of 30. It does not
+    bind during an ordinary get-up."""
     policy: RslRlPpoActorCriticCfg = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,  # overwritten by the converted checkpoint
         actor_hidden_dims=[512, 256, 128],

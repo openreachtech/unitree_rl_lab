@@ -27,12 +27,36 @@ simulation_app = app_launcher.app
 
 import gymnasium as gym  # noqa: E402
 import os  # noqa: E402
+import torch  # noqa: E402
 from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper, export_policy_as_jit, export_policy_as_onnx  # noqa: E402
 from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry  # noqa: E402
 from rsl_rl.runners import OnPolicyRunner  # noqa: E402
 
 import unitree_rl_lab.tasks  # noqa: F401, E402
 from unitree_rl_lab.utils.export_deploy_cfg import export_deploy_cfg  # noqa: E402
+
+
+class ClampedActor(torch.nn.Module):
+    """The actor followed by the runner's ``clip_actions``, so the exported network clamps its own output.
+
+    ``RslRlVecEnvWrapper`` clips actions before ``env.step``, outside the network: training only ever
+    saw clipped actions, and the clipped value is also what comes back as ``last_action``. Exported
+    without it, a deploy side that clips more loosely (go2_ctrl and anaguma_main both use +-100) runs a
+    different policy -- one whose large outputs feed back through ``last_action`` and run away, which
+    is how the walk / fall / get-up mixture ended up frozen on its side in MuJoCo with actions near 300.
+    """
+
+    def __init__(self, actor: torch.nn.Module, clip: float):
+        super().__init__()
+        self.actor = actor
+        self.clip = float(clip)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.clamp(self.actor(x), -self.clip, self.clip)
+
+    def __getitem__(self, index: int):
+        # the ONNX exporter reads `actor[0].in_features` for its dummy input
+        return self.actor[index]
 
 
 def main():
@@ -52,6 +76,9 @@ def main():
     runner.load(checkpoint)
 
     policy_nn = runner.alg.policy
+    if agent_cfg.clip_actions is not None:
+        policy_nn.actor = ClampedActor(policy_nn.actor, agent_cfg.clip_actions)
+        print(f"[INFO] clip_actions={agent_cfg.clip_actions} is built into the exported network")
     normalizer = getattr(policy_nn, "actor_obs_normalizer", None)
     export_dir = os.path.join(run_dir, "exported")
     export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_dir, filename="policy.pt")
