@@ -15,12 +15,17 @@ State_RLBase::State_RLBase(int state_mode, std::string state_string)
     );
     env->alg = std::make_unique<isaaclab::OrtRunner>(policy_dir / "exported" / "policy.onnx");
 
-    this->registered_checks.emplace_back(
-        std::make_pair(
-            [&]()->bool{ return isaaclab::mdp::bad_orientation(env.get(), 1.0); },
-            FSMStringMap.right.at("Passive")
-        )
-    );
+    // Drop to Passive once the trunk tilts past this many radians. A policy that is meant to get up
+    // from a fall (GetUp, Recovery) sets `bad_orientation_limit: 0` in config.yaml to disable it.
+    float bad_orientation_limit = cfg["bad_orientation_limit"] ? cfg["bad_orientation_limit"].as<float>() : 1.0f;
+    if (bad_orientation_limit > 0.0f) {
+        this->registered_checks.emplace_back(
+            std::make_pair(
+                [this, bad_orientation_limit]()->bool{ return isaaclab::mdp::bad_orientation(env.get(), bad_orientation_limit); },
+                FSMStringMap.right.at("Passive")
+            )
+        );
+    }
 }
 
 void State_RLBase::run()

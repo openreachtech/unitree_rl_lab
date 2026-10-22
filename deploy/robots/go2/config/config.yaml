@@ -7,9 +7,19 @@ FSM:
     Velocity:
       id: 3
       type: RLBase
+    # Get-up alone and walk + fall + get-up: the same State_RLBase as Velocity, on the same
+    # observation / action interface -- only policy_dir differs. Entered from Passive, i.e. lying down.
+    GetUp:
+      id: 4
+      type: RLBase
+    Recovery:
+      id: 5
+      type: RLBase
   Passive:
     transitions: 
       FixStand: LT + A.on_pressed
+      GetUp: LT + down.on_pressed
+      Recovery: LT + left.on_pressed
     mode: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
     kd: [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]
   FixStand:
@@ -29,3 +39,13 @@ FSM:
       Passive: LT + B.on_pressed
     policy_dir: ../../../logs/rsl_rl/unitree_go2_velocity
     
+  GetUp:
+    transitions:
+      Passive: LT + B.on_pressed
+    bad_orientation_limit: 0  # a fallen robot is this policy's starting point, not a fault
+    policy_dir: ../../../logs/rsl_rl/go2_getup_unified
+  Recovery:
+    transitions:
+      Passive: LT + B.on_pressed
+    bad_orientation_limit: 0
+    policy_dir: ../../../logs/rsl_rl/go2_recovery_moe

@@ -333,3 +333,42 @@ class RobotHardKnockdownPlayEnvCfg(RobotPlayEnvCfg):
         self.events.push_robot = None
         self.events.knockdown.interval_range_s = (5.0, 5.0)
         self.events.knockdown.params = {"angular_speed_range": (32.0, 40.0), "linear_speed_range": (4.0, 6.0)}
+
+
+@configclass
+class GetUpEnvCfg(RobotEnvCfg):
+    """Get-up alone, with exactly the observation, action and deploy interface of the walk / fall /
+    get-up mixture (and of the blind walking policy it was built from).
+
+    Same 117-column observation, joint order, default pose and 0.25 action scale, so one
+    ``State_RLBase`` runs either policy -- only ``policy_dir`` differs. The velocity command is held
+    at zero: its columns carry no information, so a policy trained or converted here keeps zero
+    weight on them and ignores whatever the deploy side feeds in. The get-up policy itself is the
+    ``Unitree-Go2-GetUp-v0`` one, converted exactly (``build_recovery_moe_checkpoint.py
+    --getup-only``); this environment is for playing, exporting and, if wanted, fine-tuning it.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.episode_length_s = 8.0
+        self.events.reset_pose.params["standing_prob"] = 0.1
+        self.events.knockdown = None
+        self.events.push_robot = None
+        self.commands.base_velocity.rel_standing_envs = 1.0
+        self.commands.base_velocity.ranges.lin_vel_x = (0.0, 0.0)
+        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
+        self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
+
+
+@configclass
+class GetUpPlayEnvCfg(GetUpEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 32
+        self.episode_length_s = 6.0
+        self.events.reset_pose.params["standing_prob"] = 0.0
+        self.viewer.origin_type = "asset_root"
+        self.viewer.asset_name = "robot"
+        self.viewer.env_index = 0
+        self.viewer.eye = (2.0, 2.0, 1.0)
+        self.viewer.lookat = (0.0, 0.0, 0.1)
