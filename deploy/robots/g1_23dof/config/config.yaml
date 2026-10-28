@@ -70,7 +70,7 @@ FSM:
       Passive: LT + B.on_pressed
       FixStand: LT + up.on_pressed
     keys: {Passive: "0", FixStand: "1"}
-    policy_dir: ../../../logs/rsl_rl/g1_getup/2026-10-14_19-26-30_posture8498_ft_natural
+    policy_dir: ../../../logs/rsl_rl/g1_getup/g1_23dof_getup_5000
     num_motors: 29
     hold_kp: 100.
     hold_kd: 5.

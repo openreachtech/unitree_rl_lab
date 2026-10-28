@@ -47,6 +47,14 @@ def _make_robot_cfg_29() -> ArticulationCfg:
     a["N5020-16"].damping = {".*_ankle_.*": 2.0, ".*_shoulder_.*|.*_elbow_.*|.*_wrist_roll.*|waist_(roll|pitch)_joint": 4.0}
     a["W4010-25"].stiffness = 40.0
     a["W4010-25"].damping = 1.0
+    # unitree_rl_lab's 29dof cfg puts the ankles and the waist roll / pitch in the 25 N*m N5020-16
+    # group; the G1 29dof URDF gives them 35 N*m (as the 23dof cfg does for the ankles). At 25 N*m the
+    # waist could not hold the torso (it rested on the pitch limit) and the robot stood on its joint
+    # limits (locked knees, elbows, wrists).
+    a["N5020-16"].effort_limit_sim = {".*_ankle_.*": 35.0, "waist_(roll|pitch)_joint": 35.0,
+                                      ".*_shoulder_.*|.*_elbow_.*|.*_wrist_roll.*": 25.0}
+    a["N5020-16"].velocity_limit_sim = {".*_ankle_.*": 30.0, "waist_(roll|pitch)_joint": 30.0,
+                                        ".*_shoulder_.*|.*_elbow_.*|.*_wrist_roll.*": 37.0}
     return robot
 
 
@@ -132,3 +140,16 @@ class Robot29StagedEnvCfg(Robot29EnvCfg):
         from .staged import make_staged
 
         make_staged(self, G1_HOST_PARAMS, ramp_iterations=2000, delay_iterations=1000)
+
+
+@configclass
+class Robot29StagedV2EnvCfg(Robot29EnvCfg):
+    """29dof staged as the 23dof (ramp over 1000 iterations once the pulling force is 0, after a
+    500-iteration delay), with the URDF effort limits (ankles, waist roll / pitch 35 N*m)."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        from .getup_env_cfg import G1_HOST_PARAMS
+        from .staged import make_staged
+
+        make_staged(self, G1_HOST_PARAMS, ramp_iterations=1000, delay_iterations=500)

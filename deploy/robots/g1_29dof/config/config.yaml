@@ -8,6 +8,10 @@ FSM:
       id: 3
       type: RLBase
 
+    GetUp:
+      id: 4
+      type: GetUp
+
     Mimic_Dance_102: # uncomment to enable
       id: 101
       type: Mimic
@@ -18,6 +22,8 @@ FSM:
   Passive:
     transitions: 
       FixStand: LT + up.on_pressed
+      GetUp: LT + down.on_pressed
+    keys: {FixStand: "1", GetUp: "3"}
     mode: [
       1,1,1,1,1,1,
       1,1,1,1,1,1,
@@ -36,6 +42,7 @@ FSM:
     transitions: 
       Passive: LT + B.on_pressed
       Velocity: RB + X.on_pressed
+    keys: {Passive: "0", Velocity: "2"}
     kp: [
       100., 100., 100., 150., 40., 40.,
       100., 100., 100., 150., 40., 40.,
@@ -86,4 +93,14 @@ FSM:
     policy_dir: config/policy/mimic/gangnam_style/
     time_start: 5.2
     time_end: 25.5
-
+  GetUp:
+    # get-up from lying on the back (tasks/locomotion/robots/g1_getup, Unitree-G1-29dof-GetUp); enter from
+    # Passive with the robot on the ground.
+    transitions:
+      Passive: LT + B.on_pressed
+      FixStand: LT + up.on_pressed
+    keys: {Passive: "0", FixStand: "1"}
+    policy_dir: ../../../logs/rsl_rl/g1_29dof_getup/g1_29dof_getup_policy
+    num_motors: 29
+    hold_kp: 100.
+    hold_kd: 5.
