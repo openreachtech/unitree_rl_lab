@@ -17,7 +17,8 @@ from isaaclab.utils import configclass
 
 from unitree_rl_lab.assets.robots import unitree_actuators
 
-UNITREE_MODEL_DIR = "/home/tak/unitree/unitree_model"  # Replace with the actual path to your unitree_model directory
+# Path to your unitree_model directory. Override with the UNITREE_MODEL_DIR environment variable.
+UNITREE_MODEL_DIR = os.environ.get("UNITREE_MODEL_DIR", os.path.expanduser("~/unitree/unitree_model"))
 UNITREE_ROS_DIR = "path/to/unitree_ros"  # Replace with the actual path to your unitree_ros package
 
 
@@ -254,6 +255,80 @@ UNITREE_B2_CFG = UnitreeArticulationCfg(
         ),
     },
     joint_sdk_names=UNITREE_GO2_CFG.joint_sdk_names.copy(),
+)
+
+UNITREE_ALIENGO_Z1_CFG = UnitreeArticulationCfg(
+    # Aliengo + Z1 arm (+ Unitree gripper), merged from unitree_ros by
+    #   python scripts/tools/build_quadruped_z1_urdf.py --base aliengo
+    # Isaac Sim only spawns USD: UrdfFileCfg converts the URDF at every launch into a fresh
+    # /tmp/IsaacLab/usd_<time>_<rand> (no usd_dir is set, so nothing is cached). Fixed joints are
+    # merged (trunk/link00 -> base, rotors/IMU -> parents), except the feet and gripperStator,
+    # which are marked dont_collapse by the build script.
+    spawn=UnitreeUrdfFileCfg(
+        asset_path=f"{UNITREE_MODEL_DIR}/AliengoZ1/urdf/aliengo_z1.urdf",
+    ),
+    init_state=ArticulationCfg.InitialStateCfg(
+        pos=(0.0, 0.0, 0.42),
+        joint_pos={
+            ".*_hip_joint": 0.0,
+            ".*_thigh_joint": 0.8,
+            ".*_calf_joint": -1.5,
+            # Z1 folded over the trunk. joint2 (>= 0) and joint3 (<= 0) are lifted slightly off their
+            # hard limits so the default pose sits inside the soft limits (soft_joint_pos_limit_factor).
+            "joint1": 0.0,
+            "joint2": 0.2,
+            "joint3": -0.2,
+            "joint[4-6]": 0.0,
+            "jointGripper": 0.0,
+        },
+        joint_vel={".*": 0.0},
+    ),
+    # Sources (unitree_ros):
+    #   [URDF]  limits from the official descriptions --
+    #           aliengo_description/xacro/const.xacro (hip/thigh/calf_torque_max, *_velocity_max) and
+    #           z1_description/xacro/z1.urdf (<limit effort/velocity>).
+    #   [GUESS] not in any official file; tune after training.
+    # The URDF gives no torque-speed curve, so the legs use IdealPD: torque clipped at a constant
+    # effort_limit. velocity_limit_sim sets the PhysX joint velocity cap explicitly instead of
+    # relying on the value carried over by the URDF->USD conversion.
+    actuators={
+        "legs_hip_thigh": IdealPDActuatorCfg(
+            joint_names_expr=[".*_hip_joint", ".*_thigh_joint"],
+            effort_limit=35.278,  # [URDF] hip/thigh_torque_max
+            velocity_limit_sim=20.0,  # [URDF] hip/thigh_velocity_max
+            stiffness=40.0,  # [GUESS] Go2 (25 / 0.5) scaled up for the ~2x heavier Aliengo + Z1
+            damping=1.0,  # [GUESS]
+            friction=0.01,  # [GUESS] same as UNITREE_B2_CFG
+        ),
+        "legs_calf": IdealPDActuatorCfg(
+            joint_names_expr=[".*_calf_joint"],
+            effort_limit=44.4,  # [URDF] calf_torque_max (1.2586x hip: extra knee reduction)
+            velocity_limit_sim=15.89,  # [URDF] calf_velocity_max
+            stiffness=40.0,  # [GUESS]
+            damping=1.0,  # [GUESS]
+            friction=0.01,  # [GUESS]
+        ),
+        # Held at the default pose (not in the action space yet). For reference, Unitree's Gazebo
+        # config (aliengoZ1_description/config/robot_control.yaml) uses p=300, d=5 on all arm joints,
+        # but only for position holding and only when built with rqtTune.
+        "arm": ImplicitActuatorCfg(
+            joint_names_expr=["joint[1-6]"],
+            effort_limit_sim={"joint2": 60.0, "joint[13456]": 30.0},  # [URDF]
+            velocity_limit_sim=3.1415,  # [URDF]
+            stiffness={"joint[1-3]": 100.0, "joint[4-6]": 30.0},  # [GUESS]
+            damping={"joint[1-3]": 5.0, "joint[4-6]": 1.5},  # [GUESS]
+        ),
+        "gripper": ImplicitActuatorCfg(
+            joint_names_expr=["jointGripper"],
+            effort_limit_sim=30.0,  # [URDF] z1_description const.xacro torqueMax
+            velocity_limit_sim=3.1415,  # [URDF] velocityMax
+            stiffness=20.0,  # [GUESS]
+            damping=1.0,  # [GUESS]
+        ),
+    },
+    # Legs in Aliengo SDK order, then the Z1 (controlled through z1_sdk, not the legged SDK).
+    joint_sdk_names=UNITREE_GO2_CFG.joint_sdk_names.copy()
+    + ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "jointGripper"],
 )
 
 UNITREE_H1_CFG = UnitreeArticulationCfg(
