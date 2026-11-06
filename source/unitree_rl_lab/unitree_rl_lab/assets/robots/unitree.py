@@ -266,6 +266,9 @@ UNITREE_ALIENGO_Z1_CFG = UnitreeArticulationCfg(
     # which are marked dont_collapse by the build script.
     spawn=UnitreeUrdfFileCfg(
         asset_path=f"{UNITREE_MODEL_DIR}/AliengoZ1/urdf/aliengo_z1.urdf",
+        # Keep the Z1 cylinders as cylinders: capsule caps (r = 3.25 cm) close the ~1.5 cm gaps in the
+        # wrist, so link04-link06 and link06-gripperMover would be in permanent self-contact.
+        replace_cylinders_with_capsules=False,
     ),
     init_state=ArticulationCfg.InitialStateCfg(
         pos=(0.0, 0.0, 0.42),
