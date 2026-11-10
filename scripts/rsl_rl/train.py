@@ -245,7 +245,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
     observation_renames = None
-    if args_cli.deploy_keyboard_commands:
+    # tasks without a velocity command (e.g. pose tracking) have nothing to rename
+    if args_cli.deploy_keyboard_commands and hasattr(env_cfg.observations.policy, "velocity_commands"):
         observation_renames = {"velocity_commands": "keyboard_velocity_commands"}
     # The actor's own group list, so a task that feeds it more than one group (the
     # perceptive lineage adds the height map as a second) exports all of them, in the

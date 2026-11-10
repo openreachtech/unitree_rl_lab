@@ -14,6 +14,7 @@ Isaac Sim specific adjustments:
   the factor is moved into the URDF mesh ``scale``.
 * URDF ``<material>`` is dropped from mesh visuals so the meshes keep their own look (trunk texture).
 * ``link01`` gets the collision cylinder the aliengoZ1 xacro has but ``z1.urdf`` lacks.
+* Motor rotor links (``*_rotor``) lose their collision shapes: the knee rotors sit inside the trunk.
 
 Output is a self-contained directory (URDF + copied meshes, relative mesh paths), so it can be fed
 directly to Isaac Lab's ``scripts/tools/convert_urdf.py``::
@@ -126,6 +127,19 @@ def add_link01_collision(robot: ET.Element) -> None:
     link.insert(list(link).index(link.find("visual")) + 1, col)
 
 
+def strip_rotor_collisions(robot: ET.Element) -> None:
+    """Drop the collision shapes of the motor rotor links (``*_rotor``); visuals and inertia stay.
+
+    The rotors are attached by fixed joints and merged into their parents by the importer. The knee
+    rotor (``*_calf_rotor``, child of the thigh) sits 0.0997 m inboard of the thigh, i.e. inside the
+    trunk box, so it would put every thigh in permanent self-contact with the base.
+    """
+    for link in robot.findall("link"):
+        if link.get("name", "").endswith("_rotor"):
+            for col in link.findall("collision"):
+                link.remove(col)
+
+
 def strip_mesh_visual_materials(robot: ET.Element) -> None:
     """Drop URDF ``<material>`` from mesh visuals so the meshes keep their own look.
 
@@ -236,6 +250,7 @@ def build(args: argparse.Namespace) -> str:
         merged.append(el)
 
     add_link01_collision(merged)
+    strip_rotor_collisions(merged)
     strip_mesh_visual_materials(merged)
 
     if not args.no_gripper:
