@@ -15,7 +15,7 @@ Written standalone (only the foot-ring sensor helper is imported) so Go2 experim
 leak in, and so that every joint-space term can be restricted to the legs.
 
     python scripts/tools/sample_z1_workspace.py --headless   # once, makes the arm goal set
-    python scripts/rsl_rl/train.py --task AliengoZ1-Locomotion-Phase1 --headless
+    python scripts/rsl_rl/train.py --task Aliengoz1-Locomotion-Phase1 --headless
 """
 
 import math

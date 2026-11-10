@@ -10,7 +10,7 @@ _RUNNER = "unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCf
 
 for _phase in (1, 2):
     gym.register(
-        id=f"AliengoZ1-Locomotion-Phase{_phase}",
+        id=f"Aliengoz1-Locomotion-Phase{_phase}",
         entry_point="isaaclab.envs:ManagerBasedRLEnv",
         disable_env_checker=True,
         kwargs={
@@ -21,9 +21,9 @@ for _phase in (1, 2):
     )
 
 # Whole-body end-effector pose tracking (MLP, legs + arm). Needs the initial states recorded from
-# AliengoZ1-Locomotion-Phase2:  python scripts/tools/collect_init_states.py --headless
+# Aliengoz1-Locomotion-Phase2:  python scripts/tools/collect_init_states.py --headless
 gym.register(
-    id="AliengoZ1-Pose-Tracking-Phase1",
+    id="Aliengoz1-Pose-Tracking-Phase1",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={

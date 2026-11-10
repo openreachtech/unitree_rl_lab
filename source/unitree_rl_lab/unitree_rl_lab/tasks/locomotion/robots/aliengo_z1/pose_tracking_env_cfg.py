@@ -21,8 +21,8 @@ Scaled from ANYmal + Dynaarm to Aliengo + Z1 (about 0.7x): body transform x/y +-
 (paper +-0.2 m, -0.3..+0.1 m), cube side 0.2 m (paper 0.3 m). Action scale 0.25 on the legs (as the
 locomotion policy), 0.5 on the arm (paper and Isaac Lab's arm tasks).
 
-    python scripts/tools/collect_init_states.py --headless   # once, after AliengoZ1-Locomotion-Phase2
-    python scripts/rsl_rl/train.py --task AliengoZ1-Pose-Tracking-Phase1 --headless
+    python scripts/tools/collect_init_states.py --headless   # once, after Aliengoz1-Locomotion-Phase2
+    python scripts/rsl_rl/train.py --task Aliengoz1-Pose-Tracking-Phase1 --headless
 """
 
 import math

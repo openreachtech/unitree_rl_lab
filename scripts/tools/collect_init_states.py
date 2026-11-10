@@ -22,7 +22,7 @@ import sys
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-parser.add_argument("--task", default="AliengoZ1-Locomotion-Phase2", help="Locomotion task the policy was trained on.")
+parser.add_argument("--task", default="Aliengoz1-Locomotion-Phase2", help="Locomotion task the policy was trained on.")
 parser.add_argument("--checkpoint", default=None, help="Policy checkpoint (default: latest of --task).")
 parser.add_argument("--num_envs", type=int, default=4096)
 parser.add_argument("--duration", type=float, default=4.0, help="Walking time before recording [s].")
