@@ -10,6 +10,16 @@ from isaaclab_tasks.manager_based.locomotion.velocity.mdp import *  # noqa: F401
 
 from unitree_rl_lab.tasks.locomotion.mdp import *  # noqa: F401, F403
 
-from .gating import resolve_nested_term_params, stance_aware, when_stance, when_upright  # noqa: F401
+from .gating import (  # noqa: F401
+    in_stance,
+    on_wheels,
+    resolve_nested_term_params,
+    stance_aware,
+    when_on_wheels,
+    when_stance,
+    when_upright,
+)
 from .handstand import *  # noqa: F401, F403
 from .stance_rewards import *  # noqa: F401, F403
+from .walls import *  # noqa: F401, F403
+from .walljump import *  # noqa: F401, F403

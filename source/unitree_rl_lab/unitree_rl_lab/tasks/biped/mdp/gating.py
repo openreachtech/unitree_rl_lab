@@ -6,7 +6,9 @@ that never attempts the rise tracks its command and holds still perfectly. Scali
 upright, else 0", ramped so the rise has a gradient).
 
 Ported from ``feat/multi-task``'s ``gated`` wrapper, keeping only the "is upright" gate, plus its
-``stance_aware`` router for the two-stance task.
+``stance_aware`` router for the two-stance task. The switching task adds :func:`in_stance` /
+:func:`on_wheels` (which reward set is in force) and :func:`when_on_wheels` (a termination that
+applies only while driving on four wheels).
 
 The wrapped term's own arguments are nested in ``term_params``: Isaac Lab rejects a ``**kwargs``
 catch-all. It also resolves ``SceneEntityCfg`` only at the top level of ``params``, and an
@@ -70,13 +72,52 @@ def when_stance(
     return term(env, **(term_params or {})) * active
 
 
+def in_stance(
+    env: ManagerBasedRLEnv,
+    term: Callable[..., torch.Tensor],
+    term_params: dict | None = None,
+    command_name: str = "handstand",
+) -> torch.Tensor:
+    """``term`` weighted by ``HandstandCommand.stance_weight``: the stance's reward set."""
+    weight = env.command_manager.get_term(command_name).stance_weight
+    return term(env, **(term_params or {})) * weight
+
+
+def on_wheels(
+    env: ManagerBasedRLEnv,
+    term: Callable[..., torch.Tensor],
+    term_params: dict | None = None,
+    command_name: str = "handstand",
+) -> torch.Tensor:
+    """``term`` weighted by ``1 - stance_weight``: the four-wheel driving reward set."""
+    weight = env.command_manager.get_term(command_name).stance_weight
+    return term(env, **(term_params or {})) * (1.0 - weight)
+
+
+def when_on_wheels(
+    env: ManagerBasedRLEnv,
+    term: Callable[..., torch.Tensor],
+    term_params: dict | None = None,
+    command_name: str = "handstand",
+) -> torch.Tensor:
+    """A termination that applies only while driving on four wheels.
+
+    Off while a stance is commanded (the stance *is* a 70-90 degree tilt) and over the grace that
+    follows a release (``HandstandCommand.descending``); a robot still up when the grace runs out
+    ends its episode like any other fall.
+    """
+    command = env.command_manager.get_term(command_name)
+    return term(env, **(term_params or {})) & ~(command.enabled | command.descending)
+
+
 def resolve_nested_term_params(env: ManagerBasedRLEnv, env_ids=None) -> None:
     """Resolve every ``SceneEntityCfg`` nested in a wrapper's params. A startup event."""
-    for name in env.reward_manager.active_terms:
-        params = env.reward_manager.get_term_cfg(name).params
-        for key in ("term_params", "front_params", "hind_params"):
-            if isinstance(params.get(key), dict):
-                _resolve(env, params[key], f"{name}:{key}")
+    for manager in (env.reward_manager, env.termination_manager):
+        for name in manager.active_terms:
+            params = manager.get_term_cfg(name).params
+            for key in ("term_params", "front_params", "hind_params"):
+                if isinstance(params.get(key), dict):
+                    _resolve(env, params[key], f"{name}:{key}")
 
 
 def _resolve(env: ManagerBasedRLEnv, params: dict, where: str) -> None:

@@ -34,3 +34,36 @@ gym.register(
         "rsl_rl_cfg_entry_point": "unitree_rl_lab.tasks.dynamic.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
     },
 )
+
+gym.register(
+    id="Go2w-Biped-Switch",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.biped_env_cfg_switch:RobotEnvCfgBipedSwitch",
+        "play_env_cfg_entry_point": f"{__name__}.biped_env_cfg_switch:RobotPlayEnvCfgBipedSwitch",
+        "rsl_rl_cfg_entry_point": "unitree_rl_lab.tasks.dynamic.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Go2w-Biped-WallJump",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.biped_env_cfg_walljump:RobotEnvCfgBipedWallJump",
+        "play_env_cfg_entry_point": f"{__name__}.biped_env_cfg_walljump:RobotPlayEnvCfgBipedWallJump",
+        "rsl_rl_cfg_entry_point": "unitree_rl_lab.tasks.dynamic.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Go2w-Biped-WallJump-Drive",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.biped_env_cfg_walljump_drive:RobotEnvCfgBipedWallJumpDrive",
+        "play_env_cfg_entry_point": f"{__name__}.biped_env_cfg_walljump_drive:RobotPlayEnvCfgBipedWallJumpDrive",
+        "rsl_rl_cfg_entry_point": "unitree_rl_lab.tasks.dynamic.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
+    },
+)
