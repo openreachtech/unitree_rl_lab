@@ -11,7 +11,9 @@ and stretch the base to extend the arm's reach.
   every 4 s, 3 per 12 s episode.
 * Observation (III-D): gravity, base velocities, joint positions, last actions, keypoint differences.
 * Rewards (III-E): delayed keypoint tracking, progress, four-feet contact force, initial leg pose,
-  and torque / acceleration / action-rate / joint-limit penalties, with the paper's weights.
+  and torque / acceleration / action-rate / joint-limit penalties, with the paper's weights except
+  the feet contact force (normalized by body weight). Leg contacts are penalized as in Go2-Blind-GRU.
+* Terminations: base contact only (see ``TerminationsCfg``).
 * Terrain (III-F): the locomotion Phase 2 terrain (rough / boxes / slope up / down) with a fixed seed,
   and a curriculum on the episode's mean pose error.
 * Reset (III-G): states recorded from the locomotion policy on the same sub-terrain
@@ -200,18 +202,19 @@ class RewardsCfg:
 
 @configclass
 class TerminationsCfg:
-    """Go2-Blind-GRU's terminations: base contact and a large tilt.
+    """Terminate on base contact only.
 
     The paper (III-E) also terminates on knee contacts. With Aliengo's thigh and calf as the knee,
     98% of those were calves touching box edges, which ended a third of the episodes on the box
-    terrain; leg contacts are penalized instead (``RewardsCfg.undesired_contacts``)."""
+    terrain; leg contacts are penalized instead (``RewardsCfg.undesired_contacts``).
+    Go2-Blind-GRU's tilt termination (0.8 rad) is left out as in the paper: reaching low or far goals
+    tilts the base past it, and it ended 99% of the episodes once the policy learned to lean."""
 
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
     base_contact = DoneTerm(
         func=mdp.illegal_contact,
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="base"), "threshold": 1.0},
     )
-    bad_orientation = DoneTerm(func=mdp.bad_orientation, params={"limit_angle": 0.8})
 
 
 @configclass

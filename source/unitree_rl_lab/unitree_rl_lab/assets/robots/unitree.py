@@ -311,8 +311,9 @@ UNITREE_ALIENGO_Z1_CFG = UnitreeArticulationCfg(
             damping=1.0,  # [GUESS]
             friction=0.01,  # [GUESS]
         ),
-        # Held at the default pose (not in the action space yet). For reference, Unitree's Gazebo
-        # config (aliengoZ1_description/config/robot_control.yaml) uses p=300, d=5 on all arm joints,
+        # Position targets come from the scripted arm command (locomotion pre-training) or from the
+        # policy (pose tracking). For reference, Unitree's Gazebo config
+        # (aliengoZ1_description/config/robot_control.yaml) uses p=300, d=5 on all arm joints,
         # but only for position holding and only when built with rqtTune.
         "arm": ImplicitActuatorCfg(
             joint_names_expr=["joint[1-6]"],

@@ -129,3 +129,12 @@ class PerceptiveGruPPORunnerCfg(BasePPORunnerCfg):
         rnn_num_layers=1,
         extero_obs_groups=["height_map", "height_map_clean"],
     )
+
+
+@configclass
+class PoseTrackingPPORunnerCfg(BasePPORunnerCfg):
+    """BasePPORunnerCfg with half the entropy bonus. With 0.01 the whole-body pose-tracking
+    policy's noise std kept growing after ~600 iterations (0.56 -> 1.2) and the policy
+    collapsed on the harder terrain levels (base contacts 8% -> 78%)."""
+
+    algorithm = BasePPORunnerCfg().algorithm.replace(entropy_coef=0.005)

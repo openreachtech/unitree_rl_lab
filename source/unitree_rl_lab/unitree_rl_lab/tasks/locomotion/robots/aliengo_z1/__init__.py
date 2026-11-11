@@ -29,6 +29,6 @@ gym.register(
     kwargs={
         "env_cfg_entry_point": f"{__name__}.pose_tracking_env_cfg:RobotEnvCfgPhase1",
         "play_env_cfg_entry_point": f"{__name__}.pose_tracking_env_cfg:RobotPlayEnvCfgPhase1",
-        "rsl_rl_cfg_entry_point": _RUNNER,
+        "rsl_rl_cfg_entry_point": "unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:PoseTrackingPPORunnerCfg",
     },
 )
