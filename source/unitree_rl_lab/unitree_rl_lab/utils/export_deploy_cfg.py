@@ -8,6 +8,18 @@ from isaaclab.utils import class_to_dict
 from isaaclab.utils.string import resolve_matching_names
 
 
+def _rename_observation_preserve_order(observations: dict, old_name: str, new_name: str) -> None:
+    """Rename an observation key without moving it to the end of the dict (pop+assign would)."""
+    if old_name not in observations:
+        raise KeyError(
+            f"Cannot rename observation '{old_name}' -> '{new_name}': "
+            f"'{old_name}' not in exported observations {list(observations.keys())}"
+        )
+    items = list(observations.items())
+    observations.clear()
+    observations.update({(new_name if key == old_name else key): value for key, value in items})
+
+
 def format_value(x):
     if isinstance(x, float):
         return float(f"{x:.3g}")
@@ -19,7 +31,7 @@ def format_value(x):
         return x
 
 
-def export_deploy_cfg(env: ManagerBasedRLEnv, log_dir):
+def export_deploy_cfg(env: ManagerBasedRLEnv, log_dir, observation_renames: dict[str, str] | None = None):
     asset: Articulation = env.scene["robot"]
     joint_sdk_names = env.cfg.scene.robot.joint_sdk_names
     joint_ids_map, _ = resolve_matching_names(asset.data.joint_names, joint_sdk_names, preserve_order=True)
@@ -105,6 +117,10 @@ def export_deploy_cfg(env: ManagerBasedRLEnv, log_dir):
         for _ in ["func", "modifiers", "noise", "flatten_history_dim"]:
             del term_cfg[_]
         cfg["observations"][obs_name] = term_cfg
+
+    if observation_renames:
+        for old_name, new_name in observation_renames.items():
+            _rename_observation_preserve_order(cfg["observations"], old_name, new_name)
 
     # --- save config file ---
     filename = os.path.join(log_dir, "params", "deploy.yaml")
