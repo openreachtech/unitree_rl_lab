@@ -13,13 +13,13 @@ import pathlib
 import sys
 
 sys.path.insert(0, f"{pathlib.Path(__file__).parent.parent}")
-from list_envs import import_packages  # noqa: F401
+from list_envs import UNITREE_TASKS, import_packages  # noqa: F401
 
 sys.path.pop(0)
 
 tasks = []
 for task_spec in gym.registry.values():
-    if "Unitree" in task_spec.id and "Isaac" not in task_spec.id:
+    if task_spec.id in UNITREE_TASKS:
         tasks.append(task_spec.id)
 
 import argparse
