@@ -18,6 +18,8 @@ FSM:
   Passive:
     transitions: 
       FixStand: LT + up.on_pressed
+    keyboard_transitions:
+      FixStand: "1"
     mode: [
       1,1,1,1,1,1,
       1,1,1,1,1,1,
@@ -36,6 +38,9 @@ FSM:
     transitions: 
       Passive: LT + B.on_pressed
       Velocity: RB + X.on_pressed
+    keyboard_transitions:
+      Passive: "0"
+      Velocity: enter
     kp: [
       100., 100., 100., 150., 40., 40.,
       100., 100., 100., 150., 40., 40.,
@@ -65,9 +70,15 @@ FSM:
       Passive: LT + B.on_pressed
       Mimic_Dance_102: LT(2s) + down.on_pressed
       Mimic_Gangnam_Style: LT(2s) + left.on_pressed
+    keyboard_transitions:
+      Passive: "0"
 
-    policy_dir: config/policy/velocity
-    # policy_dir: ../../../logs/rsl_rl/unitree_g1_29dof_velocity
+    # policy_dir: config/policy/velocity
+    # G1-MLP-Phase1, yaw up to 1.0 rad/s, 10k iterations
+    policy_dir: ../../../logs/rsl_rl/g1_mlp_phase1/2026-11-22_22-59-17
+    # keyboard command = keyboard_vel_scale x trained limit (x: -0.5..2.0, y: +-0.5, yaw: +-1.0)
+    keyboard_vel_scale: 0.5
+    keyboard_alpha: 0.05  # low-pass per 20 ms step; ~1 s to reach the target
   Mimic_Dance_102:
     transitions: 
       Passive: LT + B.on_pressed

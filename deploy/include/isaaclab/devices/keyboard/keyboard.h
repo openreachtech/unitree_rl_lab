@@ -3,6 +3,9 @@
 #include <string>
 #include <vector>
 #include <deque>
+#include <unordered_set>
+#include <mutex>
+#include <atomic>
 #include <termios.h>
 #include <unistd.h>
 #include <thread>
@@ -61,6 +64,29 @@ public:
    */
   std::string key() const { return _key; };
 
+  /** @brief Latched keys (insert on press; cleared on space). Thread-safe. */
+  bool pressed(const std::string& key) const
+  {
+    std::lock_guard<std::mutex> lock(_pressed_mutex);
+    if (key == "space")
+    {
+      return _pressed_keys.count(" ") > 0;
+    }
+    return _pressed_keys.count(key) > 0;
+  }
+
+  void clear_pressed_keys()
+  {
+    std::lock_guard<std::mutex> lock(_pressed_mutex);
+    _pressed_keys.clear();
+  }
+
+  /** @brief True once after space bar; clears latched motion keys. */
+  bool consume_velocity_stop()
+  {
+    return _velocity_stop_requested.exchange(false);
+  }
+
   /**
    * @brief Get the String object from keyboard 
    * 
@@ -113,7 +139,8 @@ public:
         // Parser the key value
         if(_c != '\033') {
           // This is a normal key
-          _key = _c;
+          _key = std::string(1, _c);
+          _register_key_event(_key);
         }else{
           // This is a special key
           int m = read(fileno(stdin), &_c, 1);
@@ -127,6 +154,10 @@ public:
             case 'C': _key = "right"; break;
             case 'D': _key = "left";  break;
             default:  _key = "";      break;
+            }
+            if (!_key.empty())
+            {
+              _register_key_event(_key);
             }
           }
         }
@@ -155,10 +186,29 @@ public:
     _running = true;
   }
 
+  void _register_key_event(const std::string& key)
+  {
+    std::lock_guard<std::mutex> lock(_pressed_mutex);
+    if (key == " " || key == "space")
+    {
+      _pressed_keys.clear();
+      _velocity_stop_requested = true;
+      return;
+    }
+    if (!key.empty())
+    {
+      _pressed_keys.insert(key);
+    }
+  }
+
   fd_set _fd_set;
   char _c = '\0';
   std::string _key, _last_key;
-  
+
+  mutable std::mutex _pressed_mutex;
+  std::unordered_set<std::string> _pressed_keys;
+  std::atomic<bool> _velocity_stop_requested{false};
+
   termios _oldSettings, _newSettings;
   timeval _tv;
 };
