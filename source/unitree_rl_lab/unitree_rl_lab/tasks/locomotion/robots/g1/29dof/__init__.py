@@ -18,6 +18,6 @@ gym.register(
     kwargs={
         "env_cfg_entry_point": f"{__name__}.mlp_phase1_env_cfg:MlpPhase1EnvCfg",
         "play_env_cfg_entry_point": f"{__name__}.mlp_phase1_env_cfg:MlpPhase1PlayEnvCfg",
-        "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:BasePPORunnerCfg",
+        "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:SymmetricPPORunnerCfg",
     },
 )

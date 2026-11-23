@@ -12,7 +12,9 @@ def lin_vel_cmd_levels(
     env: ManagerBasedRLEnv,
     env_ids: Sequence[int],
     reward_term_name: str = "track_lin_vel_xy",
+    threshold: float = 0.8,
 ) -> torch.Tensor:
+    """Widen the range by 0.1 when the mean episode tracking reward exceeds ``threshold`` x weight."""
     command_term = env.command_manager.get_term("base_velocity")
     ranges = command_term.cfg.ranges
     limit_ranges = command_term.cfg.limit_ranges
@@ -21,7 +23,7 @@ def lin_vel_cmd_levels(
     reward = torch.mean(env.reward_manager._episode_sums[reward_term_name][env_ids]) / env.max_episode_length_s
 
     if env.common_step_counter % env.max_episode_length == 0:
-        if reward > reward_term.weight * 0.8:
+        if reward > reward_term.weight * threshold:
             delta_command = torch.tensor([-0.1, 0.1], device=env.device)
             ranges.lin_vel_x = torch.clamp(
                 torch.tensor(ranges.lin_vel_x, device=env.device) + delta_command,
@@ -41,7 +43,9 @@ def ang_vel_cmd_levels(
     env: ManagerBasedRLEnv,
     env_ids: Sequence[int],
     reward_term_name: str = "track_ang_vel_z",
+    threshold: float = 0.8,
 ) -> torch.Tensor:
+    """Widen the range by 0.1 when the mean episode tracking reward exceeds ``threshold`` x weight."""
     command_term = env.command_manager.get_term("base_velocity")
     ranges = command_term.cfg.ranges
     limit_ranges = command_term.cfg.limit_ranges
@@ -50,7 +54,7 @@ def ang_vel_cmd_levels(
     reward = torch.mean(env.reward_manager._episode_sums[reward_term_name][env_ids]) / env.max_episode_length_s
 
     if env.common_step_counter % env.max_episode_length == 0:
-        if reward > reward_term.weight * 0.8:
+        if reward > reward_term.weight * threshold:
             delta_command = torch.tensor([-0.1, 0.1], device=env.device)
             ranges.ang_vel_z = torch.clamp(
                 torch.tensor(ranges.ang_vel_z, device=env.device) + delta_command,

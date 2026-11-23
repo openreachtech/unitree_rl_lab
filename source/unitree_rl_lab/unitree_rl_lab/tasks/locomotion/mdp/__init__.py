@@ -7,3 +7,4 @@ from .observations import *  # noqa: F401, F403
 from .rewards import *  # noqa: F401, F403
 from .actions import *  # noqa: F401, F403
 from .privileged import *  # noqa: F401, F403
+from .saw_rewards import *  # noqa: F401, F403
