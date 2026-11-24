@@ -28,6 +28,9 @@ __all__ = [
     "body_static_friction",
     "body_added_mass",
     "feet_contact",
+    "contact_force_magnitude",
+    "foot_height_scan",
+    "foot_terrain_normal",
 ]
 
 
@@ -196,3 +199,40 @@ def feet_contact(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, threshold: 
     sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     forces = sensor.data.net_forces_w[:, sensor_cfg.body_ids]
     return (forces.norm(dim=-1) > threshold).float()
+
+
+def contact_force_magnitude(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+    """(N, len(bodies)) norm of the net contact force on each body, in N."""
+    sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    return sensor.data.net_forces_w[:, sensor_cfg.body_ids].norm(dim=-1)
+
+
+# ---------------------------------------------------------------------------
+# terrain under the feet, from one yaw-aligned ray-caster grid per foot
+# ---------------------------------------------------------------------------
+
+
+def foot_height_scan(env: ManagerBasedRLEnv, sensor_cfgs: list[SceneEntityCfg]) -> torch.Tensor:
+    """Foot height above the terrain at each ray of each foot's grid, concatenated in
+    ``sensor_cfgs`` order: ``sensor z - hit z``. Positive = the foot is above that point."""
+    out = []
+    for cfg in sensor_cfgs:
+        sensor = env.scene.sensors[cfg.name]
+        out.append(sensor.data.pos_w[:, 2:3] - sensor.data.ray_hits_w[..., 2])
+    return torch.nan_to_num(torch.cat(out, dim=-1), nan=0.0, posinf=1.0, neginf=-1.0)
+
+
+def foot_terrain_normal(env: ManagerBasedRLEnv, sensor_cfgs: list[SceneEntityCfg]) -> torch.Tensor:
+    """(N, 3 * len(sensor_cfgs)) unit normal of the plane fitted to each foot's grid hits,
+    in that foot's yaw frame (x forward, y left). Flat ground is (0, 0, 1)."""
+    out = []
+    for cfg in sensor_cfgs:
+        sensor = env.scene.sensors[cfg.name]
+        xy = sensor.ray_starts[0, :, :2]  # pattern in the yaw frame (sensor offset included)
+        a = torch.cat([xy, torch.ones_like(xy[:, :1])], dim=-1)  # (R, 3)
+        pinv = torch.linalg.pinv(a)  # (3, R)
+        z = torch.nan_to_num(sensor.data.ray_hits_w[..., 2], nan=0.0, posinf=0.0, neginf=0.0)  # (N, R)
+        coef = z @ pinv.T  # (N, 3): dz/dx, dz/dy, c
+        n = torch.stack([-coef[:, 0], -coef[:, 1], torch.ones_like(coef[:, 0])], dim=-1)
+        out.append(n / n.norm(dim=-1, keepdim=True))
+    return torch.cat(out, dim=-1)

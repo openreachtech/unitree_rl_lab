@@ -7,6 +7,7 @@ from isaaclab.utils import configclass
 from isaaclab_rl.rsl_rl import (
     RslRlOnPolicyRunnerCfg,
     RslRlPpoActorCriticCfg,
+    RslRlPpoActorCriticRecurrentCfg,
     RslRlPpoAlgorithmCfg,
     RslRlSymmetryCfg,
 )
@@ -48,6 +49,38 @@ class SymmetricPPORunnerCfg(BasePPORunnerCfg):
     def __post_init__(self):
         from unitree_rl_lab.tasks.locomotion.mdp.symmetry import compute_symmetric_states
 
+        self.algorithm.symmetry_cfg = RslRlSymmetryCfg(
+            use_data_augmentation=True, data_augmentation_func=compute_symmetric_states
+        )
+
+
+@configclass
+class SymmetricGruPPORunnerCfg(BasePPORunnerCfg):
+    """GRU actor-critic (as feat/mid360's GruPPORunnerCfg) + left-right symmetry augmentation.
+
+    rsl_rl does not support symmetry for recurrent policies, so this uses the
+    mirrored-hidden-state PPO in ``agents/symmetric_recurrent_ppo.py``.
+    """
+
+    policy: RslRlPpoActorCriticRecurrentCfg = RslRlPpoActorCriticRecurrentCfg(
+        class_name="ActorCriticRecurrentSymmetric",
+        init_noise_std=1.0,
+        actor_hidden_dims=[512, 256, 128],
+        critic_hidden_dims=[512, 256, 128],
+        activation="elu",
+        actor_obs_normalization=False,
+        critic_obs_normalization=False,
+        rnn_type="gru",
+        rnn_hidden_dim=256,
+        rnn_num_layers=1,
+    )
+
+    def __post_init__(self):
+        from unitree_rl_lab.tasks.locomotion.agents.symmetric_recurrent_ppo import register_with_rsl_rl
+        from unitree_rl_lab.tasks.locomotion.mdp.symmetry import compute_symmetric_states
+
+        register_with_rsl_rl()
+        self.algorithm.class_name = "SymmetricRecurrentPPO"
         self.algorithm.symmetry_cfg = RslRlSymmetryCfg(
             use_data_augmentation=True, data_augmentation_func=compute_symmetric_states
         )

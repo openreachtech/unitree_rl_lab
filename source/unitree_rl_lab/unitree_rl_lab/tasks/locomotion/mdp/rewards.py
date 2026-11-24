@@ -118,11 +118,29 @@ def feet_height_body(
 
 
 def foot_clearance_reward(
-    env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, target_height: float, std: float, tanh_mult: float
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    target_height: float,
+    std: float,
+    tanh_mult: float,
+    sensor_cfg: SceneEntityCfg | None = None,
 ) -> torch.Tensor:
-    """Reward the swinging feet for clearing a specified height off the ground"""
+    """Reward the swinging feet for clearing a specified height off the ground.
+
+    Without ``sensor_cfg`` the height is measured from z = 0 (flat terrain). With a
+    ray-caster ``sensor_cfg`` it is measured from the terrain under each foot, taken
+    as the hit height of the ray nearest to the foot in xy.
+    """
     asset: RigidObject = env.scene[asset_cfg.name]
-    foot_z_target_error = torch.square(asset.data.body_pos_w[:, asset_cfg.body_ids, 2] - target_height)
+    foot_pos = asset.data.body_pos_w[:, asset_cfg.body_ids, :]
+    ground_z = 0.0
+    if sensor_cfg is not None:
+        hits = env.scene.sensors[sensor_cfg.name].data.ray_hits_w  # (N, R, 3)
+        d2 = (foot_pos[:, :, None, :2] - hits[:, None, :, :2]).square().sum(dim=-1)  # (N, F, R)
+        nearest = d2.argmin(dim=-1)  # (N, F)
+        ground_z = torch.gather(hits[..., 2], 1, nearest)
+        ground_z = torch.nan_to_num(ground_z, nan=0.0, posinf=0.0, neginf=0.0)
+    foot_z_target_error = torch.square(foot_pos[..., 2] - ground_z - target_height)
     foot_velocity_tanh = torch.tanh(tanh_mult * torch.norm(asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2], dim=2))
     reward = foot_z_target_error * foot_velocity_tanh
     return torch.exp(-torch.sum(reward, dim=1) / std)
@@ -223,3 +241,46 @@ def joint_mirror(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, mirror_joint
         )
     reward *= 1 / len(mirror_joints) if len(mirror_joints) > 0 else 0
     return reward
+
+
+def terrain_height_under(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg) -> tuple[torch.Tensor, torch.Tensor]:
+    """(ground z, any hit) per env: mean hit height of a ray caster, leaving out rays that
+    missed the mesh (inf hits, e.g. off the terrain edge). ground z is 0 where no ray hit."""
+    hit_z = env.scene.sensors[sensor_cfg.name].data.ray_hits_w[..., 2]
+    valid = torch.isfinite(hit_z)
+    n_valid = valid.sum(dim=1)
+    ground_z = torch.where(valid, hit_z, 0.0).sum(dim=1) / n_valid.clamp(min=1)
+    return ground_z, n_valid > 0
+
+
+def base_height_terrain_l2(
+    env: ManagerBasedRLEnv,
+    target_height: float,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Squared error of base height above the terrain under the ray caster.
+
+    Like ``isaaclab.envs.mdp.base_height_l2`` with a sensor, but never inf/NaN: missed
+    rays are left out, and an env with no hit at all gets no penalty.
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    ground_z, has_hit = terrain_height_under(env, sensor_cfg)
+    err = torch.square(asset.data.root_pos_w[:, 2] - ground_z - target_height)
+    return torch.where(has_hit, err, 0.0)
+
+
+def root_height_below_minimum_terrain(
+    env: ManagerBasedRLEnv,
+    minimum_height: float,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Termination: base below ``minimum_height`` above the terrain under the ray caster.
+
+    ``isaaclab.envs.mdp.root_height_below_minimum`` measures from z = 0, which on terrain
+    sunk below 0 (the bottom of an inverted pyramid) ends episodes of a standing robot.
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    ground_z, has_hit = terrain_height_under(env, sensor_cfg)
+    return has_hit & (asset.data.root_pos_w[:, 2] - ground_z < minimum_height)

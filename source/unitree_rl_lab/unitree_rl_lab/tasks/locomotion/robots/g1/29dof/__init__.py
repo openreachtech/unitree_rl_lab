@@ -21,3 +21,25 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:SymmetricPPORunnerCfg",
     },
 )
+
+gym.register(
+    id="G1-GRU-Phase1",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.gru_env_cfg:GruPhase1EnvCfg",
+        "play_env_cfg_entry_point": f"{__name__}.gru_env_cfg:GruPhase1PlayEnvCfg",
+        "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:SymmetricGruPPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="G1-GRU-Phase2",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.gru_env_cfg:GruPhase2EnvCfg",
+        "play_env_cfg_entry_point": f"{__name__}.gru_env_cfg:GruPhase2PlayEnvCfg",
+        "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:SymmetricGruPPORunnerCfg",
+    },
+)

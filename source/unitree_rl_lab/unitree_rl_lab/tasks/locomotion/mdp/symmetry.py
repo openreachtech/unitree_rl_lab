@@ -29,6 +29,9 @@ __all__ = ["compute_symmetric_states"]
 #   "joints"         per-joint vector in robot joint order: permute + sign
 #   "lr_pair"        two values ordered [left, right]: swap
 #   "keep"           unchanged (scalar / symmetric quantity)
+#   "foot_scan_pair" [left grid, right grid]: grids swapped, and each ray swapped
+#                    with the one at (x, -y) in its grid
+#   ("index", i, s)  explicit permutation + sign
 _TERM_RULES: dict[str, object] = {
     "base_lin_vel": ("sign", [1, -1, 1]),
     "base_ang_vel": ("sign", [-1, 1, -1]),
@@ -42,6 +45,11 @@ _TERM_RULES: dict[str, object] = {
     "feet_friction": "lr_pair",
     "torso_added_mass": "keep",
     "feet_contact": "lr_pair",
+    # G1-GRU critic: per-foot terrain and contact terms, ordered [left, right]
+    "foot_height_scan": "foot_scan_pair",
+    "foot_terrain_normal": ("index", [3, 4, 5, 0, 1, 2], [1, -1, 1, 1, -1, 1]),
+    "foot_contact_force": "lr_pair",
+    "knee_contact": "lr_pair",
 }
 
 
@@ -67,6 +75,7 @@ class _GroupMirror:
     """Precomputed (index, sign) so that ``mirrored = obs[:, index] * sign`` for one obs group."""
 
     def __init__(self, env: ManagerBasedRLEnv, group: str, joint_perm: list[int], joint_sign: list[float]):
+        self._env = env
         om = env.observation_manager
         names = om.active_terms[group]
         dims = om.group_obs_term_dim[group]
@@ -77,7 +86,7 @@ class _GroupMirror:
             total = int(torch.tensor(dim).prod())
             hist = cfg.history_length if cfg.history_length > 0 else 1
             step = total // hist
-            local_idx, local_sign = self._term_rule(name, step, joint_perm, joint_sign)
+            local_idx, local_sign = self._term_rule(name, step, joint_perm, joint_sign, cfg)
             for h in range(hist):
                 base = start + h * step
                 index += [base + i for i in local_idx]
@@ -87,8 +96,7 @@ class _GroupMirror:
         self.sign = torch.tensor(sign, dtype=torch.float, device=env.device)
         self.dim = start
 
-    @staticmethod
-    def _term_rule(name, step, joint_perm, joint_sign):
+    def _term_rule(self, name, step, joint_perm, joint_sign, cfg):
         rule = _TERM_RULES.get(name)
         if rule is None:
             raise KeyError(f"symmetry: no mirror rule for observation term '{name}'")
@@ -102,6 +110,20 @@ class _GroupMirror:
             return [1, 0], [1.0, 1.0]
         if rule == "keep":
             return list(range(step)), [1.0] * step
+        if rule == "foot_scan_pair":
+            sensors = cfg.params["sensor_cfgs"]
+            if len(sensors) != 2:
+                raise ValueError(f"symmetry: term '{name}' needs [left, right] sensors")
+            perm = _ray_mirror(self._env, sensors[0].name)
+            r = len(perm)
+            if step != 2 * r:
+                raise ValueError(f"symmetry: term '{name}' has {step} dims, expected 2 x {r} rays")
+            return [r + p for p in perm] + list(perm), [1.0] * step
+        if rule[0] == "index":
+            _, idx, sgn = rule
+            if len(idx) != step:
+                raise ValueError(f"symmetry: term '{name}' has {step} dims, index rule has {len(idx)}")
+            return list(idx), [float(v) for v in sgn]
         kind, s = rule
         if len(s) != step:
             raise ValueError(f"symmetry: term '{name}' has {step} dims, sign rule has {len(s)}")
@@ -109,6 +131,21 @@ class _GroupMirror:
 
     def __call__(self, obs: torch.Tensor) -> torch.Tensor:
         return obs[:, self.index] * self.sign
+
+
+def _ray_mirror(env: ManagerBasedRLEnv, sensor_name: str) -> list[int]:
+    """For each ray, the index of the ray at the mirrored (x, -y) position in the sensor frame."""
+    starts = env.scene.sensors[sensor_name].ray_starts[0, :, :2]
+    mirrored = starts * torch.tensor([1.0, -1.0], device=starts.device)
+    # explicit difference, not torch.cdist: cdist's matmul path (TF32 on GPU) is off by mm
+    dist = (starts[:, None, :] - mirrored[None, :, :]).norm(dim=-1)  # (R, R): |p_i - mirror(p_j)|
+    perm = dist.argmin(dim=0)
+    if dist.min(dim=0).values.max() > 1e-4:
+        raise ValueError(
+            f"symmetry: ray pattern of {sensor_name!r} is not left-right symmetric "
+            f"(max mismatch {dist.min(dim=0).values.max().item():.2e}, starts {starts.tolist()})"
+        )
+    return perm.tolist()
 
 
 def _mirrors(env: ManagerBasedRLEnv) -> dict[str, _GroupMirror]:

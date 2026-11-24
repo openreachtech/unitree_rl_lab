@@ -12,10 +12,12 @@ so this scores them on task-level metrics instead, in the spirit of van Marum et
 Every checkpoint runs in the *same* environment (``--env_task``), so the comparison is
 fair even if the checkpoints were trained on different tasks. Only the actor is loaded
 from each checkpoint (critic shapes may differ between tasks); the policy acts
-deterministically (action mean). The env keeps its training-time observation noise,
-startup domain randomization and action term (e.g. Phase1's delay / noise), but all
-interval events (random pushes) and command curricula are disabled, and commands are
-written per env, so each env runs one fixed trial condition.
+deterministically (action mean). Both MLP actors (stacked history rebuilt from the env's
+per-step observation) and GRU actors (hidden state reset with each env) are supported.
+The env keeps its training-time observation noise, startup domain randomization and
+action term (e.g. Phase1's delay / noise), but all interval events (random pushes) and
+command curricula are disabled, and commands are written per env, so each env runs one
+fixed trial condition.
 
 Example
 -------
@@ -34,7 +36,12 @@ parser = argparse.ArgumentParser(description="SaW benchmark for G1 velocity poli
 parser.add_argument(
     "--policy", action="append", required=True, help="label=path/to/model_*.pt (repeat to compare several)."
 )
-parser.add_argument("--env_task", type=str, default="G1-MLP-Phase1", help="Task whose env every policy runs in.")
+parser.add_argument(
+    "--env_task",
+    type=str,
+    default="G1-GRU-Phase1",
+    help="Task whose env every policy runs in. Use one without stacked history: MLP actors rebuild theirs.",
+)
 parser.add_argument("--num_envs", type=int, default=1024)
 parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--json", type=str, default=None)
@@ -104,21 +111,89 @@ STAND_SETTLE_S = 2.0
 # ---------------------------------------------------------------------------
 
 
-def load_actor(path: str, device: str) -> nn.Module:
-    sd = torch.load(path, map_location=device, weights_only=False)["model_state_dict"]
-    if any(k.startswith("actor_obs_normalizer") for k in sd):
-        raise NotImplementedError("checkpoint uses actor obs normalization; not handled by this script")
-    idx = sorted({int(k.split(".")[1]) for k in sd if k.startswith("actor.") and k.endswith(".weight")})
+def _mlp(sd: dict, prefix: str) -> nn.Sequential:
+    idx = sorted({int(k.split(".")[1]) for k in sd if k.startswith(prefix + ".") and k.endswith(".weight")})
     layers: list[nn.Module] = []
     for i, li in enumerate(idx):
-        w, b = sd[f"actor.{li}.weight"], sd[f"actor.{li}.bias"]
+        w, b = sd[f"{prefix}.{li}.weight"], sd[f"{prefix}.{li}.bias"]
         lin = nn.Linear(w.shape[1], w.shape[0])
         lin.weight.data.copy_(w)
         lin.bias.data.copy_(b)
         layers.append(lin)
         if i < len(idx) - 1:
             layers.append(nn.ELU())  # BasePPORunnerCfg activation
-    return nn.Sequential(*layers).to(device).eval()
+    return nn.Sequential(*layers)
+
+
+class MlpActor:
+    """Feed-forward actor. If it was trained on stacked history (input = H x the env's
+    per-step policy obs), the history is rebuilt here in IsaacLab's layout: per term,
+    H steps oldest first, terms concatenated; after a reset every slot holds the first
+    observation, as IsaacLab's CircularBuffer does."""
+
+    def __init__(self, sd: dict, env, device: str):
+        self.net = _mlp(sd, "actor").to(device).eval()
+        om = env.observation_manager
+        self.term_dims = [int(torch.tensor(d).prod()) for d in om.group_obs_term_dim["policy"]]
+        step_dim = sum(self.term_dims)
+        in_dim = self.net[0].in_features
+        if in_dim % step_dim:
+            raise ValueError(f"actor input {in_dim} is not a multiple of the env's policy obs {step_dim}")
+        self.hist = in_dim // step_dim
+        self.buf = None  # (N, H, step_dim)
+
+    def reset(self, mask: torch.Tensor | None = None):
+        if mask is None:
+            self.buf = None
+        elif self.buf is not None:
+            self.buf[mask] = float("nan")  # refilled from the next observation
+
+    def __call__(self, obs: torch.Tensor) -> torch.Tensor:
+        if self.hist == 1:
+            return self.net(obs)
+        if self.buf is None:
+            self.buf = obs.unsqueeze(1).repeat(1, self.hist, 1)
+        else:
+            fresh = torch.isnan(self.buf[:, 0, 0])
+            self.buf = torch.roll(self.buf, -1, dims=1)
+            self.buf[:, -1] = obs
+            self.buf[fresh] = obs[fresh].unsqueeze(1).repeat(1, self.hist, 1)
+        parts, start = [], 0
+        for d in self.term_dims:
+            parts.append(self.buf[:, :, start : start + d].reshape(obs.shape[0], -1))
+            start += d
+        return self.net(torch.cat(parts, dim=-1))
+
+
+class GruActor:
+    """rsl_rl ActorCriticRecurrent actor: GRU -> MLP, hidden state per env."""
+
+    def __init__(self, sd: dict, device: str):
+        w_ih = sd["memory_a.rnn.weight_ih_l0"]
+        self.rnn = nn.GRU(input_size=w_ih.shape[1], hidden_size=w_ih.shape[0] // 3, num_layers=1)
+        self.rnn.load_state_dict({k[len("memory_a.rnn."):]: v for k, v in sd.items() if k.startswith("memory_a.rnn.")})
+        self.rnn = self.rnn.to(device).eval()
+        self.net = _mlp(sd, "actor").to(device).eval()
+        self.h = None
+
+    def reset(self, mask: torch.Tensor | None = None):
+        if mask is None:
+            self.h = None
+        elif self.h is not None:
+            self.h[:, mask] = 0.0
+
+    def __call__(self, obs: torch.Tensor) -> torch.Tensor:
+        out, self.h = self.rnn(obs.unsqueeze(0), self.h)
+        return self.net(out.squeeze(0))
+
+
+def load_actor(path: str, env, device: str):
+    sd = torch.load(path, map_location=device, weights_only=False)["model_state_dict"]
+    if any(k.startswith("actor_obs_normalizer") for k in sd):
+        raise NotImplementedError("checkpoint uses actor obs normalization; not handled by this script")
+    if any(k.startswith("memory_a.") for k in sd):
+        return GruActor(sd, device)
+    return MlpActor(sd, env, device)
 
 
 # ---------------------------------------------------------------------------
@@ -169,8 +244,10 @@ class Bench:
         self.prev_action = None
 
     # -- control ----------------------------------------------------------
-    def reset(self):
+    def reset(self, actor=None):
         self.obs, _ = self.env.reset()
+        if actor is not None:
+            actor.reset()
         self.prev_action = torch.zeros(self.n, self.env.action_manager.total_action_dim, device=self.dev)
 
     def set_cmd(self, cmd: torch.Tensor):
@@ -184,7 +261,9 @@ class Bench:
         self.action_rate = (action - self.prev_action).square().sum(dim=1)
         self.prev_action = action
         self.obs, _, terminated, truncated, _ = self.env.step(action)
-        return (terminated | truncated).bool()
+        done = (terminated | truncated).bool()
+        actor.reset(done)
+        return done
 
     def push(self, force_w: torch.Tensor | None):
         forces = torch.zeros(self.n, 1, 3, device=self.dev)
@@ -232,7 +311,7 @@ def test_push(b: Bench, actor):
     mag = torch.tensor([c[4] for c in conds], device=b.dev)[cid]
     dur = torch.tensor([c[5] for c in conds], device=b.dev)[cid]
 
-    b.reset()
+    b.reset(actor)
     cmd = torch.zeros(b.n, 3, device=b.dev)
     cmd[:, 0] = vx
     b.set_cmd(cmd)
@@ -265,7 +344,7 @@ def test_track(b: Bench, actor):
     pid = torch.arange(b.n, device=b.dev) % len(TRACK_PATTERNS)
     pat = torch.tensor([p[1:] for p in TRACK_PATTERNS], device=b.dev)[pid]  # (N, 3)
 
-    b.reset()
+    b.reset(actor)
     b.set_cmd(pat)
     alive = torch.ones(b.n, dtype=torch.bool, device=b.dev)
     for _ in range(steps(TRACK_SETTLE_S, b.dt)):
@@ -339,7 +418,7 @@ def test_track(b: Bench, actor):
 
 def test_stop(b: Bench, actor):
     walker = (torch.arange(b.n, device=b.dev) % 2) == 1
-    b.reset()
+    b.reset(actor)
     cmd = torch.zeros(b.n, 3, device=b.dev)
     cmd[walker, 0] = STOP_WALK_V
     b.set_cmd(cmd)
@@ -457,7 +536,7 @@ def main():
     with torch.inference_mode():
         for spec in args_cli.policy:
             label, path = spec.split("=", 1)
-            actor = load_actor(path, env.device)
+            actor = load_actor(path, env, env.device)
             print(f"[eval] {label}: {path}")
             results[label] = dict(path=path, push=test_push(b, actor), track=test_track(b, actor),
                                   stop=test_stop(b, actor))
