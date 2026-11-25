@@ -1,0 +1,126 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Global Options:
+    Fixed Frame: odom
+    Background Color: 48; 48; 48
+    Frame Rate: 30
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Reference Frame: <Fixed Frame>
+      Cell Size: 0.5
+      Plane Cell Count: 20
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Show Names: false
+      Marker Scale: 0.3
+    - Class: rviz_default_plugins/RobotModel
+      Name: G1
+      Enabled: true
+      Description Source: Topic
+      Description Topic:
+        Value: /robot_description
+      Alpha: 1
+      Visual Enabled: true
+      Collision Enabled: false
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Livox raw
+      Enabled: false
+      Topic:
+        Value: /livox/lidar
+        Reliability Policy: Reliable
+        Depth: 5
+      Style: Points
+      Size (Pixels): 2
+      Color Transformer: AxisColor
+      Axis: Z
+      Use Fixed Frame: true
+      Decay Time: 0
+    - Class: rviz_default_plugins/PointCloud2
+      Name: DLIO deskewed
+      Enabled: true
+      Topic:
+        Value: /dlio/odom_node/pointcloud/deskewed
+        Reliability Policy: Reliable
+        Depth: 5
+      Style: Points
+      Size (Pixels): 2
+      Color Transformer: AxisColor
+      Axis: Z
+      Use Fixed Frame: true
+      Decay Time: 0
+    - Class: rviz_default_plugins/PointCloud2
+      Name: DLIO map
+      Enabled: false
+      Topic:
+        Value: /dlio/map_node/map
+        Reliability Policy: Reliable
+        Depth: 1
+      Style: Points
+      Size (Pixels): 1
+      Color Transformer: AxisColor
+      Axis: Z
+      Use Fixed Frame: true
+      Decay Time: 0
+    - Class: rviz_default_plugins/Path
+      Name: DLIO path
+      Enabled: true
+      Topic:
+        Value: /dlio/odom_node/path
+        Reliability Policy: Reliable
+        Depth: 5
+      Color: 255; 200; 0
+    - Class: grid_map_rviz_plugin/GridMap
+      Name: Elevation map (filled)
+      Enabled: true
+      Topic:
+        Value: /elevation_mapping_node/elevation_map_filter
+        Depth: 1
+        Reliability Policy: Reliable
+      Height Layer: inpaint
+      Height Transformer: GridMapLayer
+      Color Transformer: GridMapLayer
+      Color Layer: inpaint
+      Use ColorMap: true
+      ColorMap: default
+      Invert ColorMap: false
+      Autocompute Intensity Bounds: true
+      Show Grid Lines: false
+      Grid Cell Decimation: 1
+      History Length: 1
+      Alpha: 0.8
+    - Class: grid_map_rviz_plugin/GridMap
+      Name: Elevation map (raw)
+      Enabled: false
+      Topic:
+        Value: /elevation_mapping_node/elevation_map_raw
+        Depth: 1
+        Reliability Policy: Reliable
+      Height Layer: elevation
+      Height Transformer: GridMapLayer
+      Color Transformer: GridMapLayer
+      Color Layer: elevation
+      Use ColorMap: true
+      ColorMap: default
+      Invert ColorMap: false
+      Autocompute Intensity Bounds: true
+      Show Grid Lines: false
+      Grid Cell Decimation: 1
+      History Length: 1
+      Alpha: 1
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 6
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Pitch: 0.6
+      Yaw: 3.6
+      Target Frame: pelvis

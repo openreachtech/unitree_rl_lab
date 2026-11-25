@@ -1,0 +1,22 @@
+# Post-processing layers for elevation_mapping_cupy (replaces the package's
+# config/core/plugin_config.yaml, whose near_base_height_filter / spike filters are tuned
+# for an excavator: they clip anything 0.5 m above the base within 4 m).
+#
+# smooth:  the raw elevation, smoothed.
+# inpaint: smooth with the unobserved cells (e.g. under the robot, shadows of steps) filled
+#          from their neighbours -- for display; the raw layer stays unfilled.
+smooth_filter:
+  enable: True
+  fill_nan: False
+  is_height_layer: True
+  layer_name: "smooth"
+  extra_params:
+    input_layer_name: "elevation"
+inpainting:
+  enable: True
+  fill_nan: False
+  is_height_layer: True
+  layer_name: "inpaint"
+  extra_params:
+    method: "telea"
+    input_layer_name: "smooth"

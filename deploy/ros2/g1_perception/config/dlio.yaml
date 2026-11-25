@@ -1,0 +1,32 @@
+# DLIO for the G1 head MID-360. Loaded after DLIO's own cfg/dlio.yaml + cfg/params.yaml.
+#
+# base frame = the torso: the head (and the sensor) is rigid on it, so the extrinsics are
+# constants. Published as dlio_torso, not torso_link: robot_state_publisher already hangs
+# torso_link off pelvis, and g1_state hangs pelvis under dlio_torso.
+# Extrinsics from unitree_ros g1_29dof_rev_1_0.urdf mid360_joint (upside down, 2.9 deg
+# pitch); the IMU sits at livox_frame + (0.0110, 0.02329, -0.04412).
+/**:
+  ros__parameters:
+    use_sim_time: false
+
+    frames/odom: odom
+    frames/baselink: dlio_torso
+    frames/lidar: livox_frame
+    frames/imu: livox_imu_frame
+
+    extrinsics/baselink2lidar/t: [ 0.0002835, 0.00003, 0.428434 ]
+    extrinsics/baselink2lidar/R: [  0.9986936, 0.0, -0.0510984,
+                                    0.0,      -1.0,  0.0,
+                                   -0.0510984, 0.0, -0.9986936 ]
+    extrinsics/baselink2imu/t: [ 0.013524, -0.02326, 0.471934 ]
+    extrinsics/baselink2imu/R: [  0.9986936, 0.0, -0.0510984,
+                                  0.0,      -1.0,  0.0,
+                                 -0.0510984, 0.0, -0.9986936 ]
+
+    # Level odom with the measured gravity (DLIO's params.yaml turns this off, which leaves
+    # odom in the initial torso attitude and the map tilted by it).
+    odom/imu/approximateGravity: true
+    # 3 s still at start (hanging on the band is fine) to estimate gyro / accel bias.
+    odom/imu/calibration/time: 3.0
+    # Keep the dense map around the robot; DLIO's default waits for 1 m of motion.
+    map/waitUntilMove: false

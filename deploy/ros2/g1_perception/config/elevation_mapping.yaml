@@ -1,0 +1,44 @@
+# elevation_mapping_cupy for the G1 head MID-360. Loaded after the package's own
+# config/core/core_param.yaml; only what differs is listed. Based on tsubame_perception's.
+# Input: the raw /livox/lidar (sensor frame), placed in odom by DLIO's TF.
+/elevation_mapping_node:
+  ros__parameters:
+    map_frame: odom
+    base_frame: dlio_torso
+    corrected_map_frame: odom
+
+    # 5 cm cells, 4 x 4 m around the robot.
+    resolution: 0.05
+    map_length: 4.0
+
+    # Distances from the sensor, ~1.25 m above the floor. 0.9 m drops no-returns (0, 0, 0)
+    # and the robot's own arms and legs (a crude self filter): the floor is never closer
+    # than ~1.6 m anyway, since the blind cone (~38 deg around straight down) hides it.
+    min_valid_distance: 0.9
+    max_height_range: 1.0
+    ramped_height_range_a: 0.3
+    ramped_height_range_b: 1.0
+    ramped_height_range_c: 1.0
+    max_ray_length: 4.0
+
+    update_pose_fps: 10.0
+    map_acquire_fps: 10.0
+
+    # Nothing under the robot until the sensor has seen it.
+    use_initializer_at_start: false
+    enable_drift_compensation: true
+
+    subscribers:
+      livox:
+        topic_name: /livox/lidar
+        data_type: pointcloud
+
+    publishers:
+      elevation_map_raw:
+        layers: ['elevation', 'variance', 'is_valid', 'traversability']
+        basic_layers: ['elevation']
+        fps: 10.0
+      elevation_map_filter:  # display only
+        layers: ['smooth', 'inpaint']
+        basic_layers: ['inpaint']
+        fps: 5.0
