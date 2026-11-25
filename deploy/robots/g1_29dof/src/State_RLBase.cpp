@@ -5,7 +5,6 @@
 #include "param.h"
 #include <algorithm>
 #include <array>
-#include <spdlog/spdlog.h>
 
 namespace isaaclab
 {
@@ -60,12 +59,6 @@ REGISTER_OBSERVATION(keyboard_velocity_commands)
     cmd[0] = std::clamp(cmd[0], lim("lin_vel_x", 0), lim("lin_vel_x", 1));
     cmd[1] = std::clamp(cmd[1], lim("lin_vel_y", 0), lim("lin_vel_y", 1));
     cmd[2] = std::clamp(cmd[2], lim("ang_vel_z", 0), lim("ang_vel_z", 1));
-
-    static int log_counter = 0;
-    if (++log_counter % 50 == 0 && (cmd[0] != 0.0f || cmd[1] != 0.0f || cmd[2] != 0.0f))
-    {
-        spdlog::info("cmd vx {:+.2f}  vy {:+.2f}  wz {:+.2f}", cmd[0], cmd[1], cmd[2]);
-    }
     return std::vector<float>(cmd.begin(), cmd.end());
 }
 

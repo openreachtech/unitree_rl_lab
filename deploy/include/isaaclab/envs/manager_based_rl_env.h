@@ -54,6 +54,9 @@ public:
         robot->update();
         action_manager->reset();
         observation_manager->reset();
+        // A recurrent policy's hidden state is as much per-episode state as the managers'
+        // buffers; leaving it behind would start the controller mid-thought.
+        if (alg) alg->reset();
     }
 
     void step()

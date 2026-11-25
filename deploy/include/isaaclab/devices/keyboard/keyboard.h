@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <deque>
+#include <unordered_map>
 #include <unordered_set>
 #include <mutex>
 #include <atomic>
@@ -85,6 +86,17 @@ public:
   bool consume_velocity_stop()
   {
     return _velocity_stop_requested.exchange(false);
+  }
+
+  /** @brief Number of times @p key was pressed since the last call, then reset to 0. */
+  int consume_presses(const std::string& key)
+  {
+    std::lock_guard<std::mutex> lock(_pressed_mutex);
+    auto it = _press_counts.find(key);
+    if (it == _press_counts.end()) return 0;
+    int n = it->second;
+    _press_counts.erase(it);
+    return n;
   }
 
   /**
@@ -189,6 +201,7 @@ public:
   void _register_key_event(const std::string& key)
   {
     std::lock_guard<std::mutex> lock(_pressed_mutex);
+    if (!key.empty() && _press_counts.size() < 64) _press_counts[key] += 1;
     if (key == " " || key == "space")
     {
       _pressed_keys.clear();
@@ -207,6 +220,7 @@ public:
 
   mutable std::mutex _pressed_mutex;
   std::unordered_set<std::string> _pressed_keys;
+  std::unordered_map<std::string, int> _press_counts;
   std::atomic<bool> _velocity_stop_requested{false};
 
   termios _oldSettings, _newSettings;

@@ -3,6 +3,12 @@
 #include "FSM/State_FixStand.h"
 #include "FSM/State_RLBase.h"
 #include "State_Mimic.h"
+#include <unitree/robot/channel/channel_publisher.hpp>
+#include <unitree/idl/ros2/String_.hpp>
+
+// unitree_mujoco's elastic band, driven from this terminal (sim only; no subscriber on
+// the real robot, so the messages go nowhere there).
+static constexpr const char* ELASTIC_BAND_TOPIC = "rt/sim/elastic_band";
 
 std::unique_ptr<LowCmd_t> FSMState::lowcmd = nullptr;
 std::shared_ptr<LowState_t> FSMState::lowstate = nullptr;
@@ -52,10 +58,25 @@ int main(int argc, char** argv)
     std::cout << "Keyboard: [1] FixStand, [Enter] Velocity, [0] Passive\n";
     std::cout << "          [f/b/l/r/y/u] forward/back/left/right/turn-left/turn-right (latched, combine OK)\n";
     std::cout << "          [Space] zero velocity command\n";
+    std::cout << "Sim band: [8] lower, [7] raise, [9] release / re-attach (unitree_mujoco -e 1)\n";
+
+    unitree::robot::ChannelPublisher<std_msgs::msg::dds_::String_> band_pub(ELASTIC_BAND_TOPIC);
+    band_pub.InitChannel();
+    const std::pair<const char*, const char*> band_keys[] = {{"9", "toggle"}, {"8", "down"}, {"7", "up"}};
 
     while (true)
     {
-        sleep(1);
+        for (const auto& [key, cmd] : band_keys)
+        {
+            for (int n = FSMState::keyboard->consume_presses(key); n > 0; --n)
+            {
+                std_msgs::msg::dds_::String_ msg;
+                msg.data(cmd);
+                band_pub.Write(msg);
+                spdlog::info("Sim band: {}", cmd);
+            }
+        }
+        usleep(20000);
     }
     
     return 0;
