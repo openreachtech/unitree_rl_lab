@@ -74,8 +74,6 @@ FSM:
       Passive: "0"
 
     # policy_dir: config/policy/velocity
-    # G1-MLP-Phase1, yaw up to 1.0 rad/s, 10k iterations
-    # policy_dir: ../../../logs/rsl_rl/g1_mlp_phase1/2026-11-22_22-59-17
     # G1-GRU-Phase3 (stairs + walls), model_19600; exported/policy.onnx carries h_in/h_out
     policy_dir: ../../../logs/rsl_rl/g1_gru_phase3/2026-11-24_22-27-55
     # max command = scale x trained limit (x: -0.5..2.0, y: +-0.5, yaw: +-1.0)
