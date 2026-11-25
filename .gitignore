@@ -74,3 +74,6 @@ datasets
 # Mimic
 *.npz
 .local
+
+# Jetson ONNX Runtime, downloaded by scripts/setup_onnxruntime_jetson.sh
+deploy/thirdparty/onnxruntime-linux-aarch64-*/
