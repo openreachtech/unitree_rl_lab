@@ -78,9 +78,10 @@ FSM:
     # policy_dir: ../../../logs/rsl_rl/g1_mlp_phase1/2026-11-22_22-59-17
     # G1-GRU-Phase3 (stairs + walls), model_19600; exported/policy.onnx carries h_in/h_out
     policy_dir: ../../../logs/rsl_rl/g1_gru_phase3/2026-11-24_22-27-55
-    # keyboard command = keyboard_vel_scale x trained limit (x: -0.5..2.0, y: +-0.5, yaw: +-1.0)
-    keyboard_vel_scale: 0.5
-    keyboard_alpha: 0.05  # low-pass per 20 ms step; ~1 s to reach the target
+    # max command = scale x trained limit (x: -0.5..2.0, y: +-0.5, yaw: +-1.0)
+    keyboard_vel_scale: 0.5  # latched key
+    joystick_vel_scale: 0.8  # full stick deflection, proportional in between
+    keyboard_alpha: 0.05  # keyboard low-pass per 20 ms step; ~1 s to reach the target
   Mimic_Dance_102:
     transitions: 
       Passive: LT + B.on_pressed
