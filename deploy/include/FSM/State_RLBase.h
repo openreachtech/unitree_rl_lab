@@ -6,6 +6,7 @@
 #include "FSMState.h"
 #include "isaaclab/envs/mdp/actions/joint_actions.h"
 #include "isaaclab/envs/mdp/terminations.h"
+#include "isaaclab/utils/step_recorder.h"
 
 class State_RLBase : public FSMState
 {
@@ -32,12 +33,15 @@ public:
             const auto dt = std::chrono::duration_cast<clock::duration>(desiredDuration);
 
             // Initialize timing
-            auto sleepTill = clock::now() + dt;
+            const auto start = clock::now();
+            auto sleepTill = start + dt;
             env->reset();
+            if (recorder) recorder->begin(*env);
 
             while (policy_thread_running)
             {
                 env->step();
+                if (recorder) recorder->record(*env, std::chrono::duration<double>(clock::now() - start).count());
 
                 // Sleep
                 std::this_thread::sleep_until(sleepTill);
@@ -54,10 +58,12 @@ public:
         if (policy_thread.joinable()) {
             policy_thread.join();
         }
+        if (recorder) recorder->end();
     }
 
 private:
     std::unique_ptr<isaaclab::ManagerBasedRLEnv> env;
+    std::unique_ptr<isaaclab::StepRecorder> recorder;  // optional, set by a robot's constructor
 
     std::thread policy_thread;
     bool policy_thread_running = false;

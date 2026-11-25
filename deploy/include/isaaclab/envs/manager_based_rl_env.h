@@ -63,10 +63,14 @@ public:
     {
         episode_length += 1;
         robot->update();
-        auto obs = observation_manager->compute();
-        auto action = alg->act(obs);
-        action_manager->process_action(action);
+        last_obs = observation_manager->compute();
+        last_action = alg->act(last_obs);
+        action_manager->process_action(last_action);
     }
+
+    // the last step's policy input / output (for logging)
+    std::unordered_map<std::string, std::vector<float>> last_obs;
+    std::vector<float> last_action;
 
     float step_dt;
     

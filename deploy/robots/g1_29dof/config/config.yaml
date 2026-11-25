@@ -80,6 +80,9 @@ FSM:
     keyboard_vel_scale: 0.5  # latched key
     joystick_vel_scale: 0.8  # full stick deflection, proportional in between
     keyboard_alpha: 0.05  # keyboard low-pass per 20 ms step; ~1 s to reach the target
+    # one CSV per entry into Velocity (sim-to-real comparison); "" turns logging off.
+    # Relative to deploy/robots/g1_29dof.
+    log_dir: ../../../logs/deploy/g1_29dof
   Mimic_Dance_102:
     transitions: 
       Passive: LT + B.on_pressed

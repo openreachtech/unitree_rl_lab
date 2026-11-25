@@ -3,6 +3,7 @@
 #include "isaaclab/envs/mdp/observations/observations.h"
 #include "isaaclab/envs/mdp/actions/joint_actions.h"
 #include "param.h"
+#include "CsvRecorder.h"
 #include <algorithm>
 #include <array>
 
@@ -78,6 +79,12 @@ State_RLBase::State_RLBase(int state_mode, std::string state_string)
         std::make_shared<unitree::BaseArticulation<LowState_t::SharedPtr>>(FSMState::lowstate)
     );
     env->alg = std::make_unique<isaaclab::OrtRunner>(policy_dir / "exported" / "policy.onnx");
+
+    if (auto log_dir = cfg["log_dir"].as<std::string>(""); !log_dir.empty())
+    {
+        std::filesystem::path dir(log_dir);
+        recorder = std::make_unique<CsvRecorder>(dir.is_relative() ? param::proj_dir / dir : dir);
+    }
 
     this->registered_checks.emplace_back(
         std::make_pair(
