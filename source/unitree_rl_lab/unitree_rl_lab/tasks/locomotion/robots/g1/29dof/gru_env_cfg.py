@@ -1,4 +1,4 @@
-"""G1 GRU tasks: G1-MLP-Phase1 with a recurrent policy, then rough terrain.
+"""G1 GRU tasks: G1-MLP-Phase1 with a recurrent policy, then rough terrain, then stairs.
 
 G1-GRU-Phase1 (flat): G1-MLP-Phase1 with these changes, for SymmetricGruPPORunnerCfg
   * no stacked history in either group; the GRU hidden state carries the past
@@ -14,11 +14,15 @@ G1-GRU-Phase2 (terrain), from the Phase1 checkpoint:
   * vertical velocity and tilt penalties relaxed (as feat/mid360 Go2 Phase 2)
   * episodes end (as time-outs) near the terrain edge, where the ray casters miss
 
+G1-GRU-Phase3 (stairs, walls), from the Phase2 checkpoint: see GruPhase3EnvCfg.
+
 The actor stays blind (proprioception only); deploy.yaml layout is unchanged except
 for history_length.
 """
 
 import isaaclab.terrains as terrain_gen
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
+from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
@@ -156,7 +160,7 @@ class GruPhase2EnvCfg(GruPhase1EnvCfg):
     rewards: GruPhase2RewardsCfg = GruPhase2RewardsCfg()
 
     def __post_init__(self):
-        self.scene.terrain.terrain_generator = PHASE2_TERRAIN_CFG
+        self.scene.terrain.terrain_generator = PHASE2_TERRAIN_CFG.replace()  # a copy: play cfgs edit it
         self.scene.terrain.max_init_terrain_level = 2
         super().__post_init__()  # turns on the generator's curriculum mode (terrain_levels)
         # z = 0 is the top of the slope-up pyramids; their bottom sinks to -0.68 m
@@ -181,9 +185,96 @@ class GruPhase2PlayEnvCfg(GruPhase2EnvCfg):
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
 
 
+# ---------------------------------------------------------------------------
+# Phase 3: stairs and walls (terrain after tsubame_isaac_env's Anaguma Pos-Target Phase 3)
+# ---------------------------------------------------------------------------
+
+_STAIRS = dict(
+    proportion=1.0,
+    # 5 -> 20 cm risers, 35 -> 27.5 cm treads: row 13 of 20 is a 15 cm x 30 cm stair
+    step_height_range=(0.05, 0.20),
+    step_width_range=(0.35, 0.275),
+    # the generated platform comes out narrower (one more step fits inside): 3.0 leaves
+    # 2.4-2.8 m, room for the +-0.5 m spawn noise
+    platform_width=3.0,
+    border_width=1.0,
+)
+
+# 5 columns x 20 rows, one sub-terrain per column in definition order (proportions equal)
+PHASE3_TERRAIN_CFG = PHASE2_TERRAIN_CFG.replace(
+    num_cols=5,
+    num_rows=20,
+    sub_terrains={
+        "random_rough": PHASE2_TERRAIN_CFG.sub_terrains["random_rough"].replace(proportion=1.0),
+        "stairs_down": mdp.MeshPyramidStairsVariableWidthCfg(**_STAIRS),
+        "stairs_up": mdp.MeshInvertedPyramidStairsVariableWidthCfg(**_STAIRS),
+        "stairs_up_front": mdp.MeshInvertedPyramidStairsVariableWidthCfg(**_STAIRS),
+        # 1 cm thick rings at 1.65 m and 3.22 m from the spawn, 5 -> 25 cm high
+        "wall": mdp.MeshCircularWallTerrainCfg(
+            proportion=1.0, wall_height_range=(0.05, 0.25), wall_thickness_range=(0.01, 0.01)
+        ),
+    },
+)
+PHASE3_STAIRS_FRONT_COLS = (3,)
+PHASE3_WALL_COLS = (4,)
+
+
+@configclass
+class GruPhase3RewardsCfg(GruPhase2RewardsCfg):
+    # climbing leans the torso; do not penalize tilt against gravity
+    flat_orientation_l2 = None
+
+
+@configclass
+class GruPhase3EnvCfg(GruPhase2EnvCfg):
+    """Phase 2 on stairs and walls. Changes from Phase 2:
+
+    * terrain: rough | stairs down | stairs up | stairs up, spawned facing the steps |
+      1 cm circular walls; 20 rows
+    * forward-only commands (0.3-1.0 m/s) on the front-stairs and wall columns
+    * wall rows ratchet on distance from spawn (got past the first ring or not)
+    * no tilt penalty
+    * commands start at their full range (the level curriculum restarts from the
+      initial ranges on every run, which cost Phase 2 ~800 iterations)
+    """
+
+    rewards: GruPhase3RewardsCfg = GruPhase3RewardsCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.terrain.terrain_generator = PHASE3_TERRAIN_CFG.replace()  # a copy: play cfgs edit it
+        self.scene.terrain.terrain_generator.curriculum = True  # set on Phase 2's generator by super()
+        self.scene.terrain.max_init_terrain_level = 3
+
+        cmd = self.commands.base_velocity
+        cmd.ranges = cmd.limit_ranges.replace()
+        cmd.forward_only_types = PHASE3_STAIRS_FRONT_COLS + PHASE3_WALL_COLS
+        cmd.forward_speed_range = (0.3, 1.0)
+
+        self.curriculum.terrain_levels = CurrTerm(
+            func=mdp.terrain_levels_vel_walls,
+            params={"distance_types": PHASE3_WALL_COLS, "promote_distance": 2.3, "demote_distance": 2.0},
+        )
+        # after reset_base (full yaw circle), so it overrides only the front-stairs column
+        self.events.stairs_facing = EventTerm(
+            func=mdp.reset_root_facing_axes, mode="reset", params={"terrain_types": PHASE3_STAIRS_FRONT_COLS}
+        )
+
+
+@configclass
+class GruPhase3PlayEnvCfg(GruPhase3EnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.terrain.terrain_generator.num_rows = 10
+        self.scene.terrain.max_init_terrain_level = 9
+
+
 __all__ = [
     "GruPhase1EnvCfg",
     "GruPhase1PlayEnvCfg",
     "GruPhase2EnvCfg",
     "GruPhase2PlayEnvCfg",
+    "GruPhase3EnvCfg",
+    "GruPhase3PlayEnvCfg",
 ]
