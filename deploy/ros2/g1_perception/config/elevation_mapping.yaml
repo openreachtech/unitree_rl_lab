@@ -24,6 +24,10 @@
     update_pose_fps: 10.0
     map_acquire_fps: 10.0
 
+    # Traversability filter on chainer (pure python over cupy) instead of torch: much less
+    # to install, on the Jetson too.
+    use_chainer: true
+
     # Nothing under the robot until the sensor has seen it.
     use_initializer_at_start: false
     enable_drift_compensation: true

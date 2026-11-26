@@ -11,8 +11,8 @@ Same for unitree_mujoco -l 1 and the real livox_ros_driver2; nothing here knows 
   robot_state_publisher   G1 model (urdf:=..., default unitree_ros g1_29dof_rev_1_0) at DLIO's pose
   rviz2                   (rviz:=false to skip)
 
-elevation_mapping_cupy comes from the tsubame workspace (source its install/setup.bash
-first) and runs with that workspace's .venv python (cupy, CUDA torch).
+elevation_mapping_cupy is built in the same workspace and runs with the workspace's .venv
+python (cupy; see deploy/ros2/README.md), or the system python when there is no .venv.
 """
 import glob
 import os
@@ -26,16 +26,15 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 G1_URDF = Path.home() / "unitree" / "unitree_ros" / "robots" / "g1_description" / "g1_29dof_rev_1_0.urdf"
-TSUBAME_WS = Path(os.environ.get("TSUBAME_WS", Path.home() / "tsubame" / "ros2_ws"))
 
 
-def venv_python_and_libs():
-    """cupy / torch live in the tsubame workspace's .venv; point the loader at its NVRTC."""
-    python = TSUBAME_WS / ".venv" / "bin" / "python3"
+def venv_python_and_libs(ws):
+    """cupy lives in <ws>/.venv; point the loader at the CUDA libraries pip put there."""
+    python = ws / ".venv" / "bin" / "python3"
     if not python.exists():
         return None, {}
-    site = TSUBAME_WS / ".venv" / "lib" / "python3*" / "site-packages" / "nvidia"
-    libs = sorted(glob.glob(str(site / "cuda_*" / "lib")))
+    site = ws / ".venv" / "lib" / "python3*" / "site-packages" / "nvidia"
+    libs = sorted(glob.glob(str(site / "*" / "lib")))
     env = {"LD_LIBRARY_PATH": ":".join(libs + [p for p in os.environ.get("LD_LIBRARY_PATH", "").split(":") if p])}
     runtime = sorted(glob.glob(str(site / "cuda_runtime")))
     if runtime and "CUDA_PATH" not in os.environ:
@@ -83,7 +82,7 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration("dlio_map")),
     )
 
-    python, env = venv_python_and_libs()
+    python, env = venv_python_and_libs(Path(share).parents[3])  # <ws>/install/g1_perception/share/g1_perception
     elevation_mapping = Node(
         package="elevation_mapping_cupy",
         executable="elevation_mapping_node.py",

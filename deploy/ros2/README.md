@@ -16,11 +16,25 @@ mkdir -p ~/unitree/ros2_ws/src && cd ~/unitree/ros2_ws/src
 ln -s ~/isaacsim/unitree_rl_lab/deploy/ros2/g1_perception g1_perception
 ln -s ~/unitree/unitree_ros2/cyclonedds_ws/src/unitree/unitree_hg unitree_hg
 git clone -b feature/ros2 https://github.com/vectr-ucla/direct_lidar_inertial_odometry.git
-cd .. && colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
+git clone https://github.com/leggedrobotics/elevation_mapping_cupy.git && git -C elevation_mapping_cupy checkout d9e1c9f  # ros2 branch
+git clone https://github.com/Box-Robotics/ros2_numpy.git
+cd .. && colcon build --symlink-install --packages-up-to g1_perception elevation_mapping_cupy \
+    --cmake-args -DCMAKE_BUILD_TYPE=Release
+
+# cupy + chainer for elevation_mapping_cupy, in <ws>/.venv (the launch file uses it when
+# present). ROS python packages come from the system (--system-site-packages). chainer is
+# the traversability filter backend (use_chainer: true), so no torch; it only ships as an
+# sdist that needs setuptools < 70.
+uv venv --python /usr/bin/python3 --system-site-packages .venv
+uv pip install --python .venv/bin/python cupy-cuda12x==13.6.0 "numpy<2" scipy simple-parsing \
+    transforms3d "setuptools<70" wheel
+uv pip install --python .venv/bin/python --no-build-isolation chainer
+# without a system CUDA toolkit (this PC): CUDA libraries from pip (~1 GB)
+uv pip install --python .venv/bin/python nvidia-cuda-nvrtc-cu12 nvidia-cuda-runtime-cu12 nvidia-cublas-cu12
 ```
 
-elevation_mapping_cupy comes from the tsubame workspace (`~/tsubame/ros2_ws`, with its
-`.venv` for cupy / torch); `TSUBAME_WS` overrides the path.
+On the Jetson, skip the nvidia-* wheels (JetPack has CUDA); cupy-cuda12x has aarch64
+wheels. Or leave the map for later with `map:=false`.
 
 ## Run (MuJoCo)
 
@@ -31,14 +45,14 @@ g1lidar                               # 2. perception + rviz, while the robot ha
 g1m                                   # 3. walk: 1 -> Enter -> 9
 ```
 
-`g1lidar` (in `~/.bashrc`) sources ROS 2 + both workspaces, sets CycloneDDS on `lo`
+`g1lidar` (in `~/.bashrc`) sources ROS 2 + the workspace, sets CycloneDDS on `lo`
 (`-n eth0` for the robot's network) with `ROS_DOMAIN_ID=0`, and runs
 `ros2 launch g1_perception perception.launch.py` with the rest of its args
 (`map:=false`, `rviz:=false`, `dlio_map:=true`, `urdf:=...`):
 
 ```bash
 g1lidar() ( n=lo; if [ "$1" = -n ]; then n=$2; shift 2; fi
-            source /opt/ros/humble/setup.bash; source ~/tsubame/ros2_ws/install/setup.bash; source ~/unitree/ros2_ws/install/setup.bash
+            source /opt/ros/humble/setup.bash; source ~/unitree/ros2_ws/install/setup.bash
             export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp ROS_DOMAIN_ID=0 CYCLONEDDS_URI="<CycloneDDS><Domain><General><Interfaces><NetworkInterface name=\"$n\"/></Interfaces></General></Domain></CycloneDDS>"
             exec ros2 launch g1_perception perception.launch.py "$@" )
 ```
