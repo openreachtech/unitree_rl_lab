@@ -169,3 +169,17 @@ def terrain_levels_climb_demote_on_fail(
     move_down = ((distance < 0.5) | failed) & ~move_up
     terrain.update_env_origins(env_ids, move_up, move_down)
     return torch.mean(terrain.terrain_levels.float())
+
+
+def reward_param_schedule(
+    env: ManagerBasedRLEnv, env_ids: Sequence[int], term_name: str, param: str, schedule: list[tuple[int, float]]
+) -> float:
+    """Set a reward term's parameter from a step schedule: ``schedule`` holds (env step, value) pairs
+    in increasing step order; the last one reached applies (``common_step_counter``, which restarts
+    with every run)."""
+    term = env.reward_manager.get_term_cfg(term_name)
+    for step, value in schedule:
+        if env.common_step_counter >= step:
+            term.params[param] = value
+    return term.params[param]
+

@@ -138,3 +138,36 @@ class PoseTrackingPPORunnerCfg(BasePPORunnerCfg):
     collapsed on the harder terrain levels (base contacts 8% -> 78%)."""
 
     algorithm = BasePPORunnerCfg().algorithm.replace(entropy_coef=0.005)
+
+
+@configclass
+class MultiCriticActorCriticCfg(RslRlPpoActorCriticCfg):
+    """MLP actor + one MLP critic per reward group (``assets/models/modules/multi_critic.py``).
+    The critics are named after the env's reward groups by the runner."""
+
+    class_name: str = "MultiCriticActorCritic"
+
+
+@configclass
+class TwistTrackingPPORunnerCfg(BasePPORunnerCfg):
+    """Multi-critic PPO for whole-body twist tracking."""
+
+    policy: MultiCriticActorCriticCfg = MultiCriticActorCriticCfg(
+        init_noise_std=1.0,
+        actor_hidden_dims=[512, 256, 128],
+        critic_hidden_dims=[512, 256, 128],
+        activation="elu",
+    )
+    # learning rate and epochs as in the paper (Table 9): with the adaptive 1e-3 and 5 epochs the arm
+    # barely learned. Not the paper's entropy coefficient 0.002, with which the arm stalled.
+    algorithm = PoseTrackingPPORunnerCfg().algorithm.replace(
+        class_name="MultiCriticPPO", learning_rate=3e-4, schedule="fixed", num_learning_epochs=8
+    )
+
+
+@configclass
+class TwistTrackingArmOnlyPPORunnerCfg(TwistTrackingPPORunnerCfg):
+    """Arm only: 1000 iterations at the wide orientation reward, 500 at the narrower one."""
+
+    max_iterations = 1500
+    algorithm = PoseTrackingPPORunnerCfg().algorithm.replace(class_name="MultiCriticPPO")

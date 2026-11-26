@@ -32,3 +32,29 @@ gym.register(
         "rsl_rl_cfg_entry_point": "unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:PoseTrackingPPORunnerCfg",
     },
 )
+
+# Whole-body end-effector twist tracking (MLP actor, one critic per reward group), from scratch.
+# Phase 1: flat plane. Phase 2: random rough / boxes / slopes, initialised from Phase 1.
+for _phase in (1, 2):
+    gym.register(
+        id=f"Aliengoz1-Twist-Tracking-Phase{_phase}",
+        entry_point="unitree_rl_lab.envs.multi_critic_env:MultiCriticRLEnv",
+        disable_env_checker=True,
+        kwargs={
+            "env_cfg_entry_point": f"{__name__}.twist_tracking_env_cfg:RobotEnvCfgPhase{_phase}",
+            "play_env_cfg_entry_point": f"{__name__}.twist_tracking_env_cfg:RobotPlayEnvCfgPhase{_phase}",
+            "rsl_rl_cfg_entry_point": "unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:TwistTrackingPPORunnerCfg",
+        },
+    )
+
+# Arm only (fixed base, legs at default): the arm part of the twist tracking task in isolation.
+gym.register(
+    id="Aliengoz1-Twist-Tracking-ArmOnly",
+    entry_point="unitree_rl_lab.envs.multi_critic_env:MultiCriticRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.twist_tracking_env_cfg:RobotEnvCfgArmOnly",
+        "play_env_cfg_entry_point": f"{__name__}.twist_tracking_env_cfg:RobotPlayEnvCfgArmOnly",
+        "rsl_rl_cfg_entry_point": "unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:TwistTrackingArmOnlyPPORunnerCfg",
+    },
+)
