@@ -47,6 +47,7 @@ simulation_app = app_launcher.app
 
 import gymnasium as gym
 import os
+import re
 import time
 import torch
 
@@ -97,6 +98,10 @@ def main():
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+    # foothold prediction model (G1-FPM): the one saved at or before this checkpoint
+    env.unwrapped.fpm_load_dir = os.path.dirname(resume_path)
+    _it = re.search(r"model_(\d+)\.pt$", resume_path)
+    env.unwrapped.fpm_load_iteration = int(_it.group(1)) if _it else None
 
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv):
@@ -151,8 +156,13 @@ def main():
 
     # export policy to onnx/jit
     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
-    export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
-    export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
+    from unitree_rl_lab.tasks.locomotion.agents.actor_critic_tcn import ActorCriticTcn, export_tcn_policy
+
+    if isinstance(policy_nn, ActorCriticTcn):
+        export_tcn_policy(policy_nn, export_model_dir)
+    else:
+        export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
+        export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
 
     dt = env.unwrapped.step_dt
 

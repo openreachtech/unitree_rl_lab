@@ -32,6 +32,9 @@ __all__ = ["compute_symmetric_states"]
 #   "foot_scan_pair" [left grid, right grid]: grids swapped, and each ray swapped
 #                    with the one at (x, -y) in its grid
 #   ("index", i, s)  explicit permutation + sign
+#   "ray_grid"       one ray caster's grid (params["sensor_cfg"]): each ray swapped with (x, -y)
+#   "foothold_patches" [p1 (x, y), k x k patch, p2, k x k patch]: y negated, patch rows flipped in y
+#                    (the two footholds are in time order, not left / right, so they stay put)
 _TERM_RULES: dict[str, object] = {
     "base_lin_vel": ("sign", [1, -1, 1]),
     "base_ang_vel": ("sign", [-1, 1, -1]),
@@ -50,6 +53,9 @@ _TERM_RULES: dict[str, object] = {
     "foot_terrain_normal": ("index", [3, 4, 5, 0, 1, 2], [1, -1, 1, 1, -1, 1]),
     "foot_contact_force": "lr_pair",
     "knee_contact": "lr_pair",
+    # G1-FPM
+    "height_map_clean": "ray_grid",
+    "foothold_patches": "foothold_patches",
 }
 
 
@@ -119,6 +125,22 @@ class _GroupMirror:
             if step != 2 * r:
                 raise ValueError(f"symmetry: term '{name}' has {step} dims, expected 2 x {r} rays")
             return [r + p for p in perm] + list(perm), [1.0] * step
+        if rule == "ray_grid":
+            perm = _ray_mirror(self._env, cfg.params["sensor_cfg"].name)
+            if step != len(perm):
+                raise ValueError(f"symmetry: term '{name}' has {step} dims, expected {len(perm)} rays")
+            return list(perm), [1.0] * step
+        if rule == "foothold_patches":
+            k = cfg.params.get("patch_size", 7)
+            block = 2 + k * k
+            if step != 2 * block:
+                raise ValueError(f"symmetry: term '{name}' has {step} dims, expected 2 x (2 + {k}x{k})")
+            idx, sgn = [], []
+            for b in range(2):
+                o = b * block
+                idx += [o, o + 1] + [o + 2 + ix * k + (k - 1 - iy) for ix in range(k) for iy in range(k)]
+                sgn += [1.0, -1.0] + [1.0] * (k * k)
+            return idx, sgn
         if rule[0] == "index":
             _, idx, sgn = rule
             if len(idx) != step:

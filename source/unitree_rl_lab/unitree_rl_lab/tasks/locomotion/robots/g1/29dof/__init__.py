@@ -54,3 +54,14 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:SymmetricGruPPORunnerCfg",
     },
 )
+
+gym.register(
+    id="G1-FPM",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.fpm_env_cfg:FpmEnvCfg",
+        "play_env_cfg_entry_point": f"{__name__}.fpm_env_cfg:FpmPlayEnvCfg",
+        "rsl_rl_cfg_entry_point": f"unitree_rl_lab.tasks.locomotion.agents.rsl_rl_ppo_cfg:G1FpmPPORunnerCfg",
+    },
+)

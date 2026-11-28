@@ -211,6 +211,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
 
+    # foothold prediction model (G1-FPM): saved next to the checkpoints, reloaded on resume
+    env.unwrapped.fpm_save_dir = log_dir
+    env.unwrapped.fpm_load_dir = os.path.dirname(resume_path) if agent_cfg.resume else None
+
     # wrap for video recording
     if args_cli.video:
         video_kwargs = {
@@ -269,8 +273,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             normalizer = None
 
         export_model_dir = os.path.join(log_dir, "exported")
-        export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
-        export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
+        from unitree_rl_lab.tasks.locomotion.agents.actor_critic_tcn import ActorCriticTcn, export_tcn_policy
+
+        if isinstance(policy_nn, ActorCriticTcn):
+            export_tcn_policy(policy_nn, export_model_dir)
+        else:
+            export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
+            export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
         print(f"[INFO] Exported final policy to: {export_model_dir}")
 
     # close the simulator

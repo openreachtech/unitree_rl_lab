@@ -284,3 +284,35 @@ def root_height_below_minimum_terrain(
     asset: RigidObject = env.scene[asset_cfg.name]
     ground_z, has_hit = terrain_height_under(env, sensor_cfg)
     return has_hit & (asset.data.root_pos_w[:, 2] - ground_z < minimum_height)
+
+
+def foot_clearance_local_max_reward(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    sensor_cfgs: list[SceneEntityCfg],
+    target_height: float,
+    std: float,
+    tanh_mult: float,
+    radius: float = 0.1,
+) -> torch.Tensor:
+    """``foot_clearance_reward`` with the ground under each foot taken as the *highest* hit of
+    that foot's own ray grid within ``radius`` of the foot in xy.
+
+    The nearest-ray ground of ``foot_clearance_reward`` drops to the bottom of a gap or a hole
+    between stepping stones, which pays a foot for "clearance" it never lifted. The local max
+    reads the surface the foot is actually over (a stone's edge, the lip of a step).
+    ``sensor_cfgs`` is one ray caster per foot, in ``asset_cfg.body_ids`` order.
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    foot_pos = asset.data.body_pos_w[:, asset_cfg.body_ids, :]
+    ground = []
+    for i, cfg in enumerate(sensor_cfgs):
+        hits = env.scene.sensors[cfg.name].data.ray_hits_w  # (N, R, 3)
+        d2 = (hits[..., :2] - foot_pos[:, i : i + 1, :2]).square().sum(dim=-1)
+        z = torch.where((d2 <= radius**2) & torch.isfinite(hits[..., 2]), hits[..., 2], -torch.inf)
+        g = z.max(dim=1).values
+        ground.append(torch.where(torch.isfinite(g), g, foot_pos[:, i, 2]))  # nothing near: no clearance term
+    ground_z = torch.stack(ground, dim=1)
+    err = torch.square(foot_pos[..., 2] - ground_z - target_height)
+    vel = torch.tanh(tanh_mult * torch.norm(asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2], dim=2))
+    return torch.exp(-torch.sum(err * vel, dim=1) / std)

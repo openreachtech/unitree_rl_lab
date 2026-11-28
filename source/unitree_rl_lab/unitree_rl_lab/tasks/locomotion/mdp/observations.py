@@ -17,3 +17,15 @@ def gait_phase(env: ManagerBasedRLEnv, period: float) -> torch.Tensor:
     phase[:, 0] = torch.sin(global_phase * torch.pi * 2.0)
     phase[:, 1] = torch.cos(global_phase * torch.pi * 2.0)
     return phase
+
+
+def height_scan_root(env: ManagerBasedRLEnv, sensor_cfg, offset: float, asset_cfg=None) -> torch.Tensor:
+    """``root z - hit z - offset`` per ray: the same values as ``OdomElevationMap.sample`` (0 on flat
+    ground at nominal stance), from a top-down ray caster. Missed rays read as a deep hole (1.0)."""
+    from isaaclab.managers import SceneEntityCfg
+
+    asset = env.scene[(asset_cfg or SceneEntityCfg("robot")).name]
+    hits_z = env.scene.sensors[sensor_cfg.name].data.ray_hits_w[..., 2]
+    h = asset.data.root_pos_w[:, 2:3] - hits_z - offset
+    # a miss comes back as +inf z, i.e. -inf here: treat as far below (a hole), not as a wall
+    return torch.nan_to_num(h, nan=1.0, posinf=1.0, neginf=1.0)

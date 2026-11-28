@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "push_by_force",
+    "assist_fraction",
     "push_force",
     "body_static_friction",
     "body_added_mass",
@@ -48,6 +49,11 @@ class push_by_force(ManagerTermBase):
     interval of one policy step: the term keeps its own per-env timers and rewrites the
     force every step. The current force is exposed as ``env._priv_push_force_w`` for
     :func:`push_force`.
+
+    Optionally also an **assistive upward force** on the same body (Heyrman et al. 2026):
+    ``alpha * m * g`` with ``alpha = assist_max_fraction * (1 - l / assist_cutoff_level)``,
+    clamped to ``[0, assist_max_fraction]``, where ``l`` is the mean terrain level over all envs.
+    Both go through one write, since the composer keeps only the last force set on a body.
     """
 
     def __init__(self, cfg: EventTermCfg, env: ManagerBasedEnv):
@@ -62,6 +68,8 @@ class push_by_force(ManagerTermBase):
         self.remaining = torch.zeros(n, device=env.device)
         self.next_push = math_utils.sample_uniform(*p["push_interval_s"], (n,), device=env.device)
         env._priv_push_force_w = self.force_w
+        self.weight = self.asset.data.default_mass.sum(dim=1).to(env.device) * 9.81  # (N,)
+        self.lift = torch.zeros(n, 3, device=env.device)
 
     def reset(self, env_ids=None):
         if env_ids is None:
@@ -82,6 +90,8 @@ class push_by_force(ManagerTermBase):
         duration_range: tuple[float, float],
         push_interval_s: tuple[float, float],
         asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+        assist_max_fraction: float = 0.0,
+        assist_cutoff_level: float = 1.0,
     ):
         dt = env.step_dt
         self.next_push -= dt
@@ -97,9 +107,17 @@ class push_by_force(ManagerTermBase):
             self.remaining[start] = dur
             self.next_push[start] = dur + math_utils.sample_uniform(*push_interval_s, (k,), device=self.device)
         self.force_w[self.remaining <= 0.0] = 0.0
+        force = self.force_w
+        if assist_max_fraction > 0.0:
+            levels = getattr(env.scene.terrain, "terrain_levels", None)
+            mean_level = float(levels.float().mean()) if levels is not None else 0.0
+            alpha = min(max(assist_max_fraction * (1.0 - mean_level / assist_cutoff_level), 0.0), assist_max_fraction)
+            env.assist_fraction = alpha
+            self.lift[:, 2] = alpha * self.weight
+            force = self.force_w + self.lift
         # write directly to the composer: set_external_force_and_torque is deprecated and warns every call
         self.asset.permanent_wrench_composer.set_forces_and_torques(
-            forces=wp.from_torch(self.force_w.unsqueeze(1).contiguous(), dtype=wp.vec3f),
+            forces=wp.from_torch(force.unsqueeze(1).contiguous(), dtype=wp.vec3f),
             torques=wp.from_torch(torch.zeros_like(self.force_w).unsqueeze(1).contiguous(), dtype=wp.vec3f),
             body_ids=self._body_ids_wp,
             env_ids=self.asset._ALL_INDICES_WP,
@@ -236,3 +254,8 @@ def foot_terrain_normal(env: ManagerBasedRLEnv, sensor_cfgs: list[SceneEntityCfg
         n = torch.stack([-coef[:, 0], -coef[:, 1], torch.ones_like(coef[:, 0])], dim=-1)
         out.append(n / n.norm(dim=-1, keepdim=True))
     return torch.cat(out, dim=-1)
+
+
+def assist_fraction(env: ManagerBasedRLEnv, env_ids) -> torch.Tensor:
+    """Current assistive force as a fraction of body weight (curriculum logging only)."""
+    return torch.tensor(getattr(env, "assist_fraction", 0.0), device=env.device)

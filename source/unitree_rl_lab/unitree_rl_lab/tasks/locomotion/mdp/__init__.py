@@ -10,3 +10,6 @@ from .privileged import *  # noqa: F401, F403
 from .saw_rewards import *  # noqa: F401, F403
 from .events import *  # noqa: F401, F403
 from .terrains import *  # noqa: F401, F403
+from .lidar_elevation_map import *  # noqa: F401, F403
+from .foothold_prediction import *  # noqa: F401, F403
+from .terminations import *  # noqa: F401, F403

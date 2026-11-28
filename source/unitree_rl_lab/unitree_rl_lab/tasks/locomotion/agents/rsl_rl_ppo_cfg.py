@@ -84,3 +84,61 @@ class SymmetricGruPPORunnerCfg(BasePPORunnerCfg):
         self.algorithm.symmetry_cfg = RslRlSymmetryCfg(
             use_data_augmentation=True, data_augmentation_func=compute_symmetric_states
         )
+
+
+@configclass
+class TcnActorCriticCfg(RslRlPpoActorCriticRecurrentCfg):
+    """``agents/actor_critic_tcn.py:ActorCriticTcn`` (Lee et al. 2020 TCN-N, ported from tsubame_isaac_env)."""
+
+    class_name: str = "ActorCriticTcn"
+    tcn_history_length: int = 100
+    """Actor window [steps]; 100 = 2 s at 50 Hz."""
+    tcn_channels: int = 34
+    tcn_kernel_size: int = 5
+    tcn_latent_dim: int = 64
+    tcn_concat_current_obs: bool = True
+    tcn_bf16: bool = True
+    critic_history_length: int = 3
+    actor_history_groups: list[str] | None = None
+    """Leading actor groups that go through the TCN window; later groups are current-only."""
+    critic_history_groups: list[str] | None = None
+    """Leading critic groups that are stacked over ``critic_history_length``; later groups are current-only."""
+    update_chunks: int = 8
+    """Mini-batch split for gradient accumulation (``PPORecurrentSymmetry``); GPU memory only."""
+
+
+@configclass
+class G1FpmPPORunnerCfg(BasePPORunnerCfg):
+    """G1-FPM: TCN actor over proprioception + foothold height patches beside it,
+    MLP critic over 3 steps of privileged obs + the clean map + the actor's patches.
+    Left-right symmetry augmentation through ``PPORecurrentSymmetry``."""
+
+    experiment_name = "g1_fpm"
+    obs_groups = {
+        "policy": ["policy", "foothold_patches"],
+        "critic": ["critic", "height_map_clean", "foothold_patches"],
+    }
+    policy: TcnActorCriticCfg = TcnActorCriticCfg(
+        init_noise_std=1.0,
+        actor_hidden_dims=[512, 256, 128],
+        critic_hidden_dims=[512, 256, 128],
+        activation="elu",
+        actor_obs_normalization=False,
+        critic_obs_normalization=False,
+        actor_history_groups=["policy"],
+        critic_history_groups=["critic"],
+    )
+
+    def __post_init__(self):
+        from unitree_rl_lab.tasks.locomotion.agents.actor_critic_tcn import ActorCriticTcn
+        from unitree_rl_lab.tasks.locomotion.agents.ppo_recurrent_symmetry import PPORecurrentSymmetry
+        from unitree_rl_lab.tasks.locomotion.mdp.symmetry import compute_symmetric_states
+        import rsl_rl.runners.on_policy_runner as runner_module
+
+        # rsl_rl resolves class_name with eval() in its runner module
+        runner_module.ActorCriticTcn = ActorCriticTcn
+        runner_module.PPORecurrentSymmetry = PPORecurrentSymmetry
+        self.algorithm.class_name = "PPORecurrentSymmetry"
+        self.algorithm.symmetry_cfg = RslRlSymmetryCfg(
+            use_data_augmentation=True, use_mirror_loss=False, data_augmentation_func=compute_symmetric_states
+        )

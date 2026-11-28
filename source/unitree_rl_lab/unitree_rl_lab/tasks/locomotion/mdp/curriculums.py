@@ -75,6 +75,7 @@ def terrain_levels_vel_walls(
     demote_distance: float = 2.0,
     fail_termination_names: tuple[str, ...] = ("bad_orientation", "base_height"),
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    up_distance: float | None = None,
 ) -> dict[str, float]:
     """Terrain row ratchet: Isaac Lab's ``terrain_levels_vel``, except on wall columns.
 
@@ -88,6 +89,8 @@ def terrain_levels_vel_walls(
     over falls behind its command and the stock rule would not promote it; with the first
     ring at 1.65 m, 2.3 / 2.0 m means "got past the first wall" / "did not".
 
+    ``up_distance`` replaces the half-tile threshold of the other columns.
+
     Logged per column (``level_<col>_<terrain>``, ``fall_<col>_<terrain>``) as well as the
     mean: each env stays in its column, and the mean alone does not show which terrain
     is stuck.
@@ -98,12 +101,12 @@ def terrain_levels_vel_walls(
     command = env.command_manager.get_command("base_velocity")
     distance = torch.norm(asset.data.root_pos_w[ids, :2] - env.scene.env_origins[ids, :2], dim=1)
 
-    move_up = distance > terrain.cfg.terrain_generator.size[0] / 2
-    move_down = (distance < torch.norm(command[ids, :2], dim=1) * env.max_episode_length_s * 0.5) & ~move_up
-
-    fell = torch.zeros_like(move_up)
+    fell = torch.zeros(len(ids), dtype=torch.bool, device=env.device)
     for name in fail_termination_names:
         fell |= env.termination_manager.get_term(name)[ids]
+
+    move_up = distance > (terrain.cfg.terrain_generator.size[0] / 2 if up_distance is None else up_distance)
+    move_down = (distance < torch.norm(command[ids, :2], dim=1) * env.max_episode_length_s * 0.5) & ~move_up
     if distance_types:
         on_wall = torch.isin(terrain.terrain_types[ids], torch.tensor(distance_types, device=env.device))
         up_d = distance > promote_distance
